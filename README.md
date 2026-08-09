@@ -1,7 +1,8 @@
 # AnimeTVCut
 
-Phase 6 proof of concept for composing seekable virtual TV Cuts and external text
-subtitles supplied through the selected standards-compatible Stremio stream addon.
+Phase 7 proof of concept for seekable virtual TV, Season, and Complete Series Cuts,
+including timeline-mapped external text subtitles from a standards-compatible Stremio
+stream addon.
 
 ## Development
 
@@ -143,7 +144,7 @@ Created cuts retain the initially selected URLs. Phase 3 deliberately does not r
 or hot-replace expired playback URLs; later work can re-query using the stable family,
 filename, and upstream video ID metadata.
 
-## TV Cut Stremio addon
+## Stremio cut modes
 
 Configure exactly one Stremio metadata source with its complete manifest URL. Nested
 authenticated addon paths and manifest query parameters are preserved internally but
@@ -161,7 +162,21 @@ The metadata addon must declare `series`, `catalog`, `meta`, and a series catalo
 compatible catalog in manifest order. AIOMetadata-style addons are the primary target;
 standard Cinemeta-compatible manifests use the same protocol seam.
 
-Install AnimeTVCut's own `/manifest.json` in Stremio. Its catalog is search-only:
+Install AnimeTVCut's own `/manifest.json` in Stremio. Its search-only catalog exposes
+three independently configurable views of each source series:
+
+- **TV Cut** — backward-compatible approximately one-hour parts.
+- **Season Cut** — one entire finalized source season.
+- **Complete Cut** — all finalized normal seasons in one stream, within safety limits.
+
+Season and Complete Cuts apply one global policy: retain the first safe opening and the
+final safe ending, remove other safely identified OP/ED ranges, and remove safe recaps
+and previews. When timestamps are absent, unsafe, or cannot remove a complete HLS
+segment, AnimeTVCut keeps the footage rather than guessing. Complete Cuts choose one
+strict source family per season, allowing legitimate release-family transitions between
+seasons after MediaFlow normalizes all selected sources.
+
+Routes:
 
 ```text
 GET /catalog/series/animetvcut.json
@@ -171,9 +186,9 @@ GET /stream/series/<virtual-video-id>.json
 ```
 
 Catalog and meta requests are metadata-only. They do not call the stream addon,
-MediaFlow, or skip providers. A stream request reloads current source metadata,
-regenerates the deterministic grouping plan, authorizes the exact finalized group,
-then sends only that group's opaque episode IDs into the existing automatic-cut flow.
+MediaFlow, skip providers, or subtitle discovery. A stream request reloads current
+source metadata, regenerates the deterministic plan, authorizes the exact finalized
+scope, then sends only those opaque episode IDs into the automatic-cut flow.
 MediaFlow remains a normalizer and never owns grouping, retained ranges, or cut policy.
 
 Defaults target a one-hour part: 3000–4500 seconds, at most four episodes, assuming
@@ -184,13 +199,29 @@ for 14 days, preventing already-published groups from shifting as weekly episode
 `PUBLIC_BASE_URL` is mandatory for public stream playback and is the only authority
 used to construct playlist URLs; request `Host` headers are ignored. Public stream
 responses are cached for five minutes while the underlying in-memory cut session stays
-active, and concurrent identical requests are coalesced.
+active, and concurrent identical requests are coalesced. Cut resources use a sliding
+six-hour idle lifetime with a hard 48-hour maximum; valid playlist, map, segment,
+subtitle, and chapter requests refresh idle activity. Chapters derived from the actual
+retained timeline are available at `GET /media/cut/<cutId>/chapters.json`.
+
+Long cuts finalize 14 days after the newest reliable release by default. Missing release
+dates do not imply completion. Defaults cap Season Cuts at 30 episodes/12 hours and
+Complete Cuts at 60 episodes/24 hours, plus 20,000 retained media segments and a 5 MiB
+manifest. Season zero is excluded from Complete Cuts unless explicitly enabled. These
+limits and mode exposure are controlled by the `EXPOSE_*`, `LONG_CUT_*`,
+`SEASON_CUT_*`, and `SERIES_CUT_*` variables in `.env.example`.
+
+Video bytes and subtitle files remain lazy, but creating a long stream still performs
+upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
+subtitle metadata discovery per constituent episode. Subtitle source fetches are
+bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
 Run the real six-episode topology with pinned MediaFlow Proxy `v2.4.9`:
 
 ```bash
 pnpm test:stremio
 pnpm test:subtitles
+pnpm test:long-cuts
 pnpm test:aiometadata:live
 pnpm test:cinemeta:live
 ```
@@ -200,3 +231,9 @@ a standard stream addon, and MediaFlow. The suite proves opaque-ID preservation,
 metadata-only laziness, grouping, automatic skip policy, fMP4 playback, complete Part 1
 decode, Part 2 probing, and seeking across both episode boundaries. No public media or
 metadata service is required.
+
+`test:long-cuts` expands that deterministic topology to two six-episode seasons whose
+selected source families intentionally differ. It verifies Season and Complete Cut
+planning, global OP/ED behavior across the season boundary, prepared-playlist counts,
+lazy media, bounded long-subtitle fetching, chapters, fMP4 probing, ASS/libass validity,
+cross-season decode, and seeking.

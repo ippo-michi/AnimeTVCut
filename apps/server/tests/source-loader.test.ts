@@ -3,6 +3,8 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { FixtureSourceLoader } from "../src/services/fixture-source.js";
+import { CutService } from "../src/services/cut-service.js";
+import { CutSessionStore } from "../src/services/cut-session-store.js";
 import type { HlsSourceLoader } from "../src/services/hls-source-loader.js";
 
 describe("HlsSourceLoader fixture implementation", () => {
@@ -42,5 +44,31 @@ describe("HlsSourceLoader fixture implementation", () => {
       );
     }
     expect(Buffer.concat(chunks)).toHaveLength(16);
+  });
+
+  it("rejects long cuts that exceed segment or manifest safety bounds", async () => {
+    const loader = new FixtureSourceLoader(path.resolve("fixtures/hls"));
+    const service = new CutService(loader, new CutSessionStore());
+    const prepared = await service.prepareSources([
+      {
+        kind: "fixture_hls",
+        episodeId: "ep1",
+        playlistUrl: "fixture://episode1",
+      },
+    ]);
+    expect(() =>
+      service.createCutFromPreparedSources({
+        sources: prepared,
+        remove: [],
+        maxMediaSegments: 1,
+      }),
+    ).toThrow(/media segment limit/);
+    expect(() =>
+      service.createCutFromPreparedSources({
+        sources: prepared,
+        remove: [],
+        maxManifestBytes: 32,
+      }),
+    ).toThrow(/manifest size limit/);
   });
 });

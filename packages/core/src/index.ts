@@ -16,6 +16,20 @@ export type {
   TvCutGroupingConfig,
   TvCutGroupingResult,
 } from "./grouping/tv-cut.js";
+export {
+  DEFAULT_LONG_CUT_PLANNING_CONFIG,
+  planLongCuts,
+} from "./grouping/long-cuts.js";
+export type {
+  LongCutEpisode,
+  LongCutIneligibilityReason,
+  LongCutPlan,
+  LongCutPlanningConfig,
+  LongFormCutMode,
+  PlannedLongSeason,
+  PlannedLongSeries,
+  VirtualChapter,
+} from "./grouping/long-cuts.js";
 export type {
   AppliedCut,
   CutAlignmentPolicy,

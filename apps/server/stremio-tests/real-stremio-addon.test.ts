@@ -275,7 +275,7 @@ afterAll(async () => {
 });
 
 describe("real metadata addon to grouped Stremio TV Cuts", () => {
-  it("discovers one configured search catalog and emits two stable parts", async () => {
+  it("discovers one configured search catalog and emits stable parts for both seasons", async () => {
     expect(videos).toEqual([
       expect.objectContaining({
         season: 1,
@@ -284,6 +284,16 @@ describe("real metadata addon to grouped Stremio TV Cuts", () => {
       }),
       expect.objectContaining({
         season: 1,
+        episode: 2,
+        title: expect.stringContaining("Episodes 4–6"),
+      }),
+      expect.objectContaining({
+        season: 2,
+        episode: 1,
+        title: expect.stringContaining("Episodes 1–3"),
+      }),
+      expect.objectContaining({
+        season: 2,
         episode: 2,
         title: expect.stringContaining("Episodes 4–6"),
       }),

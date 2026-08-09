@@ -13,6 +13,7 @@ import { publicStremioRoutes } from "../src/routes/stremio-addon.js";
 import type { CutService } from "../src/services/cut-service.js";
 import { MediaFlowUnavailableError } from "../src/services/mediaflow/errors.js";
 import { metadataConfigurationFromEnv } from "../src/services/metadata-config.js";
+import { DEFAULT_LONG_CUT_CONFIGURATION } from "../src/services/metadata-config.js";
 import { TvCutCatalogService } from "../src/services/tv-cut-catalog-service.js";
 import {
   NoConsistentStreamFamilyError,
@@ -131,10 +132,14 @@ describe("public Stremio addon", () => {
     });
     expect(catalog.statusCode).toBe(200);
     expect(catalog.body).not.toContain("unsafe");
-    expect(catalog.json().metas[0]).toMatchObject({
-      id: createVirtualMetaId(sourceId),
-      name: "Synthetic Six — TV Cut",
-    });
+    expect(catalog.json().metas).toEqual([
+      expect.objectContaining({
+        id: createVirtualMetaId(sourceId),
+        name: "Synthetic Six — TV Cut",
+      }),
+      expect.objectContaining({ name: "Synthetic Six — Season Cut" }),
+      expect.objectContaining({ name: "Synthetic Six — Complete Cut" }),
+    ]);
     const meta = await app.inject({
       method: "GET",
       url: `/meta/series/${encodeURIComponent(createVirtualMetaId(sourceId))}.json`,
@@ -151,6 +156,31 @@ describe("public Stremio addon", () => {
       }),
     ]);
     expect(meta.body).not.toContain("opaque:exact:episode");
+
+    const seasonCatalogItem = catalog.json().metas[1] as { id: string };
+    const seasonMeta = await app.inject({
+      method: "GET",
+      url: `/meta/series/${encodeURIComponent(seasonCatalogItem.id)}.json`,
+    });
+    expect(seasonMeta.json().meta.videos).toEqual([
+      expect.objectContaining({
+        season: 1,
+        episode: 1,
+        title: "Season 1 — Complete (Episodes 1–6)",
+      }),
+    ]);
+    const completeCatalogItem = catalog.json().metas[2] as { id: string };
+    const completeMeta = await app.inject({
+      method: "GET",
+      url: `/meta/series/${encodeURIComponent(completeCatalogItem.id)}.json`,
+    });
+    expect(completeMeta.json().meta.videos).toEqual([
+      expect.objectContaining({
+        season: 1,
+        episode: 1,
+        title: "Complete Series — 6 Episodes",
+      }),
+    ]);
   });
 
   it("does not expose metadata credentials in diagnostics", async () => {
@@ -166,6 +196,26 @@ describe("public Stremio addon", () => {
       catalogId: "fixture-series",
     });
     expect(health.body).not.toMatch(/private-token|api_key|secret/);
+  });
+
+  it("honors mode exposure without affecting TV Cut", async () => {
+    const app = createApp({
+      metadataClient: metadataClient(),
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+      longCuts: {
+        ...DEFAULT_LONG_CUT_CONFIGURATION,
+        exposeSeason: false,
+        exposeSeries: false,
+      },
+    });
+    apps.push(app);
+    const catalog = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut/search=Synthetic.json",
+    });
+    expect(catalog.json().metas).toEqual([
+      expect.objectContaining({ name: "Synthetic Six — TV Cut" }),
+    ]);
   });
 });
 
@@ -222,6 +272,7 @@ describe("metadata environment configuration", () => {
     const config = metadataConfigurationFromEnv({});
     expect(config.stremio).toBeUndefined();
     expect(config.grouping).toEqual(DEFAULT_TV_CUT_GROUPING_CONFIG);
+    expect(config.longCuts).toEqual(DEFAULT_LONG_CUT_CONFIGURATION);
   });
 
   it("treats an empty optional catalog ID as automatic selection", () => {

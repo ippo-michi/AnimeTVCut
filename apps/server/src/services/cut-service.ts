@@ -6,6 +6,7 @@ import {
   type RemovedRange,
   type SourceRange,
   type TimelinePiece,
+  type VirtualChapter,
 } from "@animetvcut/core";
 import {
   alignRemovedRanges,
@@ -42,6 +43,16 @@ export interface PreparedCutRequest {
   remove: RemovedRange[];
   alignmentPolicy?: CutAlignmentPolicy;
   strictAlignment?: boolean;
+  chapterEpisodes?: readonly ChapterEpisodeInput[];
+  maxMediaSegments?: number;
+  maxManifestBytes?: number;
+}
+
+export interface ChapterEpisodeInput {
+  sourceEpisodeId: string;
+  season: number;
+  episode: number;
+  title?: string;
 }
 
 export class CutService {
@@ -57,6 +68,10 @@ export class CutService {
 
   public isCutActive(cutId: string): boolean {
     return this.sessions.get(cutId) !== undefined;
+  }
+
+  public session(cutId: string) {
+    return this.sessions.get(cutId);
   }
 
   public async prepareSources(
@@ -135,6 +150,16 @@ export class CutService {
     const pieces = buildTimeline(retainedRanges);
     const cutId = this.sessions.createId();
     const composed = composeHlsVod(cutId, compositionSources, pieces);
+    if (
+      request.maxMediaSegments !== undefined &&
+      composed.segmentCount > request.maxMediaSegments
+    )
+      throw new Error("Long Cut exceeds the configured media segment limit.");
+    if (
+      request.maxManifestBytes !== undefined &&
+      Buffer.byteLength(composed.text, "utf8") > request.maxManifestBytes
+    )
+      throw new Error("Long Cut exceeds the configured manifest size limit.");
     const resources = new Map<string, SessionResource>();
     const sourcesByEpisode = new Map(
       request.sources.map(({ source }) => [source.episodeId, source]),
@@ -161,6 +186,7 @@ export class CutService {
       resources,
       subtitleTracks: new Map(),
       subtitleDiagnostics: { discoveredPerEpisode: {}, issues: [] },
+      chapters: this.buildChapters(pieces, request.chapterEpisodes ?? []),
     });
 
     return {
@@ -170,5 +196,33 @@ export class CutService {
       pieces,
       appliedCuts: allAppliedCuts,
     };
+  }
+
+  private buildChapters(
+    pieces: readonly TimelinePiece[],
+    episodes: readonly ChapterEpisodeInput[],
+  ): VirtualChapter[] {
+    const multiSeason =
+      new Set(episodes.map((episode) => episode.season)).size > 1;
+    return episodes.flatMap((episode) => {
+      const first = pieces.find(
+        (piece) => piece.sourceEpisodeId === episode.sourceEpisodeId,
+      );
+      if (first === undefined) return [];
+      const coordinate = multiSeason
+        ? `S${episode.season}E${episode.episode}`
+        : `Episode ${episode.episode}`;
+      return [
+        {
+          title:
+            episode.title === undefined || episode.title.trim() === ""
+              ? coordinate
+              : `${coordinate} — ${episode.title}`,
+          start: first.outputStart,
+          type: "episode" as const,
+          sourceEpisodeId: episode.sourceEpisodeId,
+        },
+      ];
+    });
   }
 }

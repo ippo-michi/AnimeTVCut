@@ -102,4 +102,36 @@ describe("HLS Phase 1 components", () => {
     expect(result.text).not.toContain("seg0.ts");
     expect(result.resources).toHaveLength(4);
   });
+
+  it("composes thousands of retained segments without quadratic manifest assembly", () => {
+    const count = 5_000;
+    const text = [
+      "#EXTM3U",
+      "#EXT-X-TARGETDURATION:1",
+      "#EXT-X-PLAYLIST-TYPE:VOD",
+      ...Array.from({ length: count }, (_, index) => [
+        "#EXTINF:1,",
+        `s${index}.ts`,
+      ]).flat(),
+      "#EXT-X-ENDLIST",
+      "",
+    ].join("\n");
+    const source = parseHlsVodPlaylist(text, "fixture://large/playlist.m3u8");
+    const started = performance.now();
+    const result = composeHlsVod(
+      "large",
+      [{ episodeId: "large", playlist: source }],
+      buildTimeline([
+        {
+          sourceEpisodeId: "large",
+          sourceStart: 0,
+          sourceEnd: count,
+          kind: "content",
+        },
+      ]),
+    );
+    expect(result.segmentCount).toBe(count);
+    expect(result.text).toContain("r005000.ts");
+    expect(performance.now() - started).toBeLessThan(2_000);
+  });
 });

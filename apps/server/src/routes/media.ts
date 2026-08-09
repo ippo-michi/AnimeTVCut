@@ -48,7 +48,7 @@ export function mediaRoutes(
     app.get<{ Params: Pick<MediaParams, "cutId"> }>(
       "/media/cut/:cutId/master.m3u8",
       async (request, reply) => {
-        const session = sessions.get(request.params.cutId);
+        const session = sessions.touch(request.params.cutId);
         if (session === undefined) {
           return reply
             .code(404)
@@ -85,6 +85,7 @@ export function mediaRoutes(
 
         try {
           const opened = await resource.open(range, controller.signal);
+          sessions.touch(request.params.cutId);
           reply.code(opened.statusCode).type(resource.contentType);
           for (const [name, value] of Object.entries(opened.responseHeaders)) {
             const normalized = name.toLowerCase();
@@ -116,6 +117,22 @@ export function mediaRoutes(
             .code(502)
             .send({ error: "Media resource could not be opened" });
         }
+      },
+    );
+
+    app.get<{ Params: { cutId: string } }>(
+      "/media/cut/:cutId/chapters.json",
+      async (request, reply) => {
+        const session = sessions.get(request.params.cutId);
+        if (session === undefined)
+          return reply
+            .code(404)
+            .send({ error: "Cut session is missing or expired" });
+        sessions.touch(request.params.cutId);
+        return reply.send({
+          duration: session.duration,
+          chapters: session.chapters ?? [],
+        });
       },
     );
 

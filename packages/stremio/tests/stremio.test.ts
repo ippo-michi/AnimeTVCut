@@ -193,6 +193,44 @@ describe("virtual Stremio IDs", () => {
     },
   );
 
+  it("keeps legacy TV IDs stable and round trips long-form IDs", async () => {
+    const ids = await import("../src/virtual-ids.js");
+    expect(ids.createVirtualMetaId("test")).toBe("atc:tv:dGVzdA");
+    expect(ids.createVirtualVideoId("test", 1, 1, 3)).toBe(
+      "atc:tv:dGVzdA:s1:e1-3",
+    );
+    const season = ids.createSeasonCutVideoId("test", 2, 1, 12);
+    expect(ids.parseSeasonCutVideoId(season)).toMatchObject({
+      mode: "season",
+      sourceId: "test",
+      season: 2,
+      firstEpisode: 1,
+      lastEpisode: 12,
+    });
+    const series = ids.createSeriesCutVideoId("test", [
+      { id: "opaque", season: 1, episode: 1 },
+    ]);
+    expect(ids.parseSeriesCutVideoId(series)).toMatchObject({
+      mode: "series",
+      sourceId: "test",
+    });
+    expect(
+      ids.parseLongFormVirtualMetaId(
+        ids.createLongFormVirtualMetaId("series", "test"),
+      ),
+    ).toEqual({ mode: "series", sourceId: "test" });
+  });
+
+  it("changes Complete Cut version when the ordered episode set changes", async () => {
+    const { createSeriesCutVersion } = await import("../src/virtual-ids.js");
+    const v1 = createSeriesCutVersion([{ id: "s1e1", season: 1, episode: 1 }]);
+    const v2 = createSeriesCutVersion([
+      { id: "s1e1", season: 1, episode: 1 },
+      { id: "s2e1", season: 2, episode: 1 },
+    ]);
+    expect(v1).not.toBe(v2);
+  });
+
   it.each(["tt123", "atc:tv:dGVzdA:s1:e4-2", "atc:tv:dGVzdA:s1:e1-99"])(
     "rejects malformed or over-broad video ID %j",
     (value) => {

@@ -14,6 +14,11 @@ const app = createApp({
   metadataStremio: metadata.stremio,
   publicBaseUrl: metadata.publicBaseUrl,
   groupingConfig: metadata.grouping,
+  longCuts: metadata.longCuts,
+  sessionIdleTtlMilliseconds:
+    Number(process.env.CUT_SESSION_IDLE_TTL_SECONDS ?? "21600") * 1000,
+  sessionMaxLifetimeMilliseconds:
+    Number(process.env.CUT_SESSION_MAX_LIFETIME_SECONDS ?? "172800") * 1000,
   subtitles: subtitleConfigFromEnv(process.env),
 });
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);

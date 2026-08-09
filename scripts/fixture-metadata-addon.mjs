@@ -16,18 +16,21 @@ function json(response, statusCode, value) {
 }
 
 function videos(mode) {
-  return Array.from({ length: 6 }, (_, index) => {
-    const episode = index + 1;
+  return Array.from({ length: 12 }, (_, index) => {
+    const season = index < 6 ? 1 : 2;
+    const episode = (index % 6) + 1;
     return {
       id:
         mode === "imdb"
-          ? `tt1234567:1:${episode}`
-          : `fixture:opaque:episode:${episode}`,
-      season: 1,
+          ? `tt1234567:${season}:${episode}`
+          : season === 1
+            ? `fixture:opaque:episode:${episode}`
+            : `fixture:opaque:season2:episode:${episode}`,
+      season,
       episode,
-      title: `Synthetic Episode ${episode}`,
-      released: `2025-01-${String(episode).padStart(2, "0")}T00:00:00.000Z`,
-      thumbnail: `https://images.invalid/episode${episode}.jpg`,
+      title: `Synthetic S${season}E${episode}`,
+      released: `2025-0${season}-${String(episode).padStart(2, "0")}T00:00:00.000Z`,
+      thumbnail: `https://images.invalid/s${season}e${episode}.jpg`,
     };
   });
 }
@@ -36,11 +39,11 @@ function preview(mode) {
   return {
     id: mode === "imdb" ? "tt1234567" : "fixture:opaque:series:α",
     type: "series",
-    name: mode === "imdb" ? "Synthetic Six IMDb" : "Synthetic Six Opaque",
+    name: mode === "imdb" ? "Synthetic Twelve IMDb" : "Synthetic Twelve Opaque",
     poster: "https://images.invalid/synthetic-six.jpg",
     posterShape: "poster",
     background: "https://images.invalid/synthetic-six-background.jpg",
-    description: "Generated test media with six episodes.",
+    description: "Generated test media with two six-episode seasons.",
     releaseInfo: "2025",
     genres: ["Animation", "Test"],
   };

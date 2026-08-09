@@ -6,6 +6,7 @@ export interface SubtitleConfigInput {
   maxRedirects?: number;
   allowPrivateNetworks?: boolean;
   allowedOrigins?: readonly (string | URL)[];
+  composeFetchConcurrency?: number;
 }
 export interface SubtitleConfig {
   enabled: boolean;
@@ -15,6 +16,7 @@ export interface SubtitleConfig {
   maxRedirects: number;
   allowPrivateNetworks: boolean;
   allowedOrigins: ReadonlySet<string>;
+  composeFetchConcurrency: number;
 }
 function integer(value: number, name: string, minimum: number): number {
   if (!Number.isSafeInteger(value) || value < minimum)
@@ -55,6 +57,11 @@ export function createSubtitleConfig(
     maxRedirects: integer(input.maxRedirects ?? 3, "redirect count", 0),
     allowPrivateNetworks: input.allowPrivateNetworks ?? false,
     allowedOrigins: origins,
+    composeFetchConcurrency: integer(
+      input.composeFetchConcurrency ?? 4,
+      "compose fetch concurrency",
+      1,
+    ),
   };
 }
 export function subtitleConfigFromEnv(
@@ -72,5 +79,9 @@ export function subtitleConfigFromEnv(
       .split(",")
       .map((item) => item.trim())
       .filter(Boolean),
+    composeFetchConcurrency: numberValue(
+      "SUBTITLE_COMPOSE_FETCH_CONCURRENCY",
+      4,
+    ),
   };
 }

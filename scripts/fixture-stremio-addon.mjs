@@ -24,7 +24,7 @@ function json(response, statusCode, value) {
   response.end(body);
 }
 
-function urlCandidate(episode, family, filename) {
+function urlCandidate(episode, family, filename, attachedSubtitles) {
   return {
     name: `Fixture ${family}`,
     description: "Generic formatted Stremio stream",
@@ -39,7 +39,7 @@ function urlCandidate(episode, family, filename) {
         request: { "X-Test-Token": mediaToken },
       },
     },
-    ...(family === "A"
+    ...(attachedSubtitles
       ? {
           subtitles: [
             {
@@ -59,16 +59,24 @@ function urlCandidate(episode, family, filename) {
   };
 }
 
-function streamsFor(episode) {
+function streamsFor(episode, season) {
+  const primary = season === 1 ? "A" : "B";
+  const alternate = season === 1 ? "C" : "D";
   const familyA = urlCandidate(
     episode,
-    "A",
-    `[GroupA] Fixture Show - 0${episode}.1080p.mkv`,
+    primary,
+    season === 1
+      ? `[Group${primary}] Fixture Show - 0${episode}.1080p.mkv`
+      : `[Group${primary}] Fixture Show S2 - 0${episode - 6}.1080p.mkv`,
+    true,
   );
   const familyB = urlCandidate(
     episode,
-    "B",
-    `[GroupB] Fixture Show - 0${episode}.1080p.mkv`,
+    alternate,
+    season === 1
+      ? `[Group${alternate}] Fixture Show - 0${episode}.1080p.mkv`
+      : `[Group${alternate}] Fixture Show S2 - 0${episode - 6}.1080p.mkv`,
+    false,
   );
   if (episode === 1) {
     return [
@@ -129,9 +137,14 @@ const server = createServer((request, response) => {
       `http://fixture/?${slash < 0 ? "" : tail.slice(slash + 1)}`,
     ).searchParams;
     const videoId = extra.get("videoID") ?? "";
-    const match = /:([1-6])$/.exec(videoId);
-    if (match?.[1] === undefined) return json(response, 200, { subtitles: [] });
-    const episode = Number(match[1]);
+    const imdb = /^tt1234567:([12]):([1-6])$/.exec(videoId);
+    const opaqueOne = /^fixture:opaque:episode:([1-6])$/.exec(videoId);
+    const opaqueTwo = /^fixture:opaque:season2:episode:([1-6])$/.exec(videoId);
+    const sourceEpisode = imdb?.[2] ?? opaqueOne?.[1] ?? opaqueTwo?.[1];
+    if (sourceEpisode === undefined)
+      return json(response, 200, { subtitles: [] });
+    const season = Number(imdb?.[1] ?? (opaqueTwo === null ? 1 : 2));
+    const episode = Number(sourceEpisode) + (season - 1) * 6;
     counts.subtitleRequests += 1;
     return json(response, 200, {
       subtitles: [
@@ -157,15 +170,24 @@ const server = createServer((request, response) => {
     } catch {
       return json(response, 400, { error: "invalid video id" });
     }
-    const imdbMatch = /^tt1234567:1:([1-6])$/.exec(videoId);
+    const imdbMatch = /^tt1234567:([12]):([1-6])$/.exec(videoId);
     const opaqueMatch = /^fixture:opaque:episode:([1-6])$/.exec(videoId);
-    const episodeText = imdbMatch?.[1] ?? opaqueMatch?.[1];
+    const opaqueSeasonTwo = /^fixture:opaque:season2:episode:([1-6])$/.exec(
+      videoId,
+    );
+    const sourceEpisode =
+      imdbMatch?.[2] ?? opaqueMatch?.[1] ?? opaqueSeasonTwo?.[1];
+    const season = Number(imdbMatch?.[1] ?? (opaqueSeasonTwo === null ? 1 : 2));
+    const episodeText =
+      sourceEpisode === undefined
+        ? undefined
+        : String(Number(sourceEpisode) + (season - 1) * 6);
     if (episodeText === undefined) return json(response, 404, { streams: [] });
     const episode = Number(episodeText);
     counts.streamRequests += 1;
     counts.streamByVideoId[videoId] =
       (counts.streamByVideoId[videoId] ?? 0) + 1;
-    return json(response, 200, { streams: streamsFor(episode) });
+    return json(response, 200, { streams: streamsFor(episode, season) });
   }
   return json(response, 404, { error: "not found" });
 });

@@ -98,3 +98,9 @@ generate_direct_episode 3 0xf08c00 770
 generate_direct_episode 4 0x7048e8 990
 generate_direct_episode 5 0x0b7285 1100
 generate_direct_episode 6 0xe64980 1210
+generate_direct_episode 7 0x5f3dc4 1320
+generate_direct_episode 8 0x1098ad 1430
+generate_direct_episode 9 0xe67700 1540
+generate_direct_episode 10 0xa61e4d 1650
+generate_direct_episode 11 0x1864ab 1760
+generate_direct_episode 12 0x862e9c 1870

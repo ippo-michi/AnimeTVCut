@@ -21,6 +21,7 @@
     "test:skip": "bash scripts/run-skip-integration.sh",
     "test:stremio": "bash scripts/run-stremio-integration.sh",
     "test:subtitles": "bash scripts/run-subtitle-integration.sh",
+    "test:long-cuts": "bash scripts/run-long-cut-integration.sh",
     "test:aiostreams:live": "vitest run --config vitest.aiostreams-live.config.ts",
     "test:introdb:live": "vitest run --config vitest.introdb-live.config.ts",
     "test:aniskip:live": "vitest run --config vitest.aniskip-live.config.ts",

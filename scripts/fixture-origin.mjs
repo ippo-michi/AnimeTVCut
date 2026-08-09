@@ -55,7 +55,7 @@ const server = createServer((request, response) => {
   }
   counts.authorized += 1;
 
-  const match = /^\/episode([1-6])\.mkv$/.exec(url.pathname);
+  const match = /^\/episode(1[0-2]|[1-9])\.mkv$/.exec(url.pathname);
   if (match?.[1] === undefined) return send(response, 404, "not found");
   const filePath = path.join(mediaRoot, `episode${match[1]}.mkv`);
   let metadata;

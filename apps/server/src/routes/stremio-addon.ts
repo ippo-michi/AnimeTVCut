@@ -81,14 +81,22 @@ export function publicStremioRoutes(
       id: "org.animetvcut.addon",
       version: ANIMETVCUT_VERSION,
       name: "AnimeTVCut",
-      description: "Automatic episode-grouped TV cuts",
+      description: "Automatic TV, season, and complete series cuts",
       resources: [
         { name: "catalog", types: ["series"] },
-        { name: "meta", types: ["series"], idPrefixes: ["atc:tv:"] },
-        { name: "stream", types: ["series"], idPrefixes: ["atc:tv:"] },
+        {
+          name: "meta",
+          types: ["series"],
+          idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
+        },
+        {
+          name: "stream",
+          types: ["series"],
+          idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
+        },
       ],
       types: ["series"],
-      idPrefixes: ["atc:tv:"],
+      idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
       catalogs: [
         {
           type: "series",

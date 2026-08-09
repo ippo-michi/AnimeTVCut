@@ -161,7 +161,8 @@ export class SubtitleService {
       extension !== (track.outputFormat === "ass" ? "ass" : "vtt")
     )
       return undefined;
-    if (track.cached !== undefined)
+    if (track.cached !== undefined) {
+      this.sessions.touch(cutId);
       return {
         bytes: track.cached,
         contentType:
@@ -169,9 +170,11 @@ export class SubtitleService {
             ? "text/x-ssa; charset=utf-8"
             : "text/vtt; charset=utf-8",
       };
+    }
     const inFlight =
       track.inFlight ?? this.startComposition(track, session.pieces);
     const bytes = await this.waitForComposition(track, inFlight, signal);
+    this.sessions.touch(cutId);
     return {
       bytes,
       contentType:
@@ -263,36 +266,59 @@ export class SubtitleService {
       string,
       ReturnType<SafeSubtitleFetcher["fetch"]>
     >();
-    for (const [episodeOrder, source] of track.sources.entries()) {
-      let request = fetchedByUrl.get(source.url);
-      if (request === undefined) {
-        request = this.fetcher.fetch(source.url, signal);
-        fetchedByUrl.set(source.url, request);
-      }
-      const fetched = await request;
-      const format = detectSubtitleFormat(
-        fetched.bytes,
-        fetched.contentType,
-        source.formatHint,
-      );
-      if (format === undefined) throw new Error("unsupported_format");
-      if (
-        (track.outputFormat === "ass") !==
-        (format === "ass" || format === "ssa")
-      )
-        throw new Error("format_family_mismatch");
-      const text = decodeSubtitleBytes(fetched.bytes);
-      if (format === "srt")
-        events.push(...parseSrt(text, source.episodeId, episodeOrder).events);
-      else if (format === "webvtt")
-        events.push(
-          ...parseWebVtt(text, source.episodeId, episodeOrder).events,
-        );
-      else {
-        const parsed = parseAss(text, source.episodeId, episodeOrder, format);
-        parsedAss.push(parsed);
-        events.push(...parsed.events);
-      }
+    const results = new Array<{
+      ass?: ParsedAssSubtitle;
+      events: readonly SubtitleEvent[];
+    }>(track.sources.length);
+    let nextIndex = 0;
+    const workers = Array.from(
+      {
+        length: Math.min(
+          this.config.composeFetchConcurrency,
+          track.sources.length,
+        ),
+      },
+      async () => {
+        while (nextIndex < track.sources.length) {
+          const episodeOrder = nextIndex++;
+          const source = track.sources[episodeOrder]!;
+          let request = fetchedByUrl.get(source.url);
+          if (request === undefined) {
+            request = this.fetcher.fetch(source.url, signal);
+            fetchedByUrl.set(source.url, request);
+          }
+          const fetched = await request;
+          const format = detectSubtitleFormat(
+            fetched.bytes,
+            fetched.contentType,
+            source.formatHint,
+          );
+          if (format === undefined) throw new Error("unsupported_format");
+          if (
+            (track.outputFormat === "ass") !==
+            (format === "ass" || format === "ssa")
+          )
+            throw new Error("format_family_mismatch");
+          const text = decodeSubtitleBytes(fetched.bytes);
+          if (format === "srt")
+            results[episodeOrder] = {
+              events: parseSrt(text, source.episodeId, episodeOrder).events,
+            };
+          else if (format === "webvtt")
+            results[episodeOrder] = {
+              events: parseWebVtt(text, source.episodeId, episodeOrder).events,
+            };
+          else {
+            const ass = parseAss(text, source.episodeId, episodeOrder, format);
+            results[episodeOrder] = { ass, events: ass.events };
+          }
+        }
+      },
+    );
+    await Promise.all(workers);
+    for (const result of results) {
+      if (result.ass !== undefined) parsedAss.push(result.ass);
+      events.push(...result.events);
     }
     const mapped = mapSubtitleEvents(events, pieces);
     const text =

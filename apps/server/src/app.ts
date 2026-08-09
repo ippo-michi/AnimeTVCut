@@ -36,6 +36,8 @@ import type { MediaFlowConfigInput } from "./services/mediaflow/config.js";
 import { MediaFlowSourceLoader } from "./services/mediaflow/source-loader.js";
 import { SourceLoaderRouter } from "./services/source-loader-router.js";
 import { SkipService } from "./services/skip-service.js";
+import type { LongCutConfiguration } from "./services/metadata-config.js";
+import { DEFAULT_LONG_CUT_CONFIGURATION } from "./services/metadata-config.js";
 import { StremioUpstreamClient } from "./services/stremio-upstream/client.js";
 import type { StremioUpstreamConfigInput } from "./services/stremio-upstream/config.js";
 import { StremioEpisodeSourceResolver } from "./services/stremio-upstream/resolver.js";
@@ -51,6 +53,8 @@ import { SubtitleService } from "./services/subtitle-service.js";
 export interface AppOptions {
   fixtureRoot?: string;
   sessionTtlMilliseconds?: number;
+  sessionIdleTtlMilliseconds?: number;
+  sessionMaxLifetimeMilliseconds?: number;
   logger?: FastifyServerOptions["logger"];
   mediaFlow?: MediaFlowConfigInput;
   sourceLoader?: HlsSourceLoader;
@@ -63,6 +67,7 @@ export interface AppOptions {
   metadataClient?: MetadataStremioClient;
   publicBaseUrl?: URL;
   groupingConfig?: TvCutGroupingConfig;
+  longCuts?: LongCutConfiguration;
   now?: () => number;
   streamCacheTtlMs?: number;
   subtitles?: SubtitleConfigInput;
@@ -75,7 +80,13 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       fileURLToPath(new URL("../../../fixtures/hls", import.meta.url)),
     );
   const app = Fastify({ logger: options.logger ?? false });
-  const sessions = new CutSessionStore(options.sessionTtlMilliseconds);
+  const sessions = new CutSessionStore(
+    options.sessionTtlMilliseconds ?? {
+      idleTtlMilliseconds: options.sessionIdleTtlMilliseconds,
+      maxLifetimeMilliseconds: options.sessionMaxLifetimeMilliseconds,
+      now: options.now,
+    },
+  );
   const fixtureLoader = new FixtureSourceLoader(fixtureRoot);
   const mediaFlowClient =
     options.mediaFlow === undefined
@@ -137,6 +148,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     options.groupingConfig ?? DEFAULT_TV_CUT_GROUPING_CONFIG,
     options.now,
     options.streamCacheTtlMs,
+    options.longCuts ?? DEFAULT_LONG_CUT_CONFIGURATION,
   );
 
   void app.register(healthRoutes);
