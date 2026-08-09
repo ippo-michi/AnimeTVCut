@@ -7,8 +7,11 @@ import type { HlsSourceLoader } from "../src/services/hls-source-loader.js";
 
 describe("HlsSourceLoader fixture implementation", () => {
   it("loads playlists and resolves typed resources through the transport seam", async () => {
-    const loader: HlsSourceLoader = new FixtureSourceLoader(path.resolve("fixtures/hls"));
+    const loader: HlsSourceLoader = new FixtureSourceLoader(
+      path.resolve("fixtures/hls"),
+    );
     const source = {
+      kind: "fixture_hls" as const,
       episodeId: "ep1",
       playlistUrl: "fixture://fmp4-episode1",
     };
@@ -17,7 +20,7 @@ describe("HlsSourceLoader fixture implementation", () => {
     if (segment === undefined) {
       throw new Error("Fixture playlist has no segment");
     }
-    const resolved = await loader.resolveResource({
+    const resolved = loader.createResource({
       source,
       resource: {
         id: "opaque.m4s",
@@ -29,11 +32,14 @@ describe("HlsSourceLoader fixture implementation", () => {
       },
     });
     expect(resolved.contentType).toBe("video/mp4");
-    expect(resolved.contentLength).toBeGreaterThan(0);
-    const stream = resolved.open({ start: 0, end: 15 });
+    const opened = await resolved.open({ start: 0, end: 15 });
+    expect(opened.contentLength).toBe(16);
+    const stream = opened.stream;
     const chunks: Buffer[] = [];
     for await (const chunk of stream) {
-      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
+      chunks.push(
+        Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array),
+      );
     }
     expect(Buffer.concat(chunks)).toHaveLength(16);
   });

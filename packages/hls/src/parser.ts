@@ -23,7 +23,11 @@ function resolveUri(uri: string, sourceUrl: string, tagName: string): string {
   }
 }
 
-function parseUnsignedInteger(value: string, tagName: string, positive: boolean): number {
+function parseUnsignedInteger(
+  value: string,
+  tagName: string,
+  positive: boolean,
+): number {
   if (!/^\d+$/.test(value)) {
     throw new HlsParseError(`${tagName} must be a finite unsigned integer`);
   }
@@ -34,8 +38,13 @@ function parseUnsignedInteger(value: string, tagName: string, positive: boolean)
   return parsed;
 }
 
-function segmentMetadata(absoluteUri: string, hasMap: boolean): HlsResourceMetadata {
-  const extension = new URL(absoluteUri).pathname.toLowerCase().match(/\.[^.\/]+$/)?.[0];
+function segmentMetadata(
+  absoluteUri: string,
+  hasMap: boolean,
+): HlsResourceMetadata {
+  const extension = new URL(absoluteUri).pathname
+    .toLowerCase()
+    .match(/\.[^./]+$/)?.[0];
   if (hasMap || extension === ".m4s" || extension === ".mp4") {
     return {
       mediaFormat: "fmp4",
@@ -75,11 +84,16 @@ function parseMap(line: string, sourceUrl: string): HlsMap {
     mediaFormat: "fmp4",
     contentType: "video/mp4",
     safeExtension: ".mp4",
-    ...(byteRangeMatch?.[1] === undefined ? {} : { byteRange: byteRangeMatch[1] }),
+    ...(byteRangeMatch?.[1] === undefined
+      ? {}
+      : { byteRange: byteRangeMatch[1] }),
   };
 }
 
-export function parseHlsVodPlaylist(text: string, sourceUrl: string): HlsVodPlaylist {
+export function parseHlsVodPlaylist(
+  text: string,
+  sourceUrl: string,
+): HlsVodPlaylist {
   try {
     new URL(sourceUrl);
   } catch {
@@ -109,13 +123,17 @@ export function parseHlsVodPlaylist(text: string, sourceUrl: string): HlsVodPlay
 
   for (const line of lines.slice(1)) {
     if (line.startsWith("#EXT-X-STREAM-INF")) {
-      throw new HlsParseError("Master playlists are not supported as media inputs");
+      throw new HlsParseError(
+        "Master playlists are not supported as media inputs",
+      );
     }
     if (line.startsWith("#EXT-X-KEY") && !line.includes("METHOD=NONE")) {
       throw new HlsParseError("Encrypted HLS is not supported in Phase 1");
     }
     if (line.startsWith("#EXT-X-BYTERANGE")) {
-      throw new HlsParseError("Byte-range media segments are not supported in Phase 1");
+      throw new HlsParseError(
+        "Byte-range media segments are not supported in Phase 1",
+      );
     }
     if (line.startsWith("#EXT-X-VERSION:")) {
       version = parseUnsignedInteger(
@@ -200,10 +218,14 @@ export function parseHlsVodPlaylist(text: string, sourceUrl: string): HlsVodPlay
   }
 
   if (pendingDuration !== undefined) {
-    throw new HlsParseError("Playlist ends with an EXTINF that has no media URI");
+    throw new HlsParseError(
+      "Playlist ends with an EXTINF that has no media URI",
+    );
   }
   if (!hasEndList) {
-    throw new HlsParseError("Input playlist is not VOD: EXT-X-ENDLIST is required");
+    throw new HlsParseError(
+      "Input playlist is not VOD: EXT-X-ENDLIST is required",
+    );
   }
   if (segments.length === 0) {
     throw new HlsParseError("Input playlist has no media segments");
@@ -211,7 +233,9 @@ export function parseHlsVodPlaylist(text: string, sourceUrl: string): HlsVodPlay
   if (declaredTargetDuration === undefined || declaredTargetDuration <= 0) {
     throw new HlsParseError("Input playlist has no valid EXT-X-TARGETDURATION");
   }
-  const maxRoundedDuration = Math.max(...segments.map((segment) => Math.round(segment.duration)));
+  const maxRoundedDuration = Math.max(
+    ...segments.map((segment) => Math.round(segment.duration)),
+  );
   if (declaredTargetDuration < maxRoundedDuration) {
     throw new HlsParseError("Input EXT-X-TARGETDURATION is too small");
   }

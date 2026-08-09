@@ -11,9 +11,13 @@ import type { HlsVodPlaylist } from "./types.js";
 const EPSILON = 1e-7;
 
 function floorBoundary(boundaries: readonly number[], value: number): number {
-  const result = [...boundaries].reverse().find((boundary) => boundary <= value + EPSILON);
+  const result = [...boundaries]
+    .reverse()
+    .find((boundary) => boundary <= value + EPSILON);
   if (result === undefined) {
-    throw new DomainValidationError("Could not find a segment boundary before cut start");
+    throw new DomainValidationError(
+      "Could not find a segment boundary before cut start",
+    );
   }
   return result;
 }
@@ -21,7 +25,9 @@ function floorBoundary(boundaries: readonly number[], value: number): number {
 function ceilBoundary(boundaries: readonly number[], value: number): number {
   const result = boundaries.find((boundary) => boundary >= value - EPSILON);
   if (result === undefined) {
-    throw new DomainValidationError("Could not find a segment boundary after cut end");
+    throw new DomainValidationError(
+      "Could not find a segment boundary after cut end",
+    );
   }
   return result;
 }
@@ -46,7 +52,9 @@ export function alignRemovedRanges(
       removal.end > playlist.duration + EPSILON ||
       removal.start >= removal.end
     ) {
-      throw new DomainValidationError("Requested removal is outside the source duration");
+      throw new DomainValidationError(
+        "Requested removal is outside the source duration",
+      );
     }
     const previous = sorted[index - 1];
     if (previous !== undefined && removal.start < previous.end) {
@@ -110,7 +118,9 @@ export function alignRemovedRanges(
       current !== undefined &&
       current.appliedStart < previous.appliedEnd - EPSILON
     ) {
-      throw new DomainValidationError("Segment alignment made requested removals overlap");
+      throw new DomainValidationError(
+        "Segment alignment made requested removals overlap",
+      );
     }
   }
 

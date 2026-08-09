@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 
 import type { AppliedCut, TimelinePiece } from "@animetvcut/core";
 
-import type { ResolvedMediaResource } from "./hls-source-loader.js";
+import type { LazyMediaResource } from "./hls-source-loader.js";
 
-export interface SessionResource extends ResolvedMediaResource {
+export interface SessionResource extends LazyMediaResource {
   id: string;
 }
 

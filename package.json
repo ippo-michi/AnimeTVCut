@@ -15,7 +15,10 @@
     "lint": "eslint . && prettier --check .",
     "start": "node apps/server/dist/server.js",
     "test": "pnpm fixtures:generate && vitest run",
-    "test:integration": "pnpm fixtures:generate && vitest run apps/server/tests/integration.test.ts apps/server/tests/fmp4-integration.test.ts"
+    "test:integration": "pnpm fixtures:generate && vitest run apps/server/tests/integration.test.ts apps/server/tests/fmp4-integration.test.ts",
+    "test:mediaflow": "bash scripts/run-mediaflow-integration.sh",
+    "test:upstream": "bash scripts/run-upstream-integration.sh",
+    "test:aiostreams:live": "vitest run --config vitest.aiostreams-live.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

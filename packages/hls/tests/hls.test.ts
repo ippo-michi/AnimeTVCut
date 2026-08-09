@@ -23,17 +23,25 @@ seg2.ts
 
 describe("HLS Phase 1 components", () => {
   it("parses a VOD playlist and calculates segment coordinates", () => {
-    const playlist = parseHlsVodPlaylist(playlistText, "fixture://episode1/playlist.m3u8");
+    const playlist = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode1/playlist.m3u8",
+    );
     expect(playlist.duration).toBe(18);
-    expect(playlist.segments.map(({ start, end }) => ({ start, end }))).toEqual([
-      { start: 0, end: 6 },
-      { start: 6, end: 12 },
-      { start: 12, end: 18 },
-    ]);
+    expect(playlist.segments.map(({ start, end }) => ({ start, end }))).toEqual(
+      [
+        { start: 0, end: 6 },
+        { start: 6, end: 12 },
+        { start: 12, end: 18 },
+      ],
+    );
   });
 
   it("defaults to preserving content when no complete segment is removable", () => {
-    const playlist = parseHlsVodPlaylist(playlistText, "fixture://episode1/playlist.m3u8");
+    const playlist = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode1/playlist.m3u8",
+    );
     expect(
       alignRemovedRanges(playlist, [
         { episodeId: "ep1", start: 7, end: 11, type: "opening" },
@@ -56,11 +64,27 @@ describe("HLS Phase 1 components", () => {
   });
 
   it("creates a VOD manifest with opaque resources and discontinuities", () => {
-    const ep1 = parseHlsVodPlaylist(playlistText, "fixture://episode1/playlist.m3u8");
-    const ep2 = parseHlsVodPlaylist(playlistText, "fixture://episode2/playlist.m3u8");
+    const ep1 = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode1/playlist.m3u8",
+    );
+    const ep2 = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode2/playlist.m3u8",
+    );
     const ranges: SourceRange[] = [
-      { sourceEpisodeId: "ep1", sourceStart: 0, sourceEnd: 12, kind: "content" },
-      { sourceEpisodeId: "ep2", sourceStart: 6, sourceEnd: 18, kind: "content" },
+      {
+        sourceEpisodeId: "ep1",
+        sourceStart: 0,
+        sourceEnd: 12,
+        kind: "content",
+      },
+      {
+        sourceEpisodeId: "ep2",
+        sourceStart: 6,
+        sourceEnd: 18,
+        kind: "content",
+      },
     ];
     const result = composeHlsVod(
       "opaque-cut",

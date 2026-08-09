@@ -9,7 +9,9 @@ export function buildTimeline(ranges: readonly SourceRange[]): TimelinePiece[] {
 
   for (const [index, range] of ranges.entries()) {
     if (range.sourceStart >= range.sourceEnd) {
-      throw new DomainValidationError("Timeline source range start must be before end");
+      throw new DomainValidationError(
+        "Timeline source range start must be before end",
+      );
     }
 
     const duration = range.sourceEnd - range.sourceStart;
@@ -36,15 +38,24 @@ export class TimelineMapper {
     let expectedStart = 0;
     for (const piece of pieces) {
       if (Math.abs(piece.outputStart - expectedStart) > EPSILON) {
-        throw new DomainValidationError("Timeline pieces must be contiguous and ordered");
+        throw new DomainValidationError(
+          "Timeline pieces must be contiguous and ordered",
+        );
       }
-      if (piece.sourceStart >= piece.sourceEnd || piece.outputStart >= piece.outputEnd) {
-        throw new DomainValidationError("Timeline pieces must have positive duration");
+      if (
+        piece.sourceStart >= piece.sourceEnd ||
+        piece.outputStart >= piece.outputEnd
+      ) {
+        throw new DomainValidationError(
+          "Timeline pieces must have positive duration",
+        );
       }
       const sourceDuration = piece.sourceEnd - piece.sourceStart;
       const outputDuration = piece.outputEnd - piece.outputStart;
       if (Math.abs(sourceDuration - outputDuration) > EPSILON) {
-        throw new DomainValidationError("Timeline source and output durations must match");
+        throw new DomainValidationError(
+          "Timeline source and output durations must match",
+        );
       }
       expectedStart = piece.outputEnd;
     }
@@ -85,7 +96,8 @@ export class TimelineMapper {
     }
 
     const piece = this.pieces.find(
-      (candidate) => outputTime >= candidate.outputStart && outputTime < candidate.outputEnd,
+      (candidate) =>
+        outputTime >= candidate.outputStart && outputTime < candidate.outputEnd,
     );
     if (piece !== undefined) {
       return {
@@ -95,7 +107,10 @@ export class TimelineMapper {
     }
 
     const finalPiece = this.pieces.at(-1);
-    if (finalPiece !== undefined && Math.abs(outputTime - this.duration) <= EPSILON) {
+    if (
+      finalPiece !== undefined &&
+      Math.abs(outputTime - this.duration) <= EPSILON
+    ) {
       return {
         episodeId: finalPiece.sourceEpisodeId,
         sourceTime: finalPiece.sourceEnd,

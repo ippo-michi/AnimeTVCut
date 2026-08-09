@@ -70,7 +70,9 @@ describe("cut alignment policies", () => {
 
   it("retains explicit aggressive outward alignment", () => {
     expect(
-      alignRemovedRanges(playlist, [removal(7, 11)], { policy: "aggressive" })[0],
+      alignRemovedRanges(playlist, [removal(7, 11)], {
+        policy: "aggressive",
+      })[0],
     ).toMatchObject({
       alignmentPolicy: "aggressive",
       status: "applied",

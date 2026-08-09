@@ -1,0 +1,50 @@
+services:
+  fixture-origin:
+    image: node:22-alpine
+    working_dir: /workspace
+    command: ["node", "scripts/fixture-origin.mjs"]
+    environment:
+      FIXTURE_MEDIA_ROOT: /workspace/fixtures/media
+      FIXTURE_TEST_TOKEN: animetvcut-test
+    volumes:
+      - ..:/workspace:ro
+    networks: [phase2-test]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8090/health').then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  mediaflow:
+    image: mhdzumair/mediaflow-proxy:v2.4.9
+    environment:
+      API_PASSWORD: phase2-integration-password
+      ENABLE_TRANSCODE: "true"
+    ports:
+      - "127.0.0.1:18888:8888"
+    networks: [phase2-test]
+    depends_on:
+      fixture-origin:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health')",
+        ]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+networks:
+  phase2-test:
+    name: animetvcut-phase2-test
+    driver: bridge

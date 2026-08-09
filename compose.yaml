@@ -1,0 +1,46 @@
+services:
+  animetvcut:
+    build: .
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 3000
+      MEDIAFLOW_URL: http://mediaflow:8888
+      MEDIAFLOW_API_PASSWORD: ${MEDIAFLOW_API_PASSWORD:-change-me}
+      MEDIAFLOW_REQUEST_TIMEOUT_MS: ${MEDIAFLOW_REQUEST_TIMEOUT_MS:-30000}
+      UPSTREAM_STREMIO_MANIFEST_URL: ${UPSTREAM_STREMIO_MANIFEST_URL:-}
+      UPSTREAM_STREMIO_REQUEST_TIMEOUT_MS: ${UPSTREAM_STREMIO_REQUEST_TIMEOUT_MS:-30000}
+    ports:
+      - "${ANIMETVCUT_PORT:-3000}:3000"
+    depends_on:
+      mediaflow:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  mediaflow:
+    image: mhdzumair/mediaflow-proxy:v2.4.9
+    restart: unless-stopped
+    environment:
+      API_PASSWORD: ${MEDIAFLOW_API_PASSWORD:-change-me}
+      ENABLE_TRANSCODE: "true"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health')",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 10

@@ -7,13 +7,17 @@ import {
   type SourceRange,
   type TimelinePiece,
 } from "@animetvcut/core";
-import { alignRemovedRanges, composeHlsVod, type CompositionSource } from "@animetvcut/hls";
+import {
+  alignRemovedRanges,
+  composeHlsVod,
+  type CompositionSource,
+} from "@animetvcut/hls";
 
-import { CutSessionStore, type SessionResource } from "./cut-session-store.js";
-import type { HlsSourceLoader, HlsSourceReference } from "./hls-source-loader.js";
+import type { CutSessionStore, SessionResource } from "./cut-session-store.js";
+import type { HlsSourceLoader, MediaInputSource } from "./hls-source-loader.js";
 
 export interface DevCutRequest {
-  sources: HlsSourceReference[];
+  sources: MediaInputSource[];
   remove: RemovedRange[];
   alignmentPolicy?: CutAlignmentPolicy;
   strictAlignment?: boolean;
@@ -43,7 +47,9 @@ export class CutService {
     }
     for (const removal of request.remove) {
       if (!episodeIds.has(removal.episodeId)) {
-        throw new Error(`Removal references unknown episode: ${removal.episodeId}`);
+        throw new Error(
+          `Removal references unknown episode: ${removal.episodeId}`,
+        );
       }
     }
 
@@ -99,9 +105,11 @@ export class CutService {
     for (const resource of composed.resources) {
       const source = sourcesByEpisode.get(resource.sourceEpisodeId);
       if (source === undefined) {
-        throw new Error(`Missing source reference for ${resource.sourceEpisodeId}`);
+        throw new Error(
+          `Missing source reference for ${resource.sourceEpisodeId}`,
+        );
       }
-      const resolved = await this.sourceLoader.resolveResource({ source, resource });
+      const resolved = this.sourceLoader.createResource({ source, resource });
       resources.set(resource.id, {
         id: resource.id,
         ...resolved,

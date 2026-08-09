@@ -5,3 +5,5 @@ coverage/
 fixtures/hls/episode*/
 fixtures/hls/fmp4-episode*/
 !fixtures/hls/.gitkeep
+fixtures/media/*.mkv
+!fixtures/media/.gitkeep

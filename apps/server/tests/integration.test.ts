@@ -32,9 +32,13 @@ let cutResponse: {
   }>;
 };
 
-async function runMediaTool(tool: "ffmpeg" | "ffprobe", args: string[]): Promise<string> {
+async function runMediaTool(
+  tool: "ffmpeg" | "ffprobe",
+  args: string[],
+): Promise<string> {
   const executable = process.platform === "win32" ? "wsl.exe" : tool;
-  const actualArgs = process.platform === "win32" ? ["--exec", tool, ...args] : args;
+  const actualArgs =
+    process.platform === "win32" ? ["--exec", tool, ...args] : args;
   const result = await execFileAsync(executable, actualArgs, {
     maxBuffer: 10 * 1024 * 1024,
     timeout: 30_000,
@@ -146,7 +150,13 @@ describe("three-episode local HLS composition", () => {
   it("composes three playlists and keeps only the intended ranges", () => {
     expect(
       cutResponse.pieces.map(
-        ({ sourceEpisodeId, sourceStart, sourceEnd, outputStart, outputEnd }) => ({
+        ({
+          sourceEpisodeId,
+          sourceStart,
+          sourceEnd,
+          outputStart,
+          outputEnd,
+        }) => ({
           sourceEpisodeId,
           sourceStart,
           sourceEnd,
@@ -179,10 +189,26 @@ describe("three-episode local HLS composition", () => {
     ]);
     expect(cutResponse.appliedCuts).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ episodeId: "ep1", appliedStart: 24, appliedEnd: 30 }),
-        expect.objectContaining({ episodeId: "ep2", appliedStart: 0, appliedEnd: 6 }),
-        expect.objectContaining({ episodeId: "ep2", appliedStart: 24, appliedEnd: 30 }),
-        expect.objectContaining({ episodeId: "ep3", appliedStart: 0, appliedEnd: 6 }),
+        expect.objectContaining({
+          episodeId: "ep1",
+          appliedStart: 24,
+          appliedEnd: 30,
+        }),
+        expect.objectContaining({
+          episodeId: "ep2",
+          appliedStart: 0,
+          appliedEnd: 6,
+        }),
+        expect.objectContaining({
+          episodeId: "ep2",
+          appliedStart: 24,
+          appliedEnd: 30,
+        }),
+        expect.objectContaining({
+          episodeId: "ep3",
+          appliedStart: 0,
+          appliedEnd: 6,
+        }),
       ]),
     );
   });
@@ -196,10 +222,16 @@ describe("three-episode local HLS composition", () => {
     expect(playlistText).not.toContain("episode1");
     expect(playlistText).not.toContain("seg00.ts");
     expect(parsed.targetDuration).toBeGreaterThanOrEqual(
-      Math.round(Math.max(...parsed.segments.map((segment) => segment.duration))),
+      Math.round(
+        Math.max(...parsed.segments.map((segment) => segment.duration)),
+      ),
     );
-    expect(Math.abs(parsed.duration - cutResponse.duration)).toBeLessThan(0.001);
-    expect(Math.abs(cutResponse.duration - 66)).toBeLessThanOrEqual(parsed.targetDuration);
+    expect(Math.abs(parsed.duration - cutResponse.duration)).toBeLessThan(
+      0.001,
+    );
+    expect(Math.abs(cutResponse.duration - 66)).toBeLessThanOrEqual(
+      parsed.targetDuration,
+    );
   });
 
   it("returns the same manifest for repeated requests within a session", async () => {
@@ -261,7 +293,9 @@ describe("three-episode local HLS composition", () => {
       playlistUrl,
     ]);
     const probe = JSON.parse(output) as { format: { duration: string } };
-    expect(Math.abs(Number.parseFloat(probe.format.duration) - cutResponse.duration)).toBeLessThan(1);
+    expect(
+      Math.abs(Number.parseFloat(probe.format.duration) - cutResponse.duration),
+    ).toBeLessThan(1);
   });
 
   it("plays through E1 to E2", async () => {

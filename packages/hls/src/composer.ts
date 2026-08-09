@@ -36,7 +36,9 @@ export function composeHlsVod(
   sources: readonly CompositionSource[],
   pieces: readonly TimelinePiece[],
 ): ComposedPlaylist {
-  const playlists = new Map(sources.map((source) => [source.episodeId, source.playlist]));
+  const playlists = new Map(
+    sources.map((source) => [source.episodeId, source.playlist]),
+  );
   const selected: SelectedSegment[] = [];
   let previousPiece: TimelinePiece | undefined;
 
@@ -50,9 +52,17 @@ export function composeHlsVod(
         segment.start >= piece.sourceStart - EPSILON &&
         segment.end <= piece.sourceEnd + EPSILON,
     );
-    const matchedDuration = matching.reduce((sum, segment) => sum + segment.duration, 0);
-    if (Math.abs(matchedDuration - (piece.sourceEnd - piece.sourceStart)) > EPSILON) {
-      throw new Error(`Timeline piece ${piece.id} is not aligned to complete HLS segments`);
+    const matchedDuration = matching.reduce(
+      (sum, segment) => sum + segment.duration,
+      0,
+    );
+    if (
+      Math.abs(matchedDuration - (piece.sourceEnd - piece.sourceStart)) >
+      EPSILON
+    ) {
+      throw new Error(
+        `Timeline piece ${piece.id} is not aligned to complete HLS segments`,
+      );
     }
 
     for (const [index, segment] of matching.entries()) {
@@ -97,14 +107,20 @@ export function composeHlsVod(
       kind,
       mediaFormat: resource.mediaFormat,
       contentType: resource.contentType,
-      ...(resource.byteRange === undefined ? {} : { byteRange: resource.byteRange }),
+      ...(resource.byteRange === undefined
+        ? {}
+        : { byteRange: resource.byteRange }),
     });
     return id;
   };
 
-  const maxSegmentDuration = Math.max(...selected.map(({ segment }) => segment.duration));
+  const maxSegmentDuration = Math.max(
+    ...selected.map(({ segment }) => segment.duration),
+  );
   const targetDuration = Math.ceil(maxSegmentDuration);
-  const allIndependent = sources.every((source) => source.playlist.independentSegments);
+  const allIndependent = sources.every(
+    (source) => source.playlist.independentSegments,
+  );
   const lines = [
     "#EXTM3U",
     "#EXT-X-VERSION:6",
@@ -129,9 +145,9 @@ export function composeHlsVod(
         const byteRange =
           item.segment.map.byteRange === undefined
             ? ""
-            : `,BYTERANGE=\"${item.segment.map.byteRange}\"`;
+            : `,BYTERANGE="${item.segment.map.byteRange}"`;
         lines.push(
-          `#EXT-X-MAP:URI=\"/media/cut/${cutId}/segment/${mapId}\"${byteRange}`,
+          `#EXT-X-MAP:URI="/media/cut/${cutId}/segment/${mapId}"${byteRange}`,
         );
         activeMapKey = currentKey;
       }

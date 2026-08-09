@@ -19,6 +19,38 @@ describe("server foundation and source security", () => {
     expect(response.json()).toEqual({ status: "ok" });
   });
 
+  it("reports MediaFlow as unconfigured without changing basic health", async () => {
+    const app = createApp();
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/api/v1/dev/mediaflow/health",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ configured: false, reachable: false });
+  });
+
+  it("returns a controlled error for an HTTP file without MediaFlow", async () => {
+    const app = createApp();
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [
+          {
+            kind: "http_file",
+            episodeId: "ep1",
+            url: "http://fixture-origin/episode1.mkv",
+          },
+        ],
+        remove: [],
+      },
+    });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({ error: "MediaFlow is not configured." });
+  });
+
   it("rejects unsupported URL schemes instead of proxying arbitrary URLs", async () => {
     const app = createApp();
     apps.push(app);
@@ -26,7 +58,9 @@ describe("server foundation and source security", () => {
       method: "POST",
       url: "/api/v1/dev/cuts",
       payload: {
-        sources: [{ episodeId: "ep1", playlistUrl: "https://example.test/video.m3u8" }],
+        sources: [
+          { episodeId: "ep1", playlistUrl: "https://example.test/video.m3u8" },
+        ],
         remove: [],
       },
     });
@@ -64,7 +98,9 @@ describe("server foundation and source security", () => {
     const playlistUrl = (cut.json() as { playlistUrl: string }).playlistUrl;
     const expired = await app.inject({ method: "GET", url: playlistUrl });
     expect(expired.statusCode).toBe(404);
-    expect(expired.json()).toEqual({ error: "Cut session is missing or expired" });
+    expect(expired.json()).toEqual({
+      error: "Cut session is missing or expired",
+    });
   });
 
   it("defaults to preserving all media when a requested cut contains no segment", async () => {

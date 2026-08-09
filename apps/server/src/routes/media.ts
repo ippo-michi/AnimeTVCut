@@ -1,26 +1,42 @@
 import type { FastifyPluginAsync } from "fastify";
 
 import type { CutSessionStore } from "../services/cut-session-store.js";
+import {
+  MediaRangeNotSatisfiableError,
+  type MediaReadRange,
+} from "../services/hls-source-loader.js";
+import { MediaFlowError } from "../services/mediaflow/errors.js";
 
 interface MediaParams {
   cutId: string;
   resourceId: string;
 }
 
-function parseRange(
-  header: string,
-  size: number,
-): { start: number; end: number } | undefined {
+const SAFE_RESPONSE_HEADERS = new Set([
+  "accept-ranges",
+  "cache-control",
+  "content-length",
+  "content-range",
+]);
+
+function parseRange(header: string): MediaReadRange | undefined {
   const match = /^bytes=(\d+)-(\d*)$/.exec(header);
   if (match?.[1] === undefined) {
     return undefined;
   }
   const start = Number.parseInt(match[1], 10);
-  const end = match[2] === "" || match[2] === undefined ? size - 1 : Number.parseInt(match[2], 10);
-  if (start < 0 || start >= size || end < start || end >= size) {
+  const end =
+    match[2] === "" || match[2] === undefined
+      ? undefined
+      : Number.parseInt(match[2], 10);
+  if (
+    !Number.isSafeInteger(start) ||
+    start < 0 ||
+    (end !== undefined && (!Number.isSafeInteger(end) || end < start))
+  ) {
     return undefined;
   }
-  return { start, end };
+  return end === undefined ? { start } : { start, end };
 }
 
 export function mediaRoutes(sessions: CutSessionStore): FastifyPluginAsync {
@@ -30,9 +46,13 @@ export function mediaRoutes(sessions: CutSessionStore): FastifyPluginAsync {
       async (request, reply) => {
         const session = sessions.get(request.params.cutId);
         if (session === undefined) {
-          return reply.code(404).send({ error: "Cut session is missing or expired" });
+          return reply
+            .code(404)
+            .send({ error: "Cut session is missing or expired" });
         }
-        return reply.type("application/vnd.apple.mpegurl").send(session.playlist);
+        return reply
+          .type("application/vnd.apple.mpegurl")
+          .send(session.playlist);
       },
     );
 
@@ -42,33 +62,56 @@ export function mediaRoutes(sessions: CutSessionStore): FastifyPluginAsync {
         const session = sessions.get(request.params.cutId);
         const resource = session?.resources.get(request.params.resourceId);
         if (session === undefined || resource === undefined) {
-          return reply.code(404).send({ error: "Cut resource is missing or expired" });
+          return reply
+            .code(404)
+            .send({ error: "Cut resource is missing or expired" });
         }
 
-        reply.header("Accept-Ranges", "bytes").type(resource.contentType);
-        for (const [name, value] of Object.entries(resource.responseHeaders)) {
-          reply.header(name, value);
-        }
         const rangeHeader = request.headers.range;
-        if (rangeHeader === undefined) {
-          reply.header("Content-Length", resource.contentLength);
-          return reply.send(resource.open());
+        const range =
+          rangeHeader === undefined ? undefined : parseRange(rangeHeader);
+        if (rangeHeader !== undefined && range === undefined) {
+          return reply.code(416).send({ error: "Invalid byte range" });
         }
-        const range = parseRange(rangeHeader, resource.contentLength);
-        if (range === undefined) {
+
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        request.raw.once("aborted", cancel);
+        reply.raw.once("close", cancel);
+
+        try {
+          const opened = await resource.open(range, controller.signal);
+          reply.code(opened.statusCode).type(resource.contentType);
+          for (const [name, value] of Object.entries(opened.responseHeaders)) {
+            const normalized = name.toLowerCase();
+            if (SAFE_RESPONSE_HEADERS.has(normalized)) {
+              reply.header(normalized, value);
+            }
+          }
+          if (
+            opened.contentLength !== undefined &&
+            opened.responseHeaders["content-length"] === undefined
+          ) {
+            reply.header("content-length", opened.contentLength);
+          }
+          return reply.send(opened.stream);
+        } catch (error) {
+          if (error instanceof MediaRangeNotSatisfiableError) {
+            if (error.contentLength !== undefined) {
+              reply.header("content-range", `bytes */${error.contentLength}`);
+            }
+            return reply.code(416).send({ error: "Invalid byte range" });
+          }
+          if (controller.signal.aborted) {
+            return reply.code(499).send({ error: "Media request cancelled" });
+          }
+          if (error instanceof MediaFlowError) {
+            return reply.code(502).send({ error: error.message });
+          }
           return reply
-            .code(416)
-            .header("Content-Range", `bytes */${resource.contentLength}`)
-            .send({ error: "Invalid byte range" });
+            .code(502)
+            .send({ error: "Media resource could not be opened" });
         }
-        reply
-          .code(206)
-          .header("Content-Length", range.end - range.start + 1)
-          .header(
-            "Content-Range",
-            `bytes ${range.start}-${range.end}/${resource.contentLength}`,
-          );
-        return reply.send(resource.open(range));
       },
     );
   };

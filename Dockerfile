@@ -21,6 +21,6 @@ RUN pnpm install --prod --frozen-lockfile
 COPY --from=build /app/apps/server/dist apps/server/dist
 COPY --from=build /app/packages/core/dist packages/core/dist
 COPY --from=build /app/packages/hls/dist packages/hls/dist
-COPY --from=build /app/fixtures fixtures
+COPY --from=build /app/fixtures/hls fixtures/hls
 EXPOSE 3000
 CMD ["node", "apps/server/dist/server.js"]

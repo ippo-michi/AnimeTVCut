@@ -55,8 +55,16 @@ seg0.m4s
     const composed = composeSingle(playlist);
     expect(composed.resources).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ kind: "map", mediaFormat: "fmp4", id: "r000001.mp4" }),
-        expect.objectContaining({ kind: "segment", mediaFormat: "fmp4", id: "r000002.m4s" }),
+        expect.objectContaining({
+          kind: "map",
+          mediaFormat: "fmp4",
+          id: "r000001.mp4",
+        }),
+        expect.objectContaining({
+          kind: "segment",
+          mediaFormat: "fmp4",
+          id: "r000002.m4s",
+        }),
       ]),
     );
   });
@@ -76,7 +84,9 @@ seg1.m4s
     );
     const composed = composeSingle(playlist);
     expect(count(composed.text, "#EXT-X-MAP:")).toBe(1);
-    expect(composed.resources.filter((resource) => resource.kind === "map")).toHaveLength(1);
+    expect(
+      composed.resources.filter((resource) => resource.kind === "map"),
+    ).toHaveLength(1);
   });
 
   it("emits a replacement map when the map changes", () => {
@@ -95,7 +105,9 @@ seg1.m4s
     );
     const composed = composeSingle(playlist);
     expect(count(composed.text, "#EXT-X-MAP:")).toBe(2);
-    expect(composed.resources.filter((resource) => resource.kind === "map")).toHaveLength(2);
+    expect(
+      composed.resources.filter((resource) => resource.kind === "map"),
+    ).toHaveLength(2);
   });
 
   it("re-emits the active map after a discontinuity", () => {
@@ -115,7 +127,9 @@ seg1.m4s
     const composed = composeSingle(playlist);
     expect(count(composed.text, "#EXT-X-MAP:")).toBe(2);
     expect(count(composed.text, "#EXT-X-DISCONTINUITY")).toBe(1);
-    expect(composed.resources.filter((resource) => resource.kind === "map")).toHaveLength(1);
+    expect(
+      composed.resources.filter((resource) => resource.kind === "map"),
+    ).toHaveLength(1);
   });
 
   it("uses a separate opaque map at each episode boundary", () => {
@@ -139,13 +153,25 @@ seg0.m4s
         { episodeId: "ep2", playlist: ep2 },
       ],
       buildTimeline([
-        { sourceEpisodeId: "ep1", sourceStart: 0, sourceEnd: 6, kind: "content" },
-        { sourceEpisodeId: "ep2", sourceStart: 0, sourceEnd: 6, kind: "content" },
+        {
+          sourceEpisodeId: "ep1",
+          sourceStart: 0,
+          sourceEnd: 6,
+          kind: "content",
+        },
+        {
+          sourceEpisodeId: "ep2",
+          sourceStart: 0,
+          sourceEnd: 6,
+          kind: "content",
+        },
       ]),
     );
     expect(count(composed.text, "#EXT-X-MAP:")).toBe(2);
     expect(count(composed.text, "#EXT-X-DISCONTINUITY")).toBe(1);
-    expect(composed.resources.filter((resource) => resource.kind === "map")).toHaveLength(2);
+    expect(
+      composed.resources.filter((resource) => resource.kind === "map"),
+    ).toHaveLength(2);
     expect(composed.text).not.toContain("init.mp4");
     expect(composed.text).not.toContain("fixture://");
   });
@@ -167,7 +193,9 @@ seg1.m4s
     const composed = composeSingle(playlist);
     expect(composed.text).toContain('BYTERANGE="100@0"');
     expect(composed.text).toContain('BYTERANGE="120@100"');
-    expect(composed.resources.filter((resource) => resource.kind === "map")).toEqual([
+    expect(
+      composed.resources.filter((resource) => resource.kind === "map"),
+    ).toEqual([
       expect.objectContaining({ byteRange: "100@0" }),
       expect.objectContaining({ byteRange: "120@100" }),
     ]);
@@ -176,7 +204,7 @@ seg1.m4s
   it("rejects malformed map, numeric, and dangling segment state", () => {
     expect(() =>
       parseHlsVodPlaylist(
-        "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI=\"http://[bad\"\n#EXTINF:6,\nseg.m4s\n#EXT-X-ENDLIST\n",
+        '#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXT-X-MAP:URI="http://[bad"\n#EXTINF:6,\nseg.m4s\n#EXT-X-ENDLIST\n',
         "fixture://fmp4-episode1/playlist.m3u8",
       ),
     ).toThrow(HlsParseError);

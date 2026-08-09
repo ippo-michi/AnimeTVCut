@@ -13,9 +13,13 @@ let playlistUrl: string;
 let playlistText: string;
 let duration: number;
 
-async function runMediaTool(tool: "ffmpeg" | "ffprobe", args: string[]): Promise<string> {
+async function runMediaTool(
+  tool: "ffmpeg" | "ffprobe",
+  args: string[],
+): Promise<string> {
   const executable = process.platform === "win32" ? "wsl.exe" : tool;
-  const actualArgs = process.platform === "win32" ? ["--exec", tool, ...args] : args;
+  const actualArgs =
+    process.platform === "win32" ? ["--exec", tool, ...args] : args;
   const result = await execFileAsync(executable, actualArgs, {
     maxBuffer: 10 * 1024 * 1024,
     timeout: 30_000,
@@ -72,7 +76,10 @@ beforeAll(async () => {
   if (!response.ok) {
     throw new Error(`fMP4 cut creation failed: ${await response.text()}`);
   }
-  const cut = (await response.json()) as { duration: number; playlistUrl: string };
+  const cut = (await response.json()) as {
+    duration: number;
+    playlistUrl: string;
+  };
   duration = cut.duration;
   playlistUrl = `${baseUrl}${cut.playlistUrl}`;
   const playlistResponse = await fetch(playlistUrl);
@@ -89,7 +96,9 @@ describe("three-episode fMP4 HLS composition", () => {
     const maps = [
       ...new Map(
         parsed.segments.flatMap((segment) =>
-          segment.map === undefined ? [] : [[segment.map.absoluteUri, segment.map]],
+          segment.map === undefined
+            ? []
+            : [[segment.map.absoluteUri, segment.map]],
         ),
       ).values(),
     ];
@@ -134,7 +143,9 @@ describe("three-episode fMP4 HLS composition", () => {
     expect(probe.streams.map((stream) => stream.codec_type)).toEqual(
       expect.arrayContaining(["video", "audio"]),
     );
-    expect(Math.abs(Number.parseFloat(probe.format.duration) - duration)).toBeLessThan(1);
+    expect(
+      Math.abs(Number.parseFloat(probe.format.duration) - duration),
+    ).toBeLessThan(1);
     expect(Math.abs(duration - 66)).toBeLessThanOrEqual(6);
   });
 

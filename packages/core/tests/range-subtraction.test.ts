@@ -27,9 +27,9 @@ describe("subtractRemovedRanges", () => {
   });
 
   it("subtracts multiple ranges", () => {
-    expect(subtractRemovedRanges(source, [removed(24, 30), removed(0, 6)])).toEqual([
-      { ...source, sourceStart: 6, sourceEnd: 24 },
-    ]);
+    expect(
+      subtractRemovedRanges(source, [removed(24, 30), removed(0, 6)]),
+    ).toEqual([{ ...source, sourceStart: 6, sourceEnd: 24 }]);
   });
 
   it("preserves a range after an ending", () => {
@@ -40,8 +40,8 @@ describe("subtractRemovedRanges", () => {
   });
 
   it("rejects invalid overlapping ranges", () => {
-    expect(() => subtractRemovedRanges(source, [removed(5, 12), removed(10, 14)])).toThrow(
-      DomainValidationError,
-    );
+    expect(() =>
+      subtractRemovedRanges(source, [removed(5, 12), removed(10, 14)]),
+    ).toThrow(DomainValidationError);
   });
 });

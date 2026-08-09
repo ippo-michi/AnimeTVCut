@@ -11,12 +11,15 @@ export default tseslint.config(
     ],
   },
   eslint.configs.recommended,
-  ...tseslint.configs.recommendedTypeChecked,
+  ...tseslint.configs.recommendedTypeChecked.map((config) => ({
+    ...config,
+    files: ["**/*.ts"],
+  })),
   {
     files: ["**/*.ts"],
     languageOptions: {
       parserOptions: {
-        projectService: true,
+        project: ["./tsconfig.eslint.json"],
         tsconfigRootDir: import.meta.dirname,
       },
     },
@@ -29,6 +32,33 @@ export default tseslint.config(
     files: ["**/*.config.ts"],
     rules: {
       "@typescript-eslint/no-unsafe-assignment": "off",
+    },
+  },
+  {
+    files: ["apps/server/src/routes/**/*.ts"],
+    rules: {
+      "@typescript-eslint/require-await": "off",
+    },
+  },
+  {
+    files: ["**/*.test.ts"],
+    rules: {
+      "@typescript-eslint/no-base-to-string": "off",
+      "@typescript-eslint/no-unnecessary-type-assertion": "off",
+      "@typescript-eslint/no-unsafe-assignment": "off",
+      "@typescript-eslint/no-unsafe-call": "off",
+      "@typescript-eslint/no-unsafe-member-access": "off",
+      "@typescript-eslint/require-await": "off",
+    },
+  },
+  {
+    files: ["scripts/*.mjs"],
+    languageOptions: {
+      globals: {
+        Buffer: "readonly",
+        URL: "readonly",
+        process: "readonly",
+      },
     },
   },
 );

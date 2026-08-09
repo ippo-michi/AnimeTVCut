@@ -2,16 +2,38 @@ import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
 import type { CutService } from "../services/cut-service.js";
+import {
+  MediaFlowAuthenticationError,
+  MediaFlowError,
+  MediaFlowUnavailableError,
+} from "../services/mediaflow/errors.js";
+
+const episodeIdSchema = z.string().min(1).max(128);
+const sourceHeadersSchema = z.record(
+  z.string().min(1).max(128),
+  z.string().max(8_192),
+);
+
+const sourceSchema = z.union([
+  z.object({
+    episodeId: episodeIdSchema,
+    playlistUrl: z.string().min(1),
+  }),
+  z.object({
+    kind: z.literal("fixture_hls"),
+    episodeId: episodeIdSchema,
+    playlistUrl: z.string().min(1),
+  }),
+  z.object({
+    kind: z.enum(["http_file", "http_media"]),
+    episodeId: episodeIdSchema,
+    url: z.string().min(1),
+    headers: sourceHeadersSchema.optional(),
+  }),
+]);
 
 const cutRequestSchema = z.object({
-  sources: z
-    .array(
-      z.object({
-        episodeId: z.string().min(1).max(128),
-        playlistUrl: z.string().min(1),
-      }),
-    )
-    .min(1),
+  sources: z.array(sourceSchema).min(1),
   remove: z.array(
     z.object({
       episodeId: z.string().min(1).max(128),
@@ -35,10 +57,48 @@ export function cutRoutes(cutService: CutService): FastifyPluginAsync {
         });
       }
       try {
-        return await cutService.createCut(parsed.data);
+        const sources = parsed.data.sources.map((source) => {
+          if (!("kind" in source)) {
+            return {
+              kind: "fixture_hls" as const,
+              episodeId: source.episodeId,
+              playlistUrl: source.playlistUrl,
+            };
+          }
+          if (source.kind === "http_file") {
+            return {
+              kind: "http_media" as const,
+              episodeId: source.episodeId,
+              url: source.url,
+              ...(source.headers === undefined
+                ? {}
+                : { headers: source.headers }),
+            };
+          }
+          if (source.kind === "fixture_hls") return source;
+          return {
+            kind: "http_media" as const,
+            episodeId: source.episodeId,
+            url: source.url,
+            ...(source.headers === undefined
+              ? {}
+              : { headers: source.headers }),
+          };
+        });
+        return await cutService.createCut({ ...parsed.data, sources });
       } catch (error) {
-        request.log.info({ error }, "Cut request rejected");
-        return reply.code(400).send({
+        request.log.info(
+          { errorName: error instanceof Error ? error.name : "UnknownError" },
+          "Cut request rejected",
+        );
+        const statusCode =
+          error instanceof MediaFlowUnavailableError
+            ? 503
+            : error instanceof MediaFlowAuthenticationError ||
+                error instanceof MediaFlowError
+              ? 502
+              : 400;
+        return reply.code(statusCode).send({
           error: error instanceof Error ? error.message : "Cut request failed",
         });
       }

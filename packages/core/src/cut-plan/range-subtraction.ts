@@ -7,7 +7,9 @@ export function validateRemovedRanges(
   source: SourceRange,
   removedRanges: readonly RemovedRange[],
 ): RemovedRange[] {
-  const sorted = [...removedRanges].sort((left, right) => left.start - right.start);
+  const sorted = [...removedRanges].sort(
+    (left, right) => left.start - right.start,
+  );
 
   for (const range of sorted) {
     if (range.episodeId !== source.sourceEpisodeId) {
@@ -16,7 +18,9 @@ export function validateRemovedRanges(
       );
     }
     if (!Number.isFinite(range.start) || !Number.isFinite(range.end)) {
-      throw new DomainValidationError("Range coordinates must be finite numbers");
+      throw new DomainValidationError(
+        "Range coordinates must be finite numbers",
+      );
     }
     if (range.start >= range.end) {
       throw new DomainValidationError("Removed range start must be before end");
@@ -25,14 +29,20 @@ export function validateRemovedRanges(
       range.start < source.sourceStart - EPSILON ||
       range.end > source.sourceEnd + EPSILON
     ) {
-      throw new DomainValidationError("Removed range lies outside the source range");
+      throw new DomainValidationError(
+        "Removed range lies outside the source range",
+      );
     }
   }
 
   for (let index = 1; index < sorted.length; index += 1) {
     const previous = sorted[index - 1];
     const current = sorted[index];
-    if (previous !== undefined && current !== undefined && current.start < previous.end) {
+    if (
+      previous !== undefined &&
+      current !== undefined &&
+      current.start < previous.end
+    ) {
       throw new DomainValidationError("Removed ranges must not overlap");
     }
   }
