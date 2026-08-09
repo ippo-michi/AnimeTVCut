@@ -64,11 +64,13 @@ function streamsFor(episode) {
       { name: "Torrent", infoHash: "abcdef0123456789" },
     ];
   }
-  return [
-    familyA,
-    familyB,
-    { name: "External", externalUrl: "https://player.invalid/episode3" },
-  ];
+  if (episode === 3)
+    return [
+      familyA,
+      familyB,
+      { name: "External", externalUrl: "https://player.invalid/episode3" },
+    ];
+  return [familyA, familyB];
 }
 
 const server = createServer((request, response) => {
@@ -82,8 +84,14 @@ const server = createServer((request, response) => {
       name: "Fixture AIOStreams-Compatible Addon",
       version: "1.0.0",
       types: ["series"],
-      idPrefixes: ["tt"],
-      resources: [{ name: "stream", types: ["series"], idPrefixes: ["tt"] }],
+      idPrefixes: ["tt", "fixture:"],
+      resources: [
+        {
+          name: "stream",
+          types: ["series"],
+          idPrefixes: ["tt", "fixture:"],
+        },
+      ],
     });
   }
   const prefix = `${addonBase}/stream/series/`;
@@ -95,9 +103,11 @@ const server = createServer((request, response) => {
     } catch {
       return json(response, 400, { error: "invalid video id" });
     }
-    const match = /^tt1234567:1:([123])$/.exec(videoId);
-    if (match?.[1] === undefined) return json(response, 404, { streams: [] });
-    const episode = Number(match[1]);
+    const imdbMatch = /^tt1234567:1:([1-6])$/.exec(videoId);
+    const opaqueMatch = /^fixture:opaque:episode:([1-6])$/.exec(videoId);
+    const episodeText = imdbMatch?.[1] ?? opaqueMatch?.[1];
+    if (episodeText === undefined) return json(response, 404, { streams: [] });
+    const episode = Number(episodeText);
     counts.streamRequests += 1;
     counts.streamByVideoId[videoId] =
       (counts.streamByVideoId[videoId] ?? 0) + 1;

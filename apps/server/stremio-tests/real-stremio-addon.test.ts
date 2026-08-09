@@ -1,0 +1,393 @@
+import { execFile } from "node:child_process";
+import { PassThrough } from "node:stream";
+import { promisify } from "node:util";
+
+import { parseHlsVodPlaylist } from "@animetvcut/hls";
+import type { SkipSegmentProvider } from "@animetvcut/skip-providers";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+
+import { createApp } from "../src/app.js";
+
+const execFileAsync = promisify(execFile);
+const metadataManifestUrl =
+  process.env.METADATA_STREMIO_TEST_MANIFEST_URL ??
+  "http://127.0.0.1:19092/metadata/test-user/metadata-secret/manifest.json";
+const upstreamManifestUrl =
+  process.env.UPSTREAM_TEST_MANIFEST_URL ??
+  "http://127.0.0.1:18989/stremio/test-user/test-secret/manifest.json";
+const mediaFlowUrl = process.env.MEDIAFLOW_TEST_URL ?? "http://127.0.0.1:18888";
+const publicBaseUrl = new URL("http://127.0.0.1:13005/");
+const mediaFlowPassword = "phase5-integration-password";
+let skipRequests = 0;
+
+const fixedSkipProvider: SkipSegmentProvider = {
+  name: "phase5-fixed",
+  priority: 1,
+  supports: () => true,
+  getSegments: async () => {
+    skipRequests += 1;
+    return {
+      provider: "phase5-fixed",
+      status: "found",
+      warnings: [],
+      segments: [
+        {
+          type: "opening",
+          start: 0,
+          end: 6,
+          provider: "phase5-fixed",
+          automaticRemoval: true,
+        },
+        {
+          type: "ending",
+          start: 24,
+          end: 30.008,
+          provider: "phase5-fixed",
+          automaticRemoval: true,
+        },
+      ],
+    };
+  },
+};
+
+const logStream = new PassThrough();
+let capturedLogs = "";
+logStream.on("data", (chunk: Buffer) => {
+  capturedLogs += chunk.toString("utf8");
+});
+
+const app = createApp({
+  logger: { level: "info", stream: logStream },
+  mediaFlow: {
+    baseUrl: mediaFlowUrl,
+    apiPassword: mediaFlowPassword,
+    requestTimeoutMs: 60_000,
+  },
+  upstreamStremio: {
+    manifestUrl: upstreamManifestUrl,
+    requestTimeoutMs: 30_000,
+    manifestCacheTtlMs: 300_000,
+    streamCacheTtlMs: 300_000,
+  },
+  metadataStremio: {
+    manifestUrl: metadataManifestUrl,
+    requestTimeoutMs: 30_000,
+    manifestCacheTtlMs: 300_000,
+    catalogCacheTtlMs: 300_000,
+    metaCacheTtlMs: 300_000,
+  },
+  publicBaseUrl,
+  skipProviders: [fixedSkipProvider],
+  now: () => Date.parse("2026-01-01T00:00:00Z"),
+});
+
+interface PublicVideo {
+  id: string;
+  season: number;
+  episode: number;
+  title: string;
+}
+
+interface PublicStream {
+  name: string;
+  url: string;
+  behaviorHints: { bingeGroup: string };
+}
+
+let catalogText = "";
+let metaText = "";
+let partOneStreamText = "";
+let partTwoStreamText = "";
+let videos: PublicVideo[] = [];
+let partOne: PublicStream;
+let partTwo: PublicStream;
+let partOnePlaylist = "";
+let partTwoPlaylist = "";
+let metadataOnlyStats: {
+  upstreamStreamRequests: number;
+  mediaFlowPlaylistRequests: number;
+  skipRequests: number;
+};
+let partOnePreparationStats: {
+  upstreamStreamRequests: number;
+  mediaFlowPlaylistRequests: number;
+  mediaFlowResourceRequests: number;
+  skipRequests: number;
+};
+let preparedResourceRequests = -1;
+
+async function json<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  const body = await response.text();
+  if (!response.ok)
+    throw new Error(`GET ${url} failed: ${response.status} ${body}`);
+  return JSON.parse(body) as T;
+}
+
+async function runMediaTool(
+  tool: "ffmpeg" | "ffprobe",
+  args: string[],
+): Promise<string> {
+  const result = await execFileAsync(tool, args, {
+    timeout: 240_000,
+    maxBuffer: 20 * 1024 * 1024,
+  });
+  return result.stdout;
+}
+
+async function decodeWindow(
+  url: string,
+  start: number,
+  seconds: number,
+): Promise<void> {
+  await runMediaTool("ffmpeg", [
+    "-hide_banner",
+    "-loglevel",
+    "error",
+    "-nostdin",
+    "-ss",
+    String(start),
+    "-i",
+    url,
+    "-t",
+    String(seconds),
+    "-map",
+    "0:v:0",
+    "-map",
+    "0:a:0",
+    "-f",
+    "null",
+    "-",
+  ]);
+}
+
+beforeAll(async () => {
+  await app.listen({ host: "127.0.0.1", port: Number(publicBaseUrl.port) });
+
+  const catalogResponse = await fetch(
+    `${publicBaseUrl}catalog/series/animetvcut/search=Opaque.json`,
+  );
+  catalogText = await catalogResponse.text();
+  if (!catalogResponse.ok) throw new Error(`Catalog failed: ${catalogText}`);
+  const catalog = JSON.parse(catalogText) as { metas: Array<{ id: string }> };
+  const virtualMetaId = catalog.metas[0]?.id;
+  if (virtualMetaId === undefined) throw new Error("No opaque catalog result");
+
+  const metaResponse = await fetch(
+    `${publicBaseUrl}meta/series/${encodeURIComponent(virtualMetaId)}.json`,
+  );
+  metaText = await metaResponse.text();
+  if (!metaResponse.ok) throw new Error(`Meta failed: ${metaText}`);
+  videos = (JSON.parse(metaText) as { meta: { videos: PublicVideo[] } }).meta
+    .videos;
+
+  const upstreamStats = await json<{ streamRequests: number }>(
+    "http://127.0.0.1:18989/stats",
+  );
+  const mediaFlowHealth = await json<{
+    requests: { playlistRequests: number };
+  }>(`${publicBaseUrl}api/v1/dev/mediaflow/health`);
+  metadataOnlyStats = {
+    upstreamStreamRequests: upstreamStats.streamRequests,
+    mediaFlowPlaylistRequests: mediaFlowHealth.requests.playlistRequests,
+    skipRequests,
+  };
+
+  const firstResponse = await fetch(
+    `${publicBaseUrl}stream/series/${encodeURIComponent(videos[0]!.id)}.json`,
+  );
+  partOneStreamText = await firstResponse.text();
+  if (!firstResponse.ok)
+    throw new Error(`Part 1 stream failed: ${partOneStreamText}`);
+  partOne = (JSON.parse(partOneStreamText) as { streams: PublicStream[] })
+    .streams[0]!;
+  partOnePlaylist = await (await fetch(partOne.url)).text();
+  const afterPartOneUpstream = await json<{ streamRequests: number }>(
+    "http://127.0.0.1:18989/stats",
+  );
+  const afterPartOneMediaFlow = await json<{
+    requests: { playlistRequests: number; resourceRequests: number };
+  }>(`${publicBaseUrl}api/v1/dev/mediaflow/health`);
+  partOnePreparationStats = {
+    upstreamStreamRequests: afterPartOneUpstream.streamRequests,
+    mediaFlowPlaylistRequests: afterPartOneMediaFlow.requests.playlistRequests,
+    mediaFlowResourceRequests: afterPartOneMediaFlow.requests.resourceRequests,
+    skipRequests,
+  };
+
+  const secondResponse = await fetch(
+    `${publicBaseUrl}stream/series/${encodeURIComponent(videos[1]!.id)}.json`,
+  );
+  partTwoStreamText = await secondResponse.text();
+  if (!secondResponse.ok)
+    throw new Error(`Part 2 stream failed: ${partTwoStreamText}`);
+  partTwo = (JSON.parse(partTwoStreamText) as { streams: PublicStream[] })
+    .streams[0]!;
+  partTwoPlaylist = await (await fetch(partTwo.url)).text();
+  preparedResourceRequests = (
+    await json<{ requests: { resourceRequests: number } }>(
+      `${publicBaseUrl}api/v1/dev/mediaflow/health`,
+    )
+  ).requests.resourceRequests;
+});
+
+afterAll(async () => {
+  await app.close();
+  logStream.end();
+});
+
+describe("real metadata addon to grouped Stremio TV Cuts", () => {
+  it("discovers one configured search catalog and emits two stable parts", async () => {
+    expect(videos).toEqual([
+      expect.objectContaining({
+        season: 1,
+        episode: 1,
+        title: expect.stringContaining("Episodes 1–3"),
+      }),
+      expect.objectContaining({
+        season: 1,
+        episode: 2,
+        title: expect.stringContaining("Episodes 4–6"),
+      }),
+    ]);
+    const health = await json<{
+      configured: boolean;
+      reachable: boolean;
+      catalogId: string;
+      origin: string;
+    }>(`${publicBaseUrl}api/v1/dev/metadata/health`);
+    expect(health).toEqual(
+      expect.objectContaining({
+        configured: true,
+        reachable: true,
+        catalogId: "fixture-series-primary",
+        origin: "http://127.0.0.1:19092",
+      }),
+    );
+  });
+
+  it("does no stream resolution, skip lookup, or normalization for catalog/meta", () => {
+    expect(metadataOnlyStats).toEqual({
+      upstreamStreamRequests: 0,
+      mediaFlowPlaylistRequests: 0,
+      skipRequests: 0,
+    });
+  });
+
+  it("uses exact opaque episode IDs only when each selected part is streamed", async () => {
+    expect(partOnePreparationStats).toEqual({
+      upstreamStreamRequests: 3,
+      mediaFlowPlaylistRequests: 3,
+      mediaFlowResourceRequests: 0,
+      skipRequests: 3,
+    });
+    const stats = await json<{
+      streamRequests: number;
+      streamByVideoId: Record<string, number>;
+    }>("http://127.0.0.1:18989/stats");
+    expect(stats.streamRequests).toBe(6);
+    expect(Object.keys(stats.streamByVideoId).sort()).toEqual(
+      Array.from(
+        { length: 6 },
+        (_, index) => `fixture:opaque:episode:${index + 1}`,
+      ),
+    );
+    expect(skipRequests).toBe(6);
+  });
+
+  it("keeps MediaFlow maps and segments lazy after both parts are prepared", () => {
+    expect(preparedResourceRequests).toBe(0);
+  });
+
+  it("emits opaque fMP4 HLS and leaks no internal metadata or transport secrets", () => {
+    expect(
+      parseHlsVodPlaylist(partOnePlaylist, partOne.url).segments.length,
+    ).toBeGreaterThan(0);
+    const combined = [
+      catalogText,
+      metaText,
+      partOneStreamText,
+      partTwoStreamText,
+      partOnePlaylist,
+      partTwoPlaylist,
+      capturedLogs,
+    ].join("\n");
+    expect(partOnePlaylist).toContain("#EXT-X-MAP");
+    expect(partOnePlaylist).toMatch(/\/media\/cut\/[^/]+\/segment\/r\d+\.mp4/);
+    expect(partOnePlaylist).toMatch(/\/media\/cut\/[^/]+\/segment\/r\d+\.m4s/);
+    expect(combined).not.toMatch(
+      /metadata-secret|test-secret|phase5-integration-password|api_password|fixture-origin|temporary-[1-6]|fixture:opaque:episode|X-Test-Token|Authorization|Cookie/,
+    );
+  });
+
+  it("reuses a stable binge group and cached cut for the same virtual part", async () => {
+    expect(partOne.behaviorHints.bingeGroup).toBe(
+      partTwo.behaviorHints.bingeGroup,
+    );
+    const before = await json<{ streamRequests: number }>(
+      "http://127.0.0.1:18989/stats",
+    );
+    const cached = await json<{ streams: PublicStream[] }>(
+      `${publicBaseUrl}stream/series/${encodeURIComponent(videos[0]!.id)}.json`,
+    );
+    const after = await json<{ streamRequests: number }>(
+      "http://127.0.0.1:18989/stats",
+    );
+    expect(cached.streams[0]?.url).toBe(partOne.url);
+    expect(after.streamRequests).toBe(before.streamRequests);
+  });
+
+  it("FFprobes both parts as H.264/AAC with the expected duration", async () => {
+    for (const stream of [partOne, partTwo]) {
+      const output = await runMediaTool("ffprobe", [
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration:stream=codec_name,codec_type",
+        "-of",
+        "json",
+        stream.url,
+      ]);
+      const probe = JSON.parse(output) as {
+        streams: Array<{ codec_name: string; codec_type: string }>;
+        format: { duration: string };
+      };
+      expect(probe.streams).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ codec_name: "h264", codec_type: "video" }),
+          expect.objectContaining({ codec_name: "aac", codec_type: "audio" }),
+        ]),
+      );
+      expect(Math.abs(Number(probe.format.duration) - 66.008)).toBeLessThan(
+        0.1,
+      );
+    }
+  });
+
+  it("fully decodes Part 1 and crosses both boundaries", async () => {
+    await runMediaTool("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-i",
+      partOne.url,
+      "-map",
+      "0:v:0",
+      "-map",
+      "0:a:0",
+      "-f",
+      "null",
+      "-",
+    ]);
+    await decodeWindow(partOne.url, 22, 4);
+    await decodeWindow(partOne.url, 40, 4);
+  });
+
+  it("seeks across Part 2 boundaries and backward into its first episode", async () => {
+    await decodeWindow(partTwo.url, 22, 4);
+    await decodeWindow(partTwo.url, 40, 4);
+    await decodeWindow(partTwo.url, 50, 1);
+    await decodeWindow(partTwo.url, 10, 1);
+  });
+});

@@ -190,7 +190,9 @@ describe("automatic skip development routes", () => {
     expect(sourceLoader.resourceOpens).toBe(0);
     expect(body.duration).toBeCloseTo(66, 2);
     expect(body.appliedCuts).toHaveLength(4);
-    expect(body.appliedCuts.every((cut) => cut.status === "applied")).toBe(true);
+    expect(body.appliedCuts.every((cut) => cut.status === "applied")).toBe(
+      true,
+    );
     expect(body.pieces).toMatchObject([
       { sourceEpisodeId: "ep1", sourceStart: 0, sourceEnd: 24 },
       { sourceEpisodeId: "ep2", sourceStart: 6, sourceEnd: 24 },

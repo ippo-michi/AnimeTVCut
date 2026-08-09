@@ -1,8 +1,8 @@
 # AnimeTVCut
 
-Phase 4 proof of concept for resolving standard Stremio episode streams, selecting one
-consistent release family, normalizing it through MediaFlow, resolving conservative
-skip timestamps, and composing one seekable synthetic HLS VOD automatically.
+Phase 5 proof of concept for discovering series through a generic Stremio metadata
+addon, grouping released episodes into stable TV Cut parts, resolving each exact
+episode through the existing upstream addon, and composing seekable synthetic HLS.
 
 ## Development
 
@@ -119,3 +119,60 @@ opt-in through the `INTRODB_TEST_*` and `ANISKIP_TEST_*` variables documented in
 Created cuts retain the initially selected URLs. Phase 3 deliberately does not refresh
 or hot-replace expired playback URLs; later work can re-query using the stable family,
 filename, and upstream video ID metadata.
+
+## TV Cut Stremio addon
+
+Configure exactly one Stremio metadata source with its complete manifest URL. Nested
+authenticated addon paths and manifest query parameters are preserved internally but
+never returned by health, catalog, meta, stream, or media-playlist responses.
+
+```text
+METADATA_STREMIO_MANIFEST_URL=https://metadata.example/private/path/manifest.json
+METADATA_STREMIO_SEARCH_CATALOG_ID=
+METADATA_STREMIO_REQUEST_TIMEOUT_MS=10000
+PUBLIC_BASE_URL=https://animetvcut.example
+```
+
+The metadata addon must declare `series`, `catalog`, `meta`, and a series catalog whose
+`extra` includes `search`. If no catalog ID is configured, AnimeTVCut selects the first
+compatible catalog in manifest order. AIOMetadata-style addons are the primary target;
+standard Cinemeta-compatible manifests use the same protocol seam.
+
+Install AnimeTVCut's own `/manifest.json` in Stremio. Its catalog is search-only:
+
+```text
+GET /catalog/series/animetvcut.json
+GET /catalog/series/animetvcut/search=<query>&skip=<n>.json
+GET /meta/series/<virtual-meta-id>.json
+GET /stream/series/<virtual-video-id>.json
+```
+
+Catalog and meta requests are metadata-only. They do not call the stream addon,
+MediaFlow, or skip providers. A stream request reloads current source metadata,
+regenerates the deterministic grouping plan, authorizes the exact finalized group,
+then sends only that group's opaque episode IDs into the existing automatic-cut flow.
+MediaFlow remains a normalizer and never owns grouping, retained ranges, or cut policy.
+
+Defaults target a one-hour part: 3000–4500 seconds, at most four episodes, assuming
+90-second openings/endings and a 1440-second fallback runtime. With 24-minute episodes,
+groups are 1–3, 4–6, and so on. A fresh trailing group below the minimum remains pending
+for 14 days, preventing already-published groups from shifting as weekly episodes land.
+
+`PUBLIC_BASE_URL` is mandatory for public stream playback and is the only authority
+used to construct playlist URLs; request `Host` headers are ignored. Public stream
+responses are cached for five minutes while the underlying in-memory cut session stays
+active, and concurrent identical requests are coalesced.
+
+Run the real six-episode topology with pinned MediaFlow Proxy `v2.4.9`:
+
+```bash
+pnpm test:stremio
+pnpm test:aiometadata:live
+pnpm test:cinemeta:live
+```
+
+It starts a generated MKV origin, a deterministic multi-catalog AIOMetadata-like addon,
+a standard stream addon, and MediaFlow. The suite proves opaque-ID preservation,
+metadata-only laziness, grouping, automatic skip policy, fMP4 playback, complete Part 1
+decode, Part 2 probing, and seeking across both episode boundaries. No public media or
+metadata service is required.

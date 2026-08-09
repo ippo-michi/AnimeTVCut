@@ -44,6 +44,9 @@ importers:
       '@animetvcut/skip-providers':
         specifier: workspace:*
         version: link:../../packages/skip-providers
+      '@animetvcut/stremio':
+        specifier: workspace:*
+        version: link:../../packages/stremio
       fastify:
         specifier: ^5.6.2
         version: 5.11.3
@@ -60,6 +63,12 @@ importers:
         version: link:../core
 
   packages/skip-providers: {}
+
+  packages/stremio:
+    dependencies:
+      '@animetvcut/core':
+        specifier: workspace:*
+        version: link:../core
 
 packages:
 

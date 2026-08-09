@@ -55,6 +55,10 @@ export class CutService {
     return this.createCutFromPreparedSources({ ...request, sources });
   }
 
+  public isCutActive(cutId: string): boolean {
+    return this.sessions.get(cutId) !== undefined;
+  }
+
   public async prepareSources(
     sources: readonly MediaInputSource[],
   ): Promise<PreparedInputSource[]> {

@@ -19,9 +19,12 @@
     "test:mediaflow": "bash scripts/run-mediaflow-integration.sh",
     "test:upstream": "bash scripts/run-upstream-integration.sh",
     "test:skip": "bash scripts/run-skip-integration.sh",
+    "test:stremio": "bash scripts/run-stremio-integration.sh",
     "test:aiostreams:live": "vitest run --config vitest.aiostreams-live.config.ts",
     "test:introdb:live": "vitest run --config vitest.introdb-live.config.ts",
-    "test:aniskip:live": "vitest run --config vitest.aniskip-live.config.ts"
+    "test:aniskip:live": "vitest run --config vitest.aniskip-live.config.ts",
+    "test:aiometadata:live": "vitest run --config vitest.metadata-live.config.ts",
+    "test:cinemeta:live": "vitest run --config vitest.metadata-live.config.ts"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

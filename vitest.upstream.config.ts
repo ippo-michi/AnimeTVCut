@@ -10,6 +10,7 @@ export default defineConfig({
       "@animetvcut/core": `${root}packages/core/src/index.ts`,
       "@animetvcut/hls": `${root}packages/hls/src/index.ts`,
       "@animetvcut/skip-providers": `${root}packages/skip-providers/src/index.ts`,
+      "@animetvcut/stremio": `${root}packages/stremio/src/index.ts`,
     },
   },
   test: {

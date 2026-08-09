@@ -7,6 +7,7 @@ import type {
   StremioManifestResource,
   UpstreamEpisodeReference,
 } from "./types.js";
+import { deriveStremioResourceUrl } from "@animetvcut/stremio";
 
 const MAX_TEXT_FIELD_LENGTH = 256;
 
@@ -120,13 +121,9 @@ export function buildStreamResourceUrl(
   manifestUrl: URL,
   reference: UpstreamEpisodeReference,
 ): URL {
-  const addonDirectory = new URL("./", manifestUrl);
-  const resourceUrl = new URL(
-    `stream/${encodeURIComponent(reference.type)}/${encodeURIComponent(reference.videoId)}.json`,
-    addonDirectory,
-  );
-  // Some configured-addon URLs authenticate with a query parameter. Preserve
-  // it internally while public diagnostics redact the complete URL.
-  resourceUrl.search = manifestUrl.search;
-  return resourceUrl;
+  return deriveStremioResourceUrl(manifestUrl, [
+    "stream",
+    reference.type,
+    reference.videoId,
+  ]);
 }

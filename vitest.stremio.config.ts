@@ -14,9 +14,9 @@ export default defineConfig({
     },
   },
   test: {
-    include: ["apps/server/skip-tests/**/*.test.ts"],
-    testTimeout: 180_000,
-    hookTimeout: 180_000,
+    include: ["apps/server/stremio-tests/**/*.test.ts"],
+    testTimeout: 240_000,
+    hookTimeout: 600_000,
     fileParallelism: false,
   },
 });

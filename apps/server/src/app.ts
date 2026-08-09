@@ -6,6 +6,14 @@ import Fastify, {
   type FastifyServerOptions,
 } from "fastify";
 import {
+  DEFAULT_TV_CUT_GROUPING_CONFIG,
+  type TvCutGroupingConfig,
+} from "@animetvcut/core";
+import {
+  MetadataStremioClient,
+  type MetadataStremioConfigInput,
+} from "@animetvcut/stremio";
+import {
   SkipSegmentResolver,
   type SkipSegmentProvider,
 } from "@animetvcut/skip-providers";
@@ -14,9 +22,11 @@ import { cutRoutes } from "./routes/cuts.js";
 import { healthRoutes } from "./routes/health.js";
 import { mediaRoutes } from "./routes/media.js";
 import { mediaFlowHealthRoutes } from "./routes/mediaflow-health.js";
+import { metadataRoutes } from "./routes/metadata.js";
 import { skipRoutes } from "./routes/skip.js";
 import { upstreamHealthRoutes } from "./routes/upstream-health.js";
 import { upstreamRoutes } from "./routes/upstream.js";
+import { publicStremioRoutes } from "./routes/stremio-addon.js";
 import { CutService } from "./services/cut-service.js";
 import { CutSessionStore } from "./services/cut-session-store.js";
 import { FixtureSourceLoader } from "./services/fixture-source.js";
@@ -31,6 +41,7 @@ import type { StremioUpstreamConfigInput } from "./services/stremio-upstream/con
 import { StremioEpisodeSourceResolver } from "./services/stremio-upstream/resolver.js";
 import type { EpisodeSourceResolver } from "./services/stremio-upstream/types.js";
 import { UpstreamCutService } from "./services/upstream-cut-service.js";
+import { TvCutCatalogService } from "./services/tv-cut-catalog-service.js";
 
 export interface AppOptions {
   fixtureRoot?: string;
@@ -43,6 +54,12 @@ export interface AppOptions {
   episodeSourceResolver?: EpisodeSourceResolver;
   skipProviders?: readonly SkipSegmentProvider[];
   skipSegmentResolver?: SkipSegmentResolver;
+  metadataStremio?: MetadataStremioConfigInput;
+  metadataClient?: MetadataStremioClient;
+  publicBaseUrl?: URL;
+  groupingConfig?: TvCutGroupingConfig;
+  now?: () => number;
+  streamCacheTtlMs?: number;
 }
 
 export function createApp(options: AppOptions = {}): FastifyInstance {
@@ -85,6 +102,20 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     cutService,
     skipService,
   );
+  const metadataClient =
+    options.metadataClient ??
+    (options.metadataStremio === undefined
+      ? undefined
+      : new MetadataStremioClient(options.metadataStremio));
+  const tvCutCatalogService = new TvCutCatalogService(
+    metadataClient,
+    upstreamCutService,
+    cutService,
+    options.publicBaseUrl,
+    options.groupingConfig ?? DEFAULT_TV_CUT_GROUPING_CONFIG,
+    options.now,
+    options.streamCacheTtlMs,
+  );
 
   void app.register(healthRoutes);
   void app.register(mediaFlowHealthRoutes(mediaFlowClient));
@@ -92,6 +123,8 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   void app.register(skipRoutes(skipService));
   void app.register(cutRoutes(cutService));
   void app.register(upstreamRoutes(upstreamCutService));
+  void app.register(metadataRoutes(metadataClient, tvCutCatalogService));
+  void app.register(publicStremioRoutes(tvCutCatalogService));
   void app.register(mediaRoutes(sessions));
 
   return app;

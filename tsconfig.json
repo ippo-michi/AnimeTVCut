@@ -4,6 +4,7 @@
     { "path": "packages/core" },
     { "path": "packages/hls" },
     { "path": "packages/skip-providers" },
+    { "path": "packages/stremio" },
     { "path": "apps/server" }
   ]
 }

@@ -95,3 +95,6 @@ generate_direct_episode() {
 generate_direct_episode 1 0xc92a2a 550
 generate_direct_episode 2 0x1971c2 660
 generate_direct_episode 3 0xf08c00 770
+generate_direct_episode 4 0x7048e8 990
+generate_direct_episode 5 0x0b7285 1100
+generate_direct_episode 6 0xe64980 1210

@@ -8,15 +8,12 @@ export default defineConfig({
   resolve: {
     alias: {
       "@animetvcut/core": `${root}packages/core/src/index.ts`,
-      "@animetvcut/hls": `${root}packages/hls/src/index.ts`,
-      "@animetvcut/skip-providers": `${root}packages/skip-providers/src/index.ts`,
       "@animetvcut/stremio": `${root}packages/stremio/src/index.ts`,
     },
   },
   test: {
-    include: ["apps/server/skip-tests/**/*.test.ts"],
-    testTimeout: 180_000,
-    hookTimeout: 180_000,
+    include: ["apps/server/live-tests/metadata-live.test.ts"],
+    testTimeout: 60_000,
     fileParallelism: false,
   },
 });
