@@ -8,13 +8,35 @@ generate_episode() {
   local number="$1"
   local story_color="$2"
   local story_tone="$3"
-  local output_dir="${fixture_root}/episode${number}"
+  local format="$4"
+  local directory_prefix=""
+  local expected_resource="seg00.ts"
+  if [[ "${format}" == "fmp4" ]]; then
+    directory_prefix="fmp4-"
+    expected_resource="init.mp4"
+  fi
+  local output_dir="${fixture_root}/${directory_prefix}episode${number}"
 
-  if [[ -f "${output_dir}/playlist.m3u8" ]] && [[ "${FORCE_FIXTURES:-0}" != "1" ]]; then
+  if [[ -f "${output_dir}/playlist.m3u8" ]] \
+    && [[ -f "${output_dir}/${expected_resource}" ]] \
+    && [[ "${FORCE_FIXTURES:-0}" != "1" ]]; then
     return
   fi
 
   mkdir -p "${output_dir}"
+  local -a segment_options
+  if [[ "${format}" == "fmp4" ]]; then
+    segment_options=(
+      -hls_segment_type fmp4
+      -hls_fmp4_init_filename init.mp4
+      -hls_segment_filename "${output_dir}/seg%02d.m4s"
+    )
+  else
+    segment_options=(
+      -hls_segment_filename "${output_dir}/seg%02d.ts"
+    )
+  fi
+
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "color=c=0x2f9e44:s=320x180:r=25:d=6" \
     -f lavfi -i "sine=frequency=440:sample_rate=48000:duration=6" \
@@ -30,10 +52,13 @@ generate_episode() {
     -force_key_frames "expr:gte(t,n_forced*6)" \
     -c:a aac -b:a 64k -ar 48000 \
     -hls_time 6 -hls_playlist_type vod -hls_flags independent_segments \
-    -hls_segment_filename "${output_dir}/seg%02d.ts" \
+    "${segment_options[@]}" \
     "${output_dir}/playlist.m3u8"
 }
 
-generate_episode 1 0xc92a2a 550
-generate_episode 2 0x1971c2 660
-generate_episode 3 0xf08c00 770
+generate_episode 1 0xc92a2a 550 mpegts
+generate_episode 2 0x1971c2 660 mpegts
+generate_episode 3 0xf08c00 770 mpegts
+generate_episode 1 0xc92a2a 550 fmp4
+generate_episode 2 0x1971c2 660 fmp4
+generate_episode 3 0xf08c00 770 fmp4

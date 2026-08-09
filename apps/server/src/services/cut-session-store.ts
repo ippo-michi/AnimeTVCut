@@ -2,11 +2,10 @@ import { randomUUID } from "node:crypto";
 
 import type { AppliedCut, TimelinePiece } from "@animetvcut/core";
 
-export interface SessionResource {
+import type { ResolvedMediaResource } from "./hls-source-loader.js";
+
+export interface SessionResource extends ResolvedMediaResource {
   id: string;
-  localPath: string;
-  size: number;
-  contentType: string;
 }
 
 export interface CutSession {

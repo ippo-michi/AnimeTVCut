@@ -6,8 +6,11 @@ export {
 export { buildTimeline, TimelineMapper } from "./timeline/timeline.js";
 export type {
   AppliedCut,
+  CutAlignmentPolicy,
   RemovedRange,
   SegmentKind,
   SourceRange,
+  SuccessfulAppliedCut,
   TimelinePiece,
+  UnappliedCut,
 } from "./models/ranges.js";

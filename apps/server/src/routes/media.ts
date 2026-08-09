@@ -1,5 +1,3 @@
-import { createReadStream } from "node:fs";
-
 import type { FastifyPluginAsync } from "fastify";
 
 import type { CutSessionStore } from "../services/cut-session-store.js";
@@ -48,23 +46,29 @@ export function mediaRoutes(sessions: CutSessionStore): FastifyPluginAsync {
         }
 
         reply.header("Accept-Ranges", "bytes").type(resource.contentType);
+        for (const [name, value] of Object.entries(resource.responseHeaders)) {
+          reply.header(name, value);
+        }
         const rangeHeader = request.headers.range;
         if (rangeHeader === undefined) {
-          reply.header("Content-Length", resource.size);
-          return reply.send(createReadStream(resource.localPath));
+          reply.header("Content-Length", resource.contentLength);
+          return reply.send(resource.open());
         }
-        const range = parseRange(rangeHeader, resource.size);
+        const range = parseRange(rangeHeader, resource.contentLength);
         if (range === undefined) {
           return reply
             .code(416)
-            .header("Content-Range", `bytes */${resource.size}`)
+            .header("Content-Range", `bytes */${resource.contentLength}`)
             .send({ error: "Invalid byte range" });
         }
         reply
           .code(206)
           .header("Content-Length", range.end - range.start + 1)
-          .header("Content-Range", `bytes ${range.start}-${range.end}/${resource.size}`);
-        return reply.send(createReadStream(resource.localPath, range));
+          .header(
+            "Content-Range",
+            `bytes ${range.start}-${range.end}/${resource.contentLength}`,
+          );
+        return reply.send(resource.open(range));
       },
     );
   };

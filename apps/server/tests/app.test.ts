@@ -66,4 +66,49 @@ describe("server foundation and source security", () => {
     expect(expired.statusCode).toBe(404);
     expect(expired.json()).toEqual({ error: "Cut session is missing or expired" });
   });
+
+  it("defaults to preserving all media when a requested cut contains no segment", async () => {
+    const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
+        remove: [{ episodeId: "ep1", start: 7, end: 11, type: "opening" }],
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      duration: 30,
+      pieces: [{ sourceStart: 0, sourceEnd: 30 }],
+      appliedCuts: [
+        {
+          alignmentPolicy: "preserve_content",
+          status: "no_safe_segments",
+          reason: "no_complete_segments",
+          appliedStart: null,
+          appliedEnd: null,
+        },
+      ],
+    });
+  });
+
+  it("rejects an unalignable removal when strict alignment is requested", async () => {
+    const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
+    apps.push(app);
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
+        remove: [{ episodeId: "ep1", start: 7, end: 11, type: "opening" }],
+        strictAlignment: true,
+      },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: expect.stringContaining("No complete HLS segment"),
+    });
+  });
 });

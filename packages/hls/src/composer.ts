@@ -4,6 +4,8 @@ import type {
   ComposedPlaylist,
   ComposedResource,
   HlsMap,
+  HlsResourceKind,
+  HlsResourceMetadata,
   HlsSegment,
   HlsVodPlaylist,
 } from "./types.js";
@@ -77,24 +79,25 @@ export function composeHlsVod(
   let nextResource = 1;
   const register = (
     sourceEpisodeId: string,
-    absoluteUri: string,
-    kind: "segment" | "map",
+    resource: HlsResourceMetadata & { absoluteUri: string; byteRange?: string },
+    kind: HlsResourceKind,
   ): string => {
-    const key = `${sourceEpisodeId}|${kind}|${absoluteUri}`;
+    const key = `${sourceEpisodeId}|${kind}|${resource.absoluteUri}|${resource.byteRange ?? ""}`;
     const known = resourceIds.get(key);
     if (known !== undefined) {
       return known;
     }
-    const extension = kind === "segment" ? ".ts" : ".bin";
-    const id = `r${String(nextResource).padStart(6, "0")}${extension}`;
+    const id = `r${String(nextResource).padStart(6, "0")}${resource.safeExtension}`;
     nextResource += 1;
     resourceIds.set(key, id);
     resources.push({
       id,
       sourceEpisodeId,
-      absoluteUri,
+      absoluteUri: resource.absoluteUri,
       kind,
-      contentType: kind === "segment" ? "video/mp2t" : "application/octet-stream",
+      mediaFormat: resource.mediaFormat,
+      contentType: resource.contentType,
+      ...(resource.byteRange === undefined ? {} : { byteRange: resource.byteRange }),
     });
     return id;
   };
@@ -122,7 +125,7 @@ export function composeHlsVod(
     if (item.segment.map !== undefined) {
       const currentKey = mapKey(item.segment.map);
       if (currentKey !== activeMapKey) {
-        const mapId = register(item.sourceEpisodeId, item.segment.map.absoluteUri, "map");
+        const mapId = register(item.sourceEpisodeId, item.segment.map, "map");
         const byteRange =
           item.segment.map.byteRange === undefined
             ? ""
@@ -133,11 +136,7 @@ export function composeHlsVod(
         activeMapKey = currentKey;
       }
     }
-    const segmentId = register(
-      item.sourceEpisodeId,
-      item.segment.absoluteUri,
-      "segment",
-    );
+    const segmentId = register(item.sourceEpisodeId, item.segment, "segment");
     lines.push(
       `#EXTINF:${formatDuration(item.segment.duration)},${item.segment.title}`,
       `/media/cut/${cutId}/segment/${segmentId}`,

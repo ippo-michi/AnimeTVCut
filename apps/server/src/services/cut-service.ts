@@ -2,6 +2,7 @@ import {
   buildTimeline,
   subtractRemovedRanges,
   type AppliedCut,
+  type CutAlignmentPolicy,
   type RemovedRange,
   type SourceRange,
   type TimelinePiece,
@@ -9,11 +10,13 @@ import {
 import { alignRemovedRanges, composeHlsVod, type CompositionSource } from "@animetvcut/hls";
 
 import { CutSessionStore, type SessionResource } from "./cut-session-store.js";
-import { FixtureSourceLoader } from "./fixture-source.js";
+import type { HlsSourceLoader, HlsSourceReference } from "./hls-source-loader.js";
 
 export interface DevCutRequest {
-  sources: Array<{ episodeId: string; playlistUrl: string }>;
+  sources: HlsSourceReference[];
   remove: RemovedRange[];
+  alignmentPolicy?: CutAlignmentPolicy;
+  strictAlignment?: boolean;
 }
 
 export interface DevCutResponse {
@@ -26,7 +29,7 @@ export interface DevCutResponse {
 
 export class CutService {
   public constructor(
-    private readonly fixtureLoader: FixtureSourceLoader,
+    private readonly sourceLoader: HlsSourceLoader,
     private readonly sessions: CutSessionStore,
   ) {}
 
@@ -49,19 +52,30 @@ export class CutService {
     const allAppliedCuts: AppliedCut[] = [];
 
     for (const source of request.sources) {
-      const playlist = await this.fixtureLoader.loadPlaylist(source.playlistUrl);
+      const playlist = await this.sourceLoader.loadPlaylist(source);
       compositionSources.push({ episodeId: source.episodeId, playlist });
       const requested = request.remove.filter(
         (removal) => removal.episodeId === source.episodeId,
       );
-      const appliedCuts = alignRemovedRanges(playlist, requested);
+      // AnimeTVCut owns the retained timeline and alignment policy. Source loaders may
+      // later proxy or normalize media, but never decide which normalized segments remain.
+      const appliedCuts = alignRemovedRanges(playlist, requested, {
+        policy: request.alignmentPolicy ?? "preserve_content",
+        strict: request.strictAlignment ?? false,
+      });
       allAppliedCuts.push(...appliedCuts);
-      const appliedRemovals: RemovedRange[] = appliedCuts.map((cut) => ({
-        episodeId: cut.episodeId,
-        start: cut.appliedStart,
-        end: cut.appliedEnd,
-        type: cut.type,
-      }));
+      const appliedRemovals: RemovedRange[] = appliedCuts.flatMap((cut) =>
+        cut.status === "applied"
+          ? [
+              {
+                episodeId: cut.episodeId,
+                start: cut.appliedStart,
+                end: cut.appliedEnd,
+                type: cut.type,
+              },
+            ]
+          : [],
+      );
       retainedRanges.push(
         ...subtractRemovedRanges(
           {
@@ -79,13 +93,18 @@ export class CutService {
     const cutId = this.sessions.createId();
     const composed = composeHlsVod(cutId, compositionSources, pieces);
     const resources = new Map<string, SessionResource>();
+    const sourcesByEpisode = new Map(
+      request.sources.map((source) => [source.episodeId, source]),
+    );
     for (const resource of composed.resources) {
-      const fixture = await this.fixtureLoader.resolveResource(resource.absoluteUri);
+      const source = sourcesByEpisode.get(resource.sourceEpisodeId);
+      if (source === undefined) {
+        throw new Error(`Missing source reference for ${resource.sourceEpisodeId}`);
+      }
+      const resolved = await this.sourceLoader.resolveResource({ source, resource });
       resources.set(resource.id, {
         id: resource.id,
-        localPath: fixture.localPath,
-        size: fixture.size,
-        contentType: resource.contentType,
+        ...resolved,
       });
     }
     this.sessions.save({

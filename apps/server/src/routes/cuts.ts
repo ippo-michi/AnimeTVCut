@@ -20,6 +20,8 @@ const cutRequestSchema = z.object({
       type: z.enum(["opening", "ending", "recap", "preview"]),
     }),
   ),
+  alignmentPolicy: z.enum(["preserve_content", "aggressive"]).optional(),
+  strictAlignment: z.boolean().optional(),
 });
 
 export function cutRoutes(cutService: CutService): FastifyPluginAsync {

@@ -5,6 +5,10 @@ export type {
   ComposedPlaylist,
   ComposedResource,
   HlsMap,
+  HlsMediaFormat,
+  HlsResourceKind,
+  HlsResourceMetadata,
   HlsSegment,
   HlsVodPlaylist,
+  SafeResourceExtension,
 } from "./types.js";

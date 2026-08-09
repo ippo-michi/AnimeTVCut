@@ -1,10 +1,20 @@
-export interface HlsMap {
+export type HlsMediaFormat = "mpegts" | "fmp4" | "unknown";
+export type HlsResourceKind = "segment" | "map";
+export type SafeResourceExtension = ".ts" | ".m4s" | ".mp4" | ".bin";
+
+export interface HlsResourceMetadata {
+  mediaFormat: HlsMediaFormat;
+  contentType: string;
+  safeExtension: SafeResourceExtension;
+}
+
+export interface HlsMap extends HlsResourceMetadata {
   uri: string;
   absoluteUri: string;
   byteRange?: string;
 }
 
-export interface HlsSegment {
+export interface HlsSegment extends HlsResourceMetadata {
   index: number;
   uri: string;
   absoluteUri: string;
@@ -30,8 +40,10 @@ export interface ComposedResource {
   id: string;
   sourceEpisodeId: string;
   absoluteUri: string;
-  kind: "segment" | "map";
+  kind: HlsResourceKind;
+  mediaFormat: HlsMediaFormat;
   contentType: string;
+  byteRange?: string;
 }
 
 export interface ComposedPlaylist {

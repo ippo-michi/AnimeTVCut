@@ -3,4 +3,5 @@ dist/
 coverage/
 *.tsbuildinfo
 fixtures/hls/episode*/
+fixtures/hls/fmp4-episode*/
 !fixtures/hls/.gitkeep

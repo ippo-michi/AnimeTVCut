@@ -32,7 +32,7 @@ describe("HLS Phase 1 components", () => {
     ]);
   });
 
-  it("records requested and outward segment-aligned coordinates", () => {
+  it("defaults to preserving content when no complete segment is removable", () => {
     const playlist = parseHlsVodPlaylist(playlistText, "fixture://episode1/playlist.m3u8");
     expect(
       alignRemovedRanges(playlist, [
@@ -42,12 +42,15 @@ describe("HLS Phase 1 components", () => {
       {
         episodeId: "ep1",
         type: "opening",
+        alignmentPolicy: "preserve_content",
+        status: "no_safe_segments",
+        reason: "no_complete_segments",
         requestedStart: 7,
         requestedEnd: 11,
-        appliedStart: 6,
-        appliedEnd: 12,
-        errorStart: -1,
-        errorEnd: 1,
+        appliedStart: null,
+        appliedEnd: null,
+        errorStart: null,
+        errorEnd: null,
       },
     ]);
   });
