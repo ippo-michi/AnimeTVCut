@@ -1,4 +1,8 @@
-import type { CutAlignmentPolicy, RemovedRange } from "@animetvcut/core";
+import type {
+  CutAlignmentPolicy,
+  RemovedRange,
+  SafeSourceSkipSegment,
+} from "@animetvcut/core";
 import {
   buildAutomaticCutPlan,
   DEFAULT_AUTOMATIC_CUT_POLICY,
@@ -259,6 +263,33 @@ export class UpstreamCutService {
         ? {}
         : { maxManifestBytes: request.maxManifestBytes }),
     });
+    this.cutService.attachOutputSkipSegments(
+      cut.cutId,
+      plan.episodes.flatMap((episode): SafeSourceSkipSegment[] =>
+        episode.segments.flatMap((segment) => {
+          if (
+            !segment.automaticRemoval ||
+            segment.unsafeReason !== undefined ||
+            segment.end === null ||
+            !Number.isFinite(segment.start) ||
+            !Number.isFinite(segment.end) ||
+            segment.start < 0 ||
+            segment.end <= segment.start ||
+            segment.decision === "unsafe_ignored"
+          )
+            return [];
+          return [
+            {
+              sourceEpisodeId: episode.episodeId,
+              type: segment.type,
+              start: segment.start,
+              end: segment.end,
+              decision: segment.decision === "remove" ? "remove" : "keep",
+            },
+          ];
+        }),
+      ),
+    );
     const subtitleTracks = await this.subtitleService?.discover(
       cut.cutId,
       selection,

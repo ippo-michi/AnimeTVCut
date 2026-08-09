@@ -84,6 +84,7 @@ describe("long-cut upstream orchestration", () => {
     );
     const cutService = {
       prepareSources,
+      attachOutputSkipSegments: vi.fn(),
       createCutFromPreparedSources: vi.fn(() => ({
         cutId: "cut",
         duration: 4,

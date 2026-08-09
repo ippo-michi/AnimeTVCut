@@ -1,10 +1,12 @@
 import {
   buildTimeline,
+  mapOutputSkipSegments,
   subtractRemovedRanges,
   type AppliedCut,
   type CutAlignmentPolicy,
   type RemovedRange,
   type SourceRange,
+  type SafeSourceSkipSegment,
   type TimelinePiece,
   type VirtualChapter,
 } from "@animetvcut/core";
@@ -72,6 +74,17 @@ export class CutService {
 
   public session(cutId: string) {
     return this.sessions.get(cutId);
+  }
+
+  public attachOutputSkipSegments(
+    cutId: string,
+    sourceSegments: readonly SafeSourceSkipSegment[],
+  ): void {
+    const session = this.sessions.get(cutId);
+    if (session === undefined) return;
+    const mapped = mapOutputSkipSegments(session.pieces, sourceSegments);
+    session.outputSkipSegments = mapped.segments;
+    session.outputSkipDiagnostics = mapped.diagnostics;
   }
 
   public async prepareSources(
@@ -186,6 +199,8 @@ export class CutService {
       resources,
       subtitleTracks: new Map(),
       subtitleDiagnostics: { discoveredPerEpisode: {}, issues: [] },
+      outputSkipSegments: [],
+      outputSkipDiagnostics: [],
       chapters: this.buildChapters(pieces, request.chapterEpisodes ?? []),
     });
 

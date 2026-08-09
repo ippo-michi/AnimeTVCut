@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 
 import type {
   AppliedCut,
+  OutputSkipDiagnostic,
+  OutputSkipSegment,
   TimelinePiece,
   VirtualChapter,
 } from "@animetvcut/core";
@@ -55,6 +57,8 @@ export interface CutSession {
   resources: ReadonlyMap<string, SessionResource>;
   subtitleTracks: Map<string, SessionSubtitleTrack>;
   subtitleDiagnostics: SubtitleSessionDiagnostics;
+  outputSkipSegments: readonly OutputSkipSegment[];
+  outputSkipDiagnostics: readonly OutputSkipDiagnostic[];
   chapters?: readonly VirtualChapter[];
   longFormDiagnostics?: {
     mode: "season" | "series";

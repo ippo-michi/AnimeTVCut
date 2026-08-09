@@ -61,4 +61,23 @@ export default tseslint.config(
       },
     },
   },
+  {
+    files: ["integrations/stremio-enhanced/*.plugin.js"],
+    languageOptions: {
+      globals: {
+        AbortController: "readonly",
+        URL: "readonly",
+        clearInterval: "readonly",
+        document: "readonly",
+        fetch: "readonly",
+        globalThis: "readonly",
+        MutationObserver: "readonly",
+        performance: "readonly",
+        queueMicrotask: "readonly",
+        setInterval: "readonly",
+        StremioEnhancedAPI: "readonly",
+        window: "readonly",
+      },
+    },
+  },
 );

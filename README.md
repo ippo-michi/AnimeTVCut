@@ -1,8 +1,8 @@
 # AnimeTVCut
 
-Phase 7 proof of concept for seekable virtual TV, Season, and Complete Series Cuts,
-including timeline-mapped external text subtitles from a standards-compatible Stremio
-stream addon.
+Phase 8 proof of concept for seekable virtual TV, Season, and Complete Series Cuts,
+including timeline-mapped external text subtitles and optional output-timeline skip
+controls for Stremio Enhanced and Stremio-Kai.
 
 ## Development
 
@@ -237,3 +237,65 @@ selected source families intentionally differ. It verifies Season and Complete C
 planning, global OP/ED behavior across the season boundary, prepared-playlist counts,
 lazy media, bounded long-subtitle fetching, chapters, fMP4 probing, ASS/libass validity,
 cross-season decode, and seeking.
+
+## Output-timeline skip controls
+
+Every automatic cut stores immutable, provider-neutral skip intervals mapped through
+the same actual `TimelinePiece[]` used by video, chapters, and subtitles. The public
+endpoint is:
+
+```text
+GET /media/cut/<cutId>/segments.json
+```
+
+It returns only safely bounded retained intro, outro, recap, and preview portions in
+final-output coordinates. Fully removed ranges disappear. Policy-kept ranges,
+preserve-content alignment leftovers, and partially retained safe fragments are
+identified explicitly. Ambiguous overlaps are omitted. Fetching this metadata touches
+the active cut session but performs no MediaFlow resource request, subtitle download,
+or new provider lookup. The official Stremio stream response remains standards-only;
+clients derive this same-origin URL from the public HLS URL.
+
+The optional clients share half-open interval semantics (`start <= time < end`) and
+seek exactly to `end`. Manual controls are enabled and all automatic skip types are
+disabled by default.
+
+### Stremio Enhanced
+
+Install
+[`integrations/stremio-enhanced/AnimeTVCutSkip.plugin.js`](integrations/stremio-enhanced/AnimeTVCutSkip.plugin.js)
+through Stremio Enhanced's plugin manager or copy it to the current Enhanced plugin
+directory. Enable **AnimeTVCutSkip**, then configure its native settings if desired.
+It activates only for AnimeTVCut playback and removes its overlay/state on video or
+route changes, playback end, cancellation, and plugin removal.
+
+### Stremio-Kai
+
+The Kai integration is an isolated mpv companion rather than a fork or replacement of
+Kai's native skip system. Give the installer the exact Kai directory explicitly:
+
+```powershell
+Set-Location .\integrations\stremio-kai
+.\install.ps1 -KaiDirectory "C:\path\to\Stremio-Kai"
+```
+
+This works for portable or installer-extracted layouts that contain
+`portable_config`. It copies only the AnimeTVCut script directory and, when absent, its
+own script-options file. During AnimeTVCut playback the companion shows an OSD prompt
+and temporarily binds **Tab**; leaving AnimeTVCut restores normal Kai behavior. It
+does not overwrite Kai's native `notify_skip`, chapters, or global preferences.
+
+```powershell
+.\uninstall.ps1 -KaiDirectory "C:\path\to\Stremio-Kai"
+```
+
+Current Kai has no stable public injection point for its clickable web overlay or
+gamepad action, so this version deliberately promises keyboard/OSD control only. Named
+mpv chapters are also left untouched. See the integration-specific READMEs for exact
+behavior and limitations.
+
+Run all Phase 8 server/client checks with:
+
+```bash
+pnpm test:skip-controls
+```

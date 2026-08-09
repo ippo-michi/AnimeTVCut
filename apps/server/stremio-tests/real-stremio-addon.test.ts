@@ -108,6 +108,11 @@ let partOne: PublicStream;
 let partTwo: PublicStream;
 let partOnePlaylist = "";
 let partTwoPlaylist = "";
+let partOneSegments: {
+  version: number;
+  duration: number;
+  segments: Array<{ type: string; start: number; end: number; reason: string }>;
+};
 let metadataOnlyStats: {
   upstreamStreamRequests: number;
   mediaFlowPlaylistRequests: number;
@@ -137,6 +142,12 @@ async function json<T>(url: string): Promise<T> {
   if (!response.ok)
     throw new Error(`GET ${url} failed: ${response.status} ${body}`);
   return JSON.parse(body) as T;
+}
+
+function cutId(url: string): string {
+  const match = /\/media\/cut\/([^/]+)\/master\.m3u8$/.exec(url);
+  if (match?.[1] === undefined) throw new Error("Missing opaque cut ID");
+  return match[1];
 }
 
 async function runMediaTool(
@@ -217,6 +228,9 @@ beforeAll(async () => {
   partOne = (JSON.parse(partOneStreamText) as { streams: PublicStream[] })
     .streams[0]!;
   partOnePlaylist = await (await fetch(partOne.url)).text();
+  partOneSegments = await json(
+    `${publicBaseUrl}media/cut/${cutId(partOne.url)}/segments.json`,
+  );
   const afterPartOneUpstream = await json<{ streamRequests: number }>(
     "http://127.0.0.1:18989/stats",
   );
@@ -352,6 +366,28 @@ describe("real metadata addon to grouped Stremio TV Cuts", () => {
     expect(preparedResourceRequests).toBe(0);
   });
 
+  it("publishes final-output TV Cut skip controls without changing Stremio fields", () => {
+    expect(partOneSegments).toMatchObject({ version: 1 });
+    expect(partOneSegments.duration).toBeCloseTo(66.008, 2);
+    expect(partOneSegments.segments).toEqual([
+      expect.objectContaining({
+        type: "intro",
+        start: 0,
+        end: 6,
+        reason: "policy_kept",
+      }),
+      expect.objectContaining({
+        type: "outro",
+        start: 60,
+        end: 66.008,
+        reason: "policy_kept",
+      }),
+    ]);
+    expect(JSON.parse(partOneStreamText).streams[0]).not.toHaveProperty(
+      "skipSegments",
+    );
+  });
+
   it("emits opaque fMP4 HLS and leaks no internal metadata or transport secrets", () => {
     expect(
       parseHlsVodPlaylist(partOnePlaylist, partOne.url).segments.length,
@@ -363,6 +399,7 @@ describe("real metadata addon to grouped Stremio TV Cuts", () => {
       partTwoStreamText,
       partOnePlaylist,
       partTwoPlaylist,
+      JSON.stringify(partOneSegments),
       capturedLogs,
     ].join("\n");
     expect(partOnePlaylist).toContain("#EXT-X-MAP");

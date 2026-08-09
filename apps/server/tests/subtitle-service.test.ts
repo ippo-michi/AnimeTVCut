@@ -26,6 +26,8 @@ function saveSession(store: CutSessionStore, id = "cut") {
     resources: new Map(),
     subtitleTracks: new Map(),
     subtitleDiagnostics: { discoveredPerEpisode: {}, issues: [] },
+    outputSkipSegments: [],
+    outputSkipDiagnostics: [],
   });
 }
 describe("subtitle session behavior", () => {

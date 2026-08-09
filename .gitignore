@@ -1,6 +1,7 @@
 node_modules/
 dist/
 coverage/
+__pycache__/
 *.tsbuildinfo
 fixtures/hls/episode*/
 fixtures/hls/fmp4-episode*/

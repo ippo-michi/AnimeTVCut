@@ -136,6 +136,38 @@ export function mediaRoutes(
       },
     );
 
+    app.options<{ Params: { cutId: string } }>(
+      "/media/cut/:cutId/segments.json",
+      async (_request, reply) =>
+        reply
+          .header("access-control-allow-origin", "*")
+          .header("access-control-allow-methods", "GET, OPTIONS")
+          .header("access-control-allow-headers", "Accept")
+          .code(204)
+          .send(),
+    );
+
+    app.get<{ Params: { cutId: string } }>(
+      "/media/cut/:cutId/segments.json",
+      async (request, reply) => {
+        const session = sessions.get(request.params.cutId);
+        if (session === undefined)
+          return reply
+            .header("access-control-allow-origin", "*")
+            .code(404)
+            .send({ error: "Cut session is missing or expired" });
+        sessions.touch(request.params.cutId);
+        return reply
+          .header("access-control-allow-origin", "*")
+          .header("cache-control", "private, max-age=300")
+          .send({
+            version: 1,
+            duration: session.duration,
+            segments: session.outputSkipSegments,
+          });
+      },
+    );
+
     app.get<{ Params: { cutId: string; trackFile: string } }>(
       "/media/cut/:cutId/subtitle/:trackFile",
       async (request, reply) => {
@@ -189,6 +221,22 @@ export function mediaRoutes(
         return diagnostic === undefined
           ? reply.code(404).send({ error: "Cut session is missing or expired" })
           : reply.send(diagnostic);
+      },
+    );
+
+    app.get<{ Params: { cutId: string } }>(
+      "/api/v1/dev/cuts/:cutId/segments",
+      async (request, reply) => {
+        const session = sessions.get(request.params.cutId);
+        if (session === undefined)
+          return reply
+            .code(404)
+            .send({ error: "Cut session is missing or expired" });
+        return reply.send({
+          sourceSegments: session.outputSkipDiagnostics.length,
+          outputSegments: session.outputSkipSegments.length,
+          relationships: session.outputSkipDiagnostics,
+        });
       },
     );
   };

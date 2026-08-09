@@ -123,9 +123,7 @@ describe("long-cut planning", () => {
     ).toEqual([0, 0, 1, 1]);
 
     const ambiguous = input.map((item) =>
-      item.season === 0
-        ? { ...item, released: "2025-02-01T00:00:00Z" }
-        : item,
+      item.season === 0 ? { ...item, released: "2025-02-01T00:00:00Z" } : item,
     );
     const plan = planLongCuts(ambiguous, { now, config });
     expect(plan.seriesCut.episodes.map((item) => item.season)).toEqual([1, 1]);

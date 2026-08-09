@@ -4,6 +4,15 @@ export {
   validateRemovedRanges,
 } from "./cut-plan/range-subtraction.js";
 export { buildTimeline, TimelineMapper } from "./timeline/timeline.js";
+export { mapOutputSkipSegments } from "./timeline/output-skip.js";
+export type {
+  OutputSkipDiagnostic,
+  OutputSkipMappingResult,
+  OutputSkipSegment,
+  OutputSkipSegmentReason,
+  OutputSkipSegmentType,
+  SafeSourceSkipSegment,
+} from "./timeline/output-skip.js";
 export { parseRuntimeSeconds } from "./grouping/runtime.js";
 export {
   DEFAULT_TV_CUT_GROUPING_CONFIG,

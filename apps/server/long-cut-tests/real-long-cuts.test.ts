@@ -138,6 +138,12 @@ let completeChapters: {
   duration: number;
   chapters: Array<{ title: string; start: number; sourceEpisodeId: string }>;
 };
+let seasonSegments: {
+  duration: number;
+  segments: Array<{ type: string; start: number; end: number; reason: string }>;
+};
+let completeSegments: typeof seasonSegments;
+let subtitleFilesAfterSegments = -1;
 let english = "";
 let japanese = "";
 let afterSeason: { playlists: number; resources: number; skips: number };
@@ -198,6 +204,9 @@ beforeAll(async () => {
       `${publicBaseUrl}stream/series/${encodeURIComponent(seasonOne.id)}.json`,
     )
   ).streams[0]!;
+  seasonSegments = await json(
+    `${publicBaseUrl}media/cut/${cutId(seasonStream.url)}/segments.json`,
+  );
   const flowAfterSeason = await json<{
     requests: { playlistRequests: number; resourceRequests: number };
   }>(`${publicBaseUrl}api/v1/dev/mediaflow/health`);
@@ -212,6 +221,12 @@ beforeAll(async () => {
       `${publicBaseUrl}stream/series/${encodeURIComponent(complete.meta.videos[0]!.id)}.json`,
     )
   ).streams[0]!;
+  completeSegments = await json(
+    `${publicBaseUrl}media/cut/${cutId(completeStream.url)}/segments.json`,
+  );
+  subtitleFilesAfterSegments = (
+    await json<{ total: number }>("http://127.0.0.1:19093/stats")
+  ).total;
   const flowAfterComplete = await json<{
     requests: { playlistRequests: number; resourceRequests: number };
   }>(`${publicBaseUrl}api/v1/dev/mediaflow/health`);
@@ -247,6 +262,21 @@ describe("real 12-episode Season and Complete Cuts", () => {
   it("prepares each source playlist once and leaves media bytes lazy", () => {
     expect(afterSeason).toEqual({ playlists: 6, resources: 0, skips: 6 });
     expect(afterComplete).toEqual({ playlists: 18, resources: 0, skips: 18 });
+  });
+
+  it("maps Season and Complete Cut controls onto their final global timelines", () => {
+    expect(seasonSegments.duration).toBeCloseTo(120, 1);
+    expect(seasonSegments.segments).toEqual([
+      expect.objectContaining({ type: "intro", start: 0, end: 6 }),
+      expect.objectContaining({ type: "outro", start: 114, end: 120.008 }),
+    ]);
+    expect(completeSegments.duration).toBeCloseTo(228, 1);
+    expect(completeSegments.segments).toEqual([
+      expect.objectContaining({ type: "intro", start: 0, end: 6 }),
+      expect.objectContaining({ type: "outro", start: 222, end: 228.008 }),
+    ]);
+    expect(afterComplete.resources).toBe(0);
+    expect(subtitleFilesAfterSegments).toBe(0);
   });
 
   it("selects strict family A for Season 1 and family B for Season 2", async () => {

@@ -70,7 +70,9 @@ function seasonZeroClearlyPrecedesNormalSeasons(
   );
   const normalReleases = normalSeasons.flatMap((season) =>
     season.episodes.map((episode) =>
-      episode.released === undefined ? Number.NaN : Date.parse(episode.released),
+      episode.released === undefined
+        ? Number.NaN
+        : Date.parse(episode.released),
     ),
   );
   return (

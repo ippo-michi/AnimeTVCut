@@ -1,0 +1,30 @@
+{
+  "version": 1,
+  "duration": 180,
+  "segments": [
+    {
+      "id": "s01",
+      "type": "intro",
+      "start": 0,
+      "end": 6,
+      "title": "Skip Intro",
+      "reason": "policy_kept"
+    },
+    {
+      "id": "s02",
+      "type": "recap",
+      "start": 60,
+      "end": 66,
+      "title": "Skip Recap",
+      "reason": "alignment_retained"
+    },
+    {
+      "id": "s03",
+      "type": "outro",
+      "start": 174,
+      "end": 180,
+      "title": "Skip Outro",
+      "reason": "partially_retained"
+    }
+  ]
+}
