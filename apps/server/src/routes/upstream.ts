@@ -22,6 +22,12 @@ const episodeSchema = z.object({
   episodeId: z.string().min(1).max(128),
   type: z.string().min(1).max(64),
   videoId: z.string().min(1).max(512),
+  skipIdentity: z
+    .object({
+      malAnimeId: z.number().int().positive(),
+      malEpisode: z.number().int().positive(),
+    })
+    .optional(),
 });
 
 const removeSchema = z.object({
@@ -38,6 +44,20 @@ const resolveSchema = z.object({
 
 const upstreamCutSchema = resolveSchema.extend({
   remove: z.array(removeSchema),
+  alignmentPolicy: z.enum(["preserve_content", "aggressive"]).optional(),
+  strictAlignment: z.boolean().optional(),
+});
+
+const automaticUpstreamCutSchema = resolveSchema.extend({
+  remove: z.array(removeSchema).optional(),
+  cutPolicy: z
+    .object({
+      openings: z.enum(["first_only", "remove_all", "keep_all"]).optional(),
+      endings: z.enum(["last_only", "remove_all", "keep_all"]).optional(),
+      removeRecaps: z.boolean().optional(),
+      removePreviews: z.boolean().optional(),
+    })
+    .optional(),
   alignmentPolicy: z.enum(["preserve_content", "aggressive"]).optional(),
   strictAlignment: z.boolean().optional(),
 });
@@ -117,6 +137,25 @@ export function upstreamRoutes(
         request.log.info(
           { errorName: error instanceof Error ? error.name : "UnknownError" },
           "Upstream cut rejected",
+        );
+        return reply.code(statusFor(error)).send(safeErrorBody(error));
+      }
+    });
+
+    app.post("/api/v1/dev/cuts/from-upstream/auto", async (request, reply) => {
+      const parsed = automaticUpstreamCutSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: "Invalid automatic upstream cut request",
+          details: parsed.error.flatten(),
+        });
+      }
+      try {
+        return await service.createAutomaticCut(parsed.data);
+      } catch (error) {
+        request.log.info(
+          { errorName: error instanceof Error ? error.name : "UnknownError" },
+          "Automatic upstream cut rejected",
         );
         return reply.code(statusFor(error)).send(safeErrorBody(error));
       }

@@ -13,10 +13,9 @@ export default defineConfig({
     },
   },
   test: {
-    coverage: {
-      reporter: ["text", "html"],
-    },
-    include: ["{apps,packages}/**/tests/**/*.test.ts"],
-    testTimeout: 30_000,
+    include: ["apps/server/skip-tests/**/*.test.ts"],
+    testTimeout: 180_000,
+    hookTimeout: 180_000,
+    fileParallelism: false,
   },
 });

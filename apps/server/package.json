@@ -10,6 +10,7 @@
   "dependencies": {
     "@animetvcut/core": "workspace:*",
     "@animetvcut/hls": "workspace:*",
+    "@animetvcut/skip-providers": "workspace:*",
     "fastify": "^5.6.2",
     "zod": "^3.25.76"
   }

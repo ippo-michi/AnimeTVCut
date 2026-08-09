@@ -7,16 +7,11 @@ const root = fileURLToPath(new URL(".", import.meta.url));
 export default defineConfig({
   resolve: {
     alias: {
-      "@animetvcut/core": `${root}packages/core/src/index.ts`,
-      "@animetvcut/hls": `${root}packages/hls/src/index.ts`,
       "@animetvcut/skip-providers": `${root}packages/skip-providers/src/index.ts`,
     },
   },
   test: {
-    coverage: {
-      reporter: ["text", "html"],
-    },
-    include: ["{apps,packages}/**/tests/**/*.test.ts"],
-    testTimeout: 30_000,
+    include: ["apps/server/live-tests/introdb-live.test.ts"],
+    testTimeout: 60_000,
   },
 });

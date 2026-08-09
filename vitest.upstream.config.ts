@@ -9,6 +9,7 @@ export default defineConfig({
     alias: {
       "@animetvcut/core": `${root}packages/core/src/index.ts`,
       "@animetvcut/hls": `${root}packages/hls/src/index.ts`,
+      "@animetvcut/skip-providers": `${root}packages/skip-providers/src/index.ts`,
     },
   },
   test: {

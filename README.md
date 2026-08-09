@@ -1,8 +1,8 @@
 # AnimeTVCut
 
-Phase 3 proof of concept for resolving standard Stremio episode streams, selecting one
-consistent release family across episodes, normalizing selected URL media through
-MediaFlow, and composing one seekable synthetic HLS VOD.
+Phase 4 proof of concept for resolving standard Stremio episode streams, selecting one
+consistent release family, normalizing it through MediaFlow, resolving conservative
+skip timestamps, and composing one seekable synthetic HLS VOD automatically.
 
 ## Development
 
@@ -59,6 +59,36 @@ normalizes, and transcodes the source into compatible HLS, but it does not recei
 `skip=` plan and does not decide which normalized segments are retained in the virtual
 cut. Maps and segments remain lazy and stream through opaque AnimeTVCut URLs on demand.
 
+## Automatic skip providers
+
+TheIntroDB and AniSkip are configured at application bootstrap:
+
+```text
+INTRODB_ENABLED=true
+INTRODB_BASE_URL=https://api.theintrodb.org/v3
+INTRODB_REQUEST_TIMEOUT_MS=10000
+INTRODB_MIN_CONFIDENCE=
+
+ANISKIP_ENABLED=true
+ANISKIP_BASE_URL=https://api.aniskip.com/v2
+ANISKIP_REQUEST_TIMEOUT_MS=10000
+```
+
+TheIntroDB derives its IMDb identity conservatively from Stremio IDs such as
+`tt1234567:1:3`. AniSkip runs only when an episode includes an explicit MAL identity;
+AnimeTVCut does not perform IMDb-to-MAL mapping.
+
+`POST /api/v1/dev/skip/resolve` returns provider-neutral diagnostics without creating a
+cut. `POST /api/v1/dev/cuts/from-upstream/auto` loads each normalized playlist once,
+uses its exact duration for timestamp lookup, applies the first-opening/last-ending
+policy, and passes safe bounded ranges through the existing `preserve_content` HLS
+alignment. The original manual endpoints remain independent from skip providers.
+
+Open-ended credits/previews, mixed OP/ED reports, invalid/out-of-duration ranges,
+duration mismatches, and reports below a configured confidence threshold are diagnostic
+only. Missing or failed providers leave footage intact rather than failing playback or
+guessing story boundaries.
+
 ```bash
 pnpm lint
 pnpm test
@@ -66,7 +96,10 @@ pnpm build
 pnpm test:integration
 pnpm test:mediaflow
 pnpm test:upstream
+pnpm test:skip
 pnpm test:aiostreams:live
+pnpm test:introdb:live
+pnpm test:aniskip:live
 ```
 
 `test:mediaflow` starts an isolated fixture-origin → MediaFlow container topology and
@@ -77,6 +110,11 @@ is used.
 Stremio → family selection → MediaFlow → AnimeTVCut → FFmpeg flow. The optional live
 AIOStreams smoke test is skipped unless `AIOSTREAMS_TEST_MANIFEST_URL`,
 `AIOSTREAMS_TEST_TYPE`, and three `AIOSTREAMS_TEST_VIDEO_ID_*` values are supplied.
+
+`test:skip` proves the full automatic fixture Stremio → MediaFlow → skip policy →
+AnimeTVCut → FFmpeg flow without manual `remove[]`. Live provider smoke tests are
+opt-in through the `INTRODB_TEST_*` and `ANISKIP_TEST_*` variables documented in
+`.env.example`; normal tests never depend on public timestamp services.
 
 Created cuts retain the initially selected URLs. Phase 3 deliberately does not refresh
 or hot-replace expired playback URLs; later work can re-query using the stable family,

@@ -3,6 +3,7 @@
   "references": [
     { "path": "packages/core" },
     { "path": "packages/hls" },
+    { "path": "packages/skip-providers" },
     { "path": "apps/server" }
   ]
 }

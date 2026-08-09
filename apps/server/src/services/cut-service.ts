@@ -11,6 +11,7 @@ import {
   alignRemovedRanges,
   composeHlsVod,
   type CompositionSource,
+  type HlsVodPlaylist,
 } from "@animetvcut/hls";
 
 import type { CutSessionStore, SessionResource } from "./cut-session-store.js";
@@ -31,6 +32,18 @@ export interface DevCutResponse {
   appliedCuts: AppliedCut[];
 }
 
+export interface PreparedInputSource {
+  source: MediaInputSource;
+  playlist: HlsVodPlaylist;
+}
+
+export interface PreparedCutRequest {
+  sources: readonly PreparedInputSource[];
+  remove: RemovedRange[];
+  alignmentPolicy?: CutAlignmentPolicy;
+  strictAlignment?: boolean;
+}
+
 export class CutService {
   public constructor(
     private readonly sourceLoader: HlsSourceLoader,
@@ -38,13 +51,34 @@ export class CutService {
   ) {}
 
   public async createCut(request: DevCutRequest): Promise<DevCutResponse> {
+    const sources = await this.prepareSources(request.sources);
+    return this.createCutFromPreparedSources({ ...request, sources });
+  }
+
+  public async prepareSources(
+    sources: readonly MediaInputSource[],
+  ): Promise<PreparedInputSource[]> {
     const episodeIds = new Set<string>();
-    for (const source of request.sources) {
+    const prepared: PreparedInputSource[] = [];
+    for (const source of sources) {
       if (episodeIds.has(source.episodeId)) {
         throw new Error(`Duplicate episode ID: ${source.episodeId}`);
       }
       episodeIds.add(source.episodeId);
+      prepared.push({
+        source,
+        playlist: await this.sourceLoader.loadPlaylist(source),
+      });
     }
+    return prepared;
+  }
+
+  public createCutFromPreparedSources(
+    request: PreparedCutRequest,
+  ): DevCutResponse {
+    const episodeIds = new Set(
+      request.sources.map(({ source }) => source.episodeId),
+    );
     for (const removal of request.remove) {
       if (!episodeIds.has(removal.episodeId)) {
         throw new Error(
@@ -57,8 +91,7 @@ export class CutService {
     const retainedRanges: SourceRange[] = [];
     const allAppliedCuts: AppliedCut[] = [];
 
-    for (const source of request.sources) {
-      const playlist = await this.sourceLoader.loadPlaylist(source);
+    for (const { source, playlist } of request.sources) {
       compositionSources.push({ episodeId: source.episodeId, playlist });
       const requested = request.remove.filter(
         (removal) => removal.episodeId === source.episodeId,
@@ -100,7 +133,7 @@ export class CutService {
     const composed = composeHlsVod(cutId, compositionSources, pieces);
     const resources = new Map<string, SessionResource>();
     const sourcesByEpisode = new Map(
-      request.sources.map((source) => [source.episodeId, source]),
+      request.sources.map(({ source }) => [source.episodeId, source]),
     );
     for (const resource of composed.resources) {
       const source = sourcesByEpisode.get(resource.sourceEpisodeId);

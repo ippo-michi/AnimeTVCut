@@ -41,6 +41,9 @@ importers:
       '@animetvcut/hls':
         specifier: workspace:*
         version: link:../../packages/hls
+      '@animetvcut/skip-providers':
+        specifier: workspace:*
+        version: link:../../packages/skip-providers
       fastify:
         specifier: ^5.6.2
         version: 5.11.3
@@ -55,6 +58,8 @@ importers:
       '@animetvcut/core':
         specifier: workspace:*
         version: link:../core
+
+  packages/skip-providers: {}
 
 packages:
 

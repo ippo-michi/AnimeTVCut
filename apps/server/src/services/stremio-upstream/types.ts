@@ -1,9 +1,11 @@
 import type { HttpMediaSource } from "../hls-source-loader.js";
+import type { ExplicitSkipIdentity } from "@animetvcut/skip-providers";
 
 export interface UpstreamEpisodeReference {
   episodeId: string;
   type: string;
   videoId: string;
+  skipIdentity?: ExplicitSkipIdentity;
 }
 
 export interface StremioManifestResource {

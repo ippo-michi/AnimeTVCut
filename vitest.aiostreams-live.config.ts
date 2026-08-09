@@ -9,10 +9,11 @@ export default defineConfig({
     alias: {
       "@animetvcut/core": `${root}packages/core/src/index.ts`,
       "@animetvcut/hls": `${root}packages/hls/src/index.ts`,
+      "@animetvcut/skip-providers": `${root}packages/skip-providers/src/index.ts`,
     },
   },
   test: {
-    include: ["apps/server/live-tests/**/*.test.ts"],
+    include: ["apps/server/live-tests/aiostreams-live.test.ts"],
     testTimeout: 60_000,
   },
 });
