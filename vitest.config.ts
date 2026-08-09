@@ -11,6 +11,7 @@ export default defineConfig({
       "@animetvcut/hls": `${root}packages/hls/src/index.ts`,
       "@animetvcut/skip-providers": `${root}packages/skip-providers/src/index.ts`,
       "@animetvcut/stremio": `${root}packages/stremio/src/index.ts`,
+      "@animetvcut/subtitles": `${root}packages/subtitles/src/index.ts`,
     },
   },
   test: {

@@ -11,6 +11,10 @@ const MAX_NAME_LENGTH = 256;
 const MAX_DESCRIPTION_LENGTH = 4_096;
 const MAX_FILENAME_LENGTH = 1_024;
 const MAX_BINGE_GROUP_LENGTH = 512;
+const MAX_VIDEO_HASH_LENGTH = 256;
+const MAX_SUBTITLE_ID_LENGTH = 256;
+const MAX_SUBTITLE_LANG_LENGTH = 64;
+const MAX_SUBTITLE_COUNT = 100;
 const MAX_HEADER_COUNT = 32;
 const MAX_HEADER_NAME_LENGTH = 128;
 const MAX_HEADER_VALUE_LENGTH = 8_192;
@@ -83,6 +87,42 @@ function parseRequestHeaders(value: unknown): Readonly<Record<string, string>> {
     headers[name] = rawValue;
   }
   return headers;
+}
+
+function parseSubtitles(value: unknown): UrlStreamCandidate["subtitles"] {
+  if (!Array.isArray(value) || value.length > MAX_SUBTITLE_COUNT) return [];
+  return value.flatMap((entry) => {
+    if (!isRecord(entry)) return [];
+    const id = boundedOptionalString(entry.id, MAX_SUBTITLE_ID_LENGTH);
+    const urlText = boundedOptionalString(entry.url, MAX_URL_LENGTH);
+    const lang = boundedOptionalString(entry.lang, MAX_SUBTITLE_LANG_LENGTH);
+    if (
+      id === undefined ||
+      urlText === undefined ||
+      lang === undefined ||
+      [...id].some(
+        (character) =>
+          character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127,
+      ) ||
+      [...lang].some(
+        (character) =>
+          character.charCodeAt(0) <= 31 || character.charCodeAt(0) === 127,
+      )
+    )
+      return [];
+    try {
+      const url = new URL(urlText);
+      if (
+        (url.protocol !== "http:" && url.protocol !== "https:") ||
+        url.username !== "" ||
+        url.password !== ""
+      )
+        return [];
+      return [{ id, url: url.toString(), lang, source: "stream" as const }];
+    } catch {
+      return [];
+    }
+  });
 }
 
 function classifyCandidate(raw: unknown, rank: number): StremioStreamCandidate {
@@ -164,6 +204,10 @@ function classifyCandidate(raw: unknown, rank: number): StremioStreamCandidate {
       hints.videoSize >= 0
         ? hints.videoSize
         : undefined;
+    const videoHash = boundedOptionalString(
+      hints.videoHash,
+      MAX_VIDEO_HASH_LENGTH,
+    );
     const notWebReady =
       typeof hints.notWebReady === "boolean" ? hints.notWebReady : undefined;
     const candidate: UrlStreamCandidate = {
@@ -171,11 +215,13 @@ function classifyCandidate(raw: unknown, rank: number): StremioStreamCandidate {
       kind: "url",
       url: url.toString(),
       requestHeaders,
+      subtitles: parseSubtitles(raw.subtitles),
       ...(name === undefined ? {} : { name }),
       ...(description === undefined ? {} : { description }),
       ...(filename === undefined ? {} : { filename }),
       ...(bingeGroup === undefined ? {} : { bingeGroup }),
       ...(videoSize === undefined ? {} : { videoSize }),
+      ...(videoHash === undefined ? {} : { videoHash }),
       ...(notWebReady === undefined ? {} : { notWebReady }),
     };
     return candidate;

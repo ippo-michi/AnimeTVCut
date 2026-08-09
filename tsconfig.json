@@ -5,6 +5,7 @@
     { "path": "packages/hls" },
     { "path": "packages/skip-providers" },
     { "path": "packages/stremio" },
+    { "path": "packages/subtitles" },
     { "path": "apps/server" }
   ]
 }

@@ -4,11 +4,14 @@ const port = Number.parseInt(process.env.FIXTURE_STREMIO_PORT ?? "8091", 10);
 const mediaOrigin =
   process.env.FIXTURE_MEDIA_ORIGIN ?? "http://fixture-origin:8090";
 const mediaToken = process.env.FIXTURE_MEDIA_TOKEN ?? "stremio-upstream-secret";
+const subtitleOrigin =
+  process.env.FIXTURE_SUBTITLE_ORIGIN ?? "http://127.0.0.1:19093";
 const addonBase = "/stremio/test-user/test-secret";
 const counts = {
   manifestRequests: 0,
   streamRequests: 0,
   streamByVideoId: {},
+  subtitleRequests: 0,
 };
 
 function json(response, statusCode, value) {
@@ -30,11 +33,29 @@ function urlCandidate(episode, family, filename) {
       bingeGroup: `family-${family}`,
       filename,
       videoSize: 350000 + episode * 1000,
+      videoHash: `fixture-hash-${episode}`,
       notWebReady: true,
       proxyHeaders: {
         request: { "X-Test-Token": mediaToken },
       },
     },
+    ...(family === "A"
+      ? {
+          subtitles: [
+            {
+              id: "english-full",
+              url: `${subtitleOrigin}/episode${episode}.eng.srt?signed=subtitle-secret-${episode}`,
+              lang: "eng",
+            },
+            {
+              id: "japanese-styled",
+              url: `${subtitleOrigin}/episode${episode}.jpn.ass?signed=subtitle-secret-${episode}`,
+              lang: "jpn",
+            },
+            { id: "malformed", url: "file:///etc/passwd", lang: "eng" },
+          ],
+        }
+      : {}),
   };
 }
 
@@ -90,6 +111,39 @@ const server = createServer((request, response) => {
           name: "stream",
           types: ["series"],
           idPrefixes: ["tt", "fixture:"],
+        },
+        { name: "subtitles", types: ["series"] },
+      ],
+    });
+  }
+  const subtitlePrefix = `${addonBase}/subtitles/series/`;
+  if (
+    url.pathname.startsWith(subtitlePrefix) &&
+    url.pathname.endsWith(".json")
+  ) {
+    const tail = decodeURIComponent(
+      url.pathname.slice(subtitlePrefix.length, -5),
+    );
+    const slash = tail.indexOf("/");
+    const extra = new URL(
+      `http://fixture/?${slash < 0 ? "" : tail.slice(slash + 1)}`,
+    ).searchParams;
+    const videoId = extra.get("videoID") ?? "";
+    const match = /:([1-6])$/.exec(videoId);
+    if (match?.[1] === undefined) return json(response, 200, { subtitles: [] });
+    const episode = Number(match[1]);
+    counts.subtitleRequests += 1;
+    return json(response, 200, {
+      subtitles: [
+        {
+          id: "french-full",
+          url: `${subtitleOrigin}/episode${episode}.fra.vtt?resource=subtitle-resource-secret-${episode}`,
+          lang: "fra",
+        },
+        {
+          id: "english-full",
+          url: `${subtitleOrigin}/episode${episode}.eng.srt?signed=subtitle-secret-${episode}`,
+          lang: "ENG",
         },
       ],
     });

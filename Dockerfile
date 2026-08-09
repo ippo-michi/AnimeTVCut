@@ -7,6 +7,7 @@ COPY packages/core/package.json packages/core/package.json
 COPY packages/hls/package.json packages/hls/package.json
 COPY packages/skip-providers/package.json packages/skip-providers/package.json
 COPY packages/stremio/package.json packages/stremio/package.json
+COPY packages/subtitles/package.json packages/subtitles/package.json
 RUN pnpm install --frozen-lockfile
 COPY . .
 RUN pnpm fixtures:generate && pnpm build
@@ -21,12 +22,14 @@ COPY --from=build /app/packages/core/package.json packages/core/package.json
 COPY --from=build /app/packages/hls/package.json packages/hls/package.json
 COPY --from=build /app/packages/skip-providers/package.json packages/skip-providers/package.json
 COPY --from=build /app/packages/stremio/package.json packages/stremio/package.json
+COPY --from=build /app/packages/subtitles/package.json packages/subtitles/package.json
 RUN pnpm install --prod --frozen-lockfile
 COPY --from=build /app/apps/server/dist apps/server/dist
 COPY --from=build /app/packages/core/dist packages/core/dist
 COPY --from=build /app/packages/hls/dist packages/hls/dist
 COPY --from=build /app/packages/skip-providers/dist packages/skip-providers/dist
 COPY --from=build /app/packages/stremio/dist packages/stremio/dist
+COPY --from=build /app/packages/subtitles/dist packages/subtitles/dist
 COPY --from=build /app/fixtures/hls fixtures/hls
 EXPOSE 3000
 CMD ["node", "apps/server/dist/server.js"]

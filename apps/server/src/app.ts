@@ -42,6 +42,11 @@ import { StremioEpisodeSourceResolver } from "./services/stremio-upstream/resolv
 import type { EpisodeSourceResolver } from "./services/stremio-upstream/types.js";
 import { UpstreamCutService } from "./services/upstream-cut-service.js";
 import { TvCutCatalogService } from "./services/tv-cut-catalog-service.js";
+import {
+  createSubtitleConfig,
+  type SubtitleConfigInput,
+} from "./services/subtitle-config.js";
+import { SubtitleService } from "./services/subtitle-service.js";
 
 export interface AppOptions {
   fixtureRoot?: string;
@@ -60,6 +65,7 @@ export interface AppOptions {
   groupingConfig?: TvCutGroupingConfig;
   now?: () => number;
   streamCacheTtlMs?: number;
+  subtitles?: SubtitleConfigInput;
 }
 
 export function createApp(options: AppOptions = {}): FastifyInstance {
@@ -88,6 +94,21 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     (options.upstreamStremio === undefined
       ? undefined
       : new StremioUpstreamClient(options.upstreamStremio));
+  const subtitleInput = options.subtitles ?? {};
+  const subtitleConfig = createSubtitleConfig({
+    ...subtitleInput,
+    allowedOrigins: [
+      ...(subtitleInput.allowedOrigins ?? []),
+      ...(upstreamClient === undefined
+        ? []
+        : [upstreamClient.config.manifestUrl.origin]),
+    ],
+  });
+  const subtitleService = new SubtitleService(
+    subtitleConfig,
+    sessions,
+    upstreamClient,
+  );
   const episodeSourceResolver =
     options.episodeSourceResolver ??
     (upstreamClient === undefined
@@ -101,6 +122,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     episodeSourceResolver,
     cutService,
     skipService,
+    subtitleService,
   );
   const metadataClient =
     options.metadataClient ??
@@ -125,7 +147,7 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   void app.register(upstreamRoutes(upstreamCutService));
   void app.register(metadataRoutes(metadataClient, tvCutCatalogService));
   void app.register(publicStremioRoutes(tvCutCatalogService));
-  void app.register(mediaRoutes(sessions));
+  void app.register(mediaRoutes(sessions, subtitleService));
 
   return app;
 }

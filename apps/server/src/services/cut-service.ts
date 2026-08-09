@@ -159,6 +159,8 @@ export class CutService {
       pieces,
       appliedCuts: allAppliedCuts,
       resources,
+      subtitleTracks: new Map(),
+      subtitleDiagnostics: { discoveredPerEpisode: {}, issues: [] },
     });
 
     return {

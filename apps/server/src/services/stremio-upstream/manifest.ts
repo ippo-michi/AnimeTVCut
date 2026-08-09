@@ -127,3 +127,31 @@ export function buildStreamResourceUrl(
     reference.videoId,
   ]);
 }
+
+export function manifestSupportsSubtitles(
+  manifest: StremioManifest,
+  reference: UpstreamEpisodeReference,
+): boolean {
+  return manifest.resources
+    .filter((resource) => resource.name === "subtitles")
+    .some((resource) => {
+      const types = resource.types ?? manifest.types;
+      return types.length === 0 || types.includes(reference.type);
+    });
+}
+
+export function buildSubtitleResourceUrl(
+  manifestUrl: URL,
+  reference: UpstreamEpisodeReference,
+  videoHash: string,
+  videoSize?: number,
+): URL {
+  return deriveStremioResourceUrl(
+    manifestUrl,
+    ["subtitles", reference.type, videoHash],
+    {
+      videoID: reference.videoId,
+      ...(videoSize === undefined ? {} : { videoSize }),
+    },
+  );
+}

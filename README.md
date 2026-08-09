@@ -1,8 +1,7 @@
 # AnimeTVCut
 
-Phase 5 proof of concept for discovering series through a generic Stremio metadata
-addon, grouping released episodes into stable TV Cut parts, resolving each exact
-episode through the existing upstream addon, and composing seekable synthetic HLS.
+Phase 6 proof of concept for composing seekable virtual TV Cuts and external text
+subtitles supplied through the selected standards-compatible Stremio stream addon.
 
 ## Development
 
@@ -58,6 +57,30 @@ AnimeTVCut owns the retained timeline and cut-alignment policy. MediaFlow proxie
 normalizes, and transcodes the source into compatible HLS, but it does not receive a
 `skip=` plan and does not decide which normalized segments are retained in the virtual
 cut. Maps and segments remain lazy and stream through opaque AnimeTVCut URLs on demand.
+
+## Composed subtitles
+
+The public stream response attaches AnimeTVCut-owned `subtitles[]` URLs for complete,
+unambiguous cross-episode subtitle families. Discovery first uses standard subtitles
+attached to the selected Stremio `Stream`; when `behaviorHints.videoHash` is available
+and the configured manifest declares `subtitles`, it may also query that standard
+resource using the exact opaque episode ID. No AIOStreams-private API is used.
+
+SRT and WebVTT sources compose into UTF-8 WebVTT. Styled ASS and SSA sources compose
+into ASS, with per-episode style namespacing and reset-style reference rewriting.
+Every cue is clipped or split against the cut session's actual segment-aligned
+`TimelinePiece[]`, so subtitle timing always agrees with retained video rather than
+provider-requested skip coordinates.
+
+Subtitle files are fetched only when the player requests one opaque track URL. The
+result is cached for the in-memory cut lifetime, and concurrent requests coalesce.
+Remote fetches have scheme, credential, DNS/SSRF, redirect, timeout, and byte limits.
+Private fixture or self-hosted origins require an explicit `SUBTITLE_ALLOWED_ORIGINS`
+entry; private networks are rejected by default.
+
+Phase 6 does not extract embedded MKV subtitles, PGS/VobSub, image subtitles, or fonts
+attached only inside an MKV. WebVTT STYLE/REGION blocks are omitted while cue content
+and compatible cue settings are retained. SSA is normalized into the common ASS model.
 
 ## Automatic skip providers
 
@@ -167,6 +190,7 @@ Run the real six-episode topology with pinned MediaFlow Proxy `v2.4.9`:
 
 ```bash
 pnpm test:stremio
+pnpm test:subtitles
 pnpm test:aiometadata:live
 pnpm test:cinemeta:live
 ```

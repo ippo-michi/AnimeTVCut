@@ -41,6 +41,39 @@ function routingFetch(streams: unknown[] = []): typeof fetch {
 }
 
 describe("Stremio upstream client", () => {
+  it("uses the standard authenticated subtitle resource with exact videoID extras", async () => {
+    const requested: string[] = [];
+    const client = new StremioUpstreamClient(
+      {
+        manifestUrl:
+          "https://addon.test/private/token/manifest.json?auth=secret",
+      },
+      async (input) => {
+        const url = new URL(String(input));
+        requested.push(url.href);
+        if (url.pathname.endsWith("manifest.json"))
+          return Response.json({
+            ...manifest,
+            resources: [
+              ...manifest.resources,
+              { name: "subtitles", types: ["series"] },
+            ],
+          });
+        return Response.json({
+          subtitles: [
+            { id: "fr", url: "https://subs.test/e.vtt", lang: "fra" },
+          ],
+        });
+      },
+    );
+    expect(
+      await client.getSubtitles(reference, "hash-value", 456),
+    ).toHaveLength(1);
+    expect(requested[1]).toContain(
+      "/private/token/subtitles/series/hash-value/videoID=tt1234567%3A1%3A2&videoSize=456.json?auth=secret",
+    );
+    expect(client.stats.subtitleRequests).toBe(1);
+  });
   it("fetches the authenticated resource path and parses candidates", async () => {
     const mock = routingFetch([
       { infoHash: "abc" },

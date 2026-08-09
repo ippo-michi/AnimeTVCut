@@ -19,6 +19,10 @@ import type {
   SanitizedCandidateSelection,
   UpstreamEpisodeReference,
 } from "./stremio-upstream/types.js";
+import type {
+  SubtitleService,
+  PublicSubtitleTrack,
+} from "./subtitle-service.js";
 
 export interface UpstreamCutRequest {
   episodes: readonly UpstreamEpisodeReference[];
@@ -30,6 +34,7 @@ export interface UpstreamCutRequest {
 
 export interface UpstreamCutResponse extends DevCutResponse {
   selection: SanitizedCandidateSelection;
+  subtitleTracks?: readonly PublicSubtitleTrack[];
 }
 
 export interface AutomaticUpstreamCutRequest {
@@ -46,6 +51,7 @@ export class UpstreamCutService {
     private readonly resolver: EpisodeSourceResolver | undefined,
     private readonly cutService: CutService,
     private readonly skipService?: SkipService,
+    private readonly subtitleService?: SubtitleService,
   ) {}
 
   public async resolveEpisodes(
@@ -135,8 +141,13 @@ export class UpstreamCutService {
         ? {}
         : { strictAlignment: request.strictAlignment }),
     });
+    const subtitleTracks = await this.subtitleService?.discover(
+      cut.cutId,
+      selection,
+    );
     return {
       ...cut,
+      ...(subtitleTracks === undefined ? {} : { subtitleTracks }),
       selection: sanitizeCandidateSelection(selection),
       skipPlan: {
         policy,

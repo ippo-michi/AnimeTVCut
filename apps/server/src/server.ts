@@ -3,6 +3,7 @@ import { mediaFlowConfigFromEnv } from "./services/mediaflow/config.js";
 import { metadataConfigurationFromEnv } from "./services/metadata-config.js";
 import { skipProvidersFromEnv } from "./services/skip-config.js";
 import { stremioUpstreamConfigFromEnv } from "./services/stremio-upstream/config.js";
+import { subtitleConfigFromEnv } from "./services/subtitle-config.js";
 
 const metadata = metadataConfigurationFromEnv(process.env);
 const app = createApp({
@@ -13,6 +14,7 @@ const app = createApp({
   metadataStremio: metadata.stremio,
   publicBaseUrl: metadata.publicBaseUrl,
   groupingConfig: metadata.grouping,
+  subtitles: subtitleConfigFromEnv(process.env),
 });
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const host = process.env.HOST ?? "127.0.0.1";

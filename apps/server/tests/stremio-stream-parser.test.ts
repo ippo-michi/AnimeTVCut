@@ -6,6 +6,39 @@ import {
 } from "../src/services/stremio-upstream/stream-parser.js";
 
 describe("standard Stremio stream parsing", () => {
+  it("preserves valid subtitles and videoHash while dropping malformed subtitle entries", () => {
+    const candidate = parseStremioStreamResponse({
+      streams: [
+        {
+          url: "https://media.test/e.mkv",
+          subtitles: [
+            {
+              id: "english",
+              url: "https://subs.test/e.srt",
+              lang: "eng",
+              extra: "ignored",
+            },
+            { id: "bad", url: "file:///etc/passwd", lang: "eng" },
+            { id: "", url: "https://subs.test/x.srt", lang: "eng" },
+          ],
+          behaviorHints: { videoHash: "bounded-hash", videoSize: 123 },
+        },
+      ],
+    })[0];
+    expect(candidate).toMatchObject({
+      kind: "url",
+      videoHash: "bounded-hash",
+      videoSize: 123,
+      subtitles: [
+        {
+          id: "english",
+          url: "https://subs.test/e.srt",
+          lang: "eng",
+          source: "stream",
+        },
+      ],
+    });
+  });
   it.each(["http://media.test/video.mkv", "https://media.test/video.m3u8"])(
     "accepts an HTTP(S) URL candidate: %s",
     (url) => {

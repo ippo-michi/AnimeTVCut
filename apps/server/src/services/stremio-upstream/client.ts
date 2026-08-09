@@ -11,18 +11,23 @@ import {
 import {
   assertManifestSupportsReference,
   buildStreamResourceUrl,
+  buildSubtitleResourceUrl,
+  manifestSupportsSubtitles,
   parseStremioManifest,
 } from "./manifest.js";
 import { manifestOrigin } from "./redaction.js";
 import { parseStremioStreamResponse } from "./stream-parser.js";
+import { parseStremioSubtitleResponse } from "./subtitle-parser.js";
 import type {
   StremioManifest,
   StremioStreamCandidate,
   UpstreamEpisodeReference,
+  UpstreamSubtitle,
 } from "./types.js";
 
 const MAX_MANIFEST_BYTES = 256 * 1024;
 const MAX_STREAM_RESPONSE_BYTES = 2 * 1024 * 1024;
+const MAX_SUBTITLE_RESPONSE_BYTES = 2 * 1024 * 1024;
 
 type FetchImplementation = typeof fetch;
 
@@ -34,6 +39,7 @@ interface CacheEntry<T> {
 export interface StremioUpstreamRequestStats {
   manifestRequests: number;
   streamRequests: number;
+  subtitleRequests?: number;
 }
 
 function parseContentLength(value: string | null): number | undefined {
@@ -86,9 +92,14 @@ export class StremioUpstreamClient {
     string,
     CacheEntry<readonly StremioStreamCandidate[]>
   >();
-  private readonly counters: StremioUpstreamRequestStats = {
+  private readonly counters: {
+    manifestRequests: number;
+    streamRequests: number;
+    subtitleRequests: number;
+  } = {
     manifestRequests: 0,
     streamRequests: 0,
+    subtitleRequests: 0,
   };
 
   public constructor(
@@ -100,7 +111,13 @@ export class StremioUpstreamClient {
   }
 
   public get stats(): Readonly<StremioUpstreamRequestStats> {
-    return { ...this.counters };
+    return {
+      manifestRequests: this.counters.manifestRequests,
+      streamRequests: this.counters.streamRequests,
+      ...(this.counters.subtitleRequests === 0
+        ? {}
+        : { subtitleRequests: this.counters.subtitleRequests }),
+    };
   }
 
   public get safeOrigin(): string {
@@ -184,6 +201,39 @@ export class StremioUpstreamClient {
     }
   }
 
+  public async getSubtitles(
+    reference: UpstreamEpisodeReference,
+    videoHash: string,
+    videoSize?: number,
+    signal?: AbortSignal,
+  ): Promise<readonly UpstreamSubtitle[]> {
+    const manifest = await this.getManifest(signal);
+    if (!manifestSupportsSubtitles(manifest, reference)) return [];
+    const url = buildSubtitleResourceUrl(
+      this.config.manifestUrl,
+      reference,
+      videoHash,
+      videoSize,
+    );
+    const response = await this.request(url, "subtitles", signal);
+    this.requireSuccessfulResponse(response, "subtitles");
+    const body = await readBoundedJson(
+      response,
+      MAX_SUBTITLE_RESPONSE_BYTES,
+      (reason) =>
+        new StremioStreamResponseInvalidError(
+          `Upstream Stremio subtitle response ${reason}.`,
+        ),
+    );
+    try {
+      return parseStremioSubtitleResponse(body);
+    } catch {
+      throw new StremioStreamResponseInvalidError(
+        "Upstream Stremio subtitle response is invalid.",
+      );
+    }
+  }
+
   private async fetchManifest(signal?: AbortSignal): Promise<StremioManifest> {
     const response = await this.request(
       this.config.manifestUrl,
@@ -209,11 +259,12 @@ export class StremioUpstreamClient {
 
   private async request(
     url: URL,
-    kind: "manifest" | "stream",
+    kind: "manifest" | "stream" | "subtitles",
     callerSignal?: AbortSignal,
   ): Promise<Response> {
     if (kind === "manifest") this.counters.manifestRequests += 1;
-    else this.counters.streamRequests += 1;
+    else if (kind === "stream") this.counters.streamRequests += 1;
+    else this.counters.subtitleRequests += 1;
     const timeoutSignal = AbortSignal.timeout(this.config.requestTimeoutMs);
     const signal =
       callerSignal === undefined
@@ -237,7 +288,7 @@ export class StremioUpstreamClient {
 
   private requireSuccessfulResponse(
     response: Response,
-    kind: "manifest" | "stream",
+    kind: "manifest" | "stream" | "subtitles",
   ): void {
     if (response.status >= 300 && response.status < 400) {
       void response.body?.cancel();

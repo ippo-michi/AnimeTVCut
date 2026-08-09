@@ -30,6 +30,7 @@ services:
     environment:
       FIXTURE_MEDIA_ORIGIN: http://fixture-origin:8090
       FIXTURE_MEDIA_TOKEN: stremio-upstream-secret
+      FIXTURE_SUBTITLE_ORIGIN: http://127.0.0.1:19093
     volumes:
       - ..:/workspace:ro
     ports:
@@ -42,6 +43,25 @@ services:
           "node",
           "-e",
           "fetch('http://127.0.0.1:8091/health').then(r=>{if(!r.ok)process.exit(1)})",
+        ]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+
+  fixture-subtitles:
+    image: node:22-alpine
+    working_dir: /workspace
+    command: ["node", "scripts/fixture-subtitle-origin.mjs"]
+    volumes: ["..:/workspace:ro"]
+    ports: ["127.0.0.1:19093:8093"]
+    networks: [phase5-test]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8093/health').then(r=>{if(!r.ok)process.exit(1)})",
         ]
       interval: 2s
       timeout: 2s
@@ -82,6 +102,8 @@ services:
       fixture-stremio:
         condition: service_healthy
       fixture-metadata:
+        condition: service_healthy
+      fixture-subtitles:
         condition: service_healthy
     healthcheck:
       test:

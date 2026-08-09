@@ -42,7 +42,8 @@ export interface PublicStreamResponse {
     name: string;
     title: string;
     url: string;
-    behaviorHints: { bingeGroup: string };
+    subtitles?: readonly { id: string; url: string; lang: string }[];
+    behaviorHints: { bingeGroup: string; notWebReady: true };
   }[];
 }
 
@@ -232,7 +233,21 @@ export class TvCutCatalogService {
           name: "AnimeTVCut",
           title: `TV Cut Part ${group.part} · Episodes ${group.firstEpisode}–${group.lastEpisode}`,
           url: new URL(cut.playlistUrl.slice(1), this.publicBaseUrl).toString(),
+          ...(cut.subtitleTracks === undefined ||
+          cut.subtitleTracks.length === 0
+            ? {}
+            : {
+                subtitles: cut.subtitleTracks.map((track) => ({
+                  id: `atc-${track.id}`,
+                  url: new URL(
+                    `media/cut/${cut.cutId}/subtitle/${track.id}.${track.extension}`,
+                    this.publicBaseUrl,
+                  ).toString(),
+                  lang: track.lang,
+                })),
+              }),
           behaviorHints: {
+            notWebReady: true,
             bingeGroup: `animetvcut-tv-${createHash("sha256")
               .update(`${coordinates.sourceId}\0automatic`)
               .digest("base64url")

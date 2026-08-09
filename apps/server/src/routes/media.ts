@@ -6,6 +6,7 @@ import {
   type MediaReadRange,
 } from "../services/hls-source-loader.js";
 import { MediaFlowError } from "../services/mediaflow/errors.js";
+import type { SubtitleService } from "../services/subtitle-service.js";
 
 interface MediaParams {
   cutId: string;
@@ -39,7 +40,10 @@ function parseRange(header: string): MediaReadRange | undefined {
   return end === undefined ? { start } : { start, end };
 }
 
-export function mediaRoutes(sessions: CutSessionStore): FastifyPluginAsync {
+export function mediaRoutes(
+  sessions: CutSessionStore,
+  subtitles?: SubtitleService,
+): FastifyPluginAsync {
   return async (app) => {
     app.get<{ Params: Pick<MediaParams, "cutId"> }>(
       "/media/cut/:cutId/master.m3u8",
@@ -112,6 +116,62 @@ export function mediaRoutes(sessions: CutSessionStore): FastifyPluginAsync {
             .code(502)
             .send({ error: "Media resource could not be opened" });
         }
+      },
+    );
+
+    app.get<{ Params: { cutId: string; trackFile: string } }>(
+      "/media/cut/:cutId/subtitle/:trackFile",
+      async (request, reply) => {
+        const match = /^([A-Za-z0-9_-]{1,128})\.(vtt|ass)$/.exec(
+          request.params.trackFile,
+        );
+        if (
+          subtitles === undefined ||
+          match?.[1] === undefined ||
+          match[2] === undefined
+        )
+          return reply
+            .code(404)
+            .send({ error: "Subtitle track is missing or expired" });
+        const controller = new AbortController();
+        const cancel = () => controller.abort();
+        request.raw.once("aborted", cancel);
+        reply.raw.once("close", cancel);
+        try {
+          const composed = await subtitles.compose(
+            request.params.cutId,
+            match[1],
+            match[2],
+            controller.signal,
+          );
+          if (composed === undefined)
+            return reply
+              .code(404)
+              .send({ error: "Subtitle track is missing or expired" });
+          return reply
+            .type(composed.contentType)
+            .header("cache-control", "private, max-age=300")
+            .send(Buffer.from(composed.bytes));
+        } catch {
+          return reply.code(controller.signal.aborted ? 499 : 502).send({
+            error: controller.signal.aborted
+              ? "Subtitle request cancelled"
+              : "Subtitle track could not be composed",
+          });
+        } finally {
+          request.raw.off("aborted", cancel);
+          reply.raw.off("close", cancel);
+        }
+      },
+    );
+
+    app.get<{ Params: { cutId: string } }>(
+      "/api/v1/dev/cuts/:cutId/subtitles",
+      async (request, reply) => {
+        const diagnostic = subtitles?.diagnostics(request.params.cutId);
+        return diagnostic === undefined
+          ? reply.code(404).send({ error: "Cut session is missing or expired" })
+          : reply.send(diagnostic);
       },
     );
   };

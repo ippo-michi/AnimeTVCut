@@ -44,9 +44,18 @@ export interface UrlStreamCandidate extends CandidateBase {
   url: string;
   filename?: string;
   videoSize?: number;
+  videoHash?: string;
+  subtitles: readonly UpstreamSubtitle[];
   bingeGroup?: string;
   notWebReady?: boolean;
   requestHeaders: Readonly<Record<string, string>>;
+}
+
+export interface UpstreamSubtitle {
+  id: string;
+  url: string;
+  lang: string;
+  source: "stream" | "subtitle_resource";
 }
 
 export interface UnsupportedStreamCandidate extends CandidateBase {
@@ -82,6 +91,9 @@ export interface SelectedEpisodeSource {
   familyKey: string;
   mediaSource: HttpMediaSource;
   filename?: string;
+  videoHash?: string;
+  videoSize?: number;
+  subtitles: readonly UpstreamSubtitle[];
 }
 
 export interface CandidateFamilySelection {

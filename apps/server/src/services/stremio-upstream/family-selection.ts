@@ -183,6 +183,13 @@ function selectedEpisode(
           : { bingeGroup: candidate.bingeGroup }),
       },
     },
+    subtitles: candidate.subtitles ?? [],
+    ...(candidate.videoHash === undefined
+      ? {}
+      : { videoHash: candidate.videoHash }),
+    ...(candidate.videoSize === undefined
+      ? {}
+      : { videoSize: candidate.videoSize }),
     ...(candidate.filename === undefined
       ? {}
       : { filename: candidate.filename }),

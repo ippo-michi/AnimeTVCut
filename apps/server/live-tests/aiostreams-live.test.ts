@@ -39,6 +39,30 @@ describe.skipIf(!configured)(
       );
       expect(selection.episodes).toHaveLength(3);
       expect(selection.familyMethod).toMatch(/binge_group|filename_family/);
+      expect(
+        selection.episodes
+          .map((episode) => episode.subtitles.length)
+          .every((count) => count >= 0),
+      ).toBe(true);
+      if (process.env.AIOSTREAMS_TEST_SUBTITLES === "true") {
+        for (const [index, episode] of selection.episodes.entries()) {
+          if (episode.videoHash === undefined) continue;
+          const subtitles = await client.getSubtitles(
+            {
+              episodeId: episode.episodeId,
+              type: type!,
+              videoId: videoIds[index]!,
+            },
+            episode.videoHash,
+            episode.videoSize,
+          );
+          expect(
+            subtitles.every(
+              (subtitle) => subtitle.id.length > 0 && subtitle.lang.length > 0,
+            ),
+          ).toBe(true);
+        }
+      }
     });
   },
 );

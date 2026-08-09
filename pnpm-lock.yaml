@@ -47,6 +47,9 @@ importers:
       '@animetvcut/stremio':
         specifier: workspace:*
         version: link:../../packages/stremio
+      '@animetvcut/subtitles':
+        specifier: workspace:*
+        version: link:../../packages/subtitles
       fastify:
         specifier: ^5.6.2
         version: 5.11.3
@@ -65,6 +68,12 @@ importers:
   packages/skip-providers: {}
 
   packages/stremio:
+    dependencies:
+      '@animetvcut/core':
+        specifier: workspace:*
+        version: link:../core
+
+  packages/subtitles:
     dependencies:
       '@animetvcut/core':
         specifier: workspace:*
