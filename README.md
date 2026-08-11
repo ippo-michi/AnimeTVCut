@@ -38,9 +38,19 @@ broader `http_media` source type, since Stremio URLs may identify MKV, MP4, HLS,
 or another HTTP media endpoint. All such sources still pass through MediaFlow.
 
 Configure `MEDIAFLOW_URL`, `MEDIAFLOW_API_PASSWORD`, and optionally
-`MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` pins MediaFlow
-Proxy `v2.4.9`; copy `.env.example` to `.env` and replace the example password before
-starting the stack with `docker compose up -d --build`.
+`MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` builds the
+project's `2.4.9-atc1` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
+copy `.env.example` to `.env` and replace the example password before starting the
+stack with `docker compose up -d --build`.
+
+Upstream MediaFlow `v2.4.9` constructs partial synthetic MP4/MKV containers for HLS
+segments. Those partial containers can omit required container context or retain sample
+offsets into the original file, leaving PyAV with zero decodable packets. The small
+version-locked patch in `docker/mediaflow/` instead lets FFmpeg/PyAV seek the original
+HTTP source using Range requests, falls back from unusable MKV reconstructed headers,
+and stops bounded segment demuxing promptly. Its build verifies the exact upstream
+source hashes before applying the patch so an upstream change fails safely instead of
+silently receiving an incompatible repair.
 
 Configure a generic upstream Stremio addon with the complete secret manifest URL:
 
@@ -127,8 +137,10 @@ pnpm test:aniskip:live
 ```
 
 `test:mediaflow` starts an isolated fixture-origin → MediaFlow container topology and
-uses real FFprobe/FFmpeg playback against AnimeTVCut. Docker is required; no public media
-is used.
+uses real FFprobe/FFmpeg playback against AnimeTVCut. It also directly validates two
+non-empty fMP4 fragments from generated H.264/AAC MP4, H.264/AAC MKV, and 10-bit
+HEVC/Opus MKV inputs over an HTTP Range origin. Docker is required; no public media is
+used.
 
 `test:upstream` adds an authenticated-path fixture Stremio addon and proves the full
 Stremio → family selection → MediaFlow → AnimeTVCut → FFmpeg flow. The optional live
@@ -216,7 +228,7 @@ upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
 subtitle metadata discovery per constituent episode. Subtitle source fetches are
 bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
-Run the real six-episode topology with pinned MediaFlow Proxy `v2.4.9`:
+Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc1` repair:
 
 ```bash
 pnpm test:stremio

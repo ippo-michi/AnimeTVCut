@@ -7,7 +7,19 @@ const mediaRoot = path.resolve(
   process.env.FIXTURE_MEDIA_ROOT ?? "fixtures/media",
 );
 const requiredToken = process.env.FIXTURE_TEST_TOKEN ?? "animetvcut-test";
-const counts = { authorized: 0, denied: 0, ranges: 0 };
+const counts = {
+  authorized: 0,
+  denied: 0,
+  ranges: 0,
+  bytesServed: 0,
+  requests: [],
+};
+
+function recordRequest(method, pathname, statusCode, range, bytes) {
+  counts.requests.push({ method, pathname, statusCode, range, bytes });
+  if (counts.requests.length > 2_000) counts.requests.shift();
+  counts.bytesServed += bytes;
+}
 
 function send(response, statusCode, body, headers = {}) {
   response.writeHead(statusCode, {
@@ -49,15 +61,29 @@ const server = createServer((request, response) => {
     });
     return response.end(body);
   }
+  if (url.pathname === "/stats/reset") {
+    counts.authorized = 0;
+    counts.denied = 0;
+    counts.ranges = 0;
+    counts.bytesServed = 0;
+    counts.requests.length = 0;
+    return send(response, 200, "ok");
+  }
   if (request.headers["x-test-token"] !== requiredToken) {
     counts.denied += 1;
     return send(response, 403, "missing or invalid X-Test-Token");
   }
   counts.authorized += 1;
 
-  const match = /^\/episode(1[0-2]|[1-9])\.mkv$/.exec(url.pathname);
-  if (match?.[1] === undefined) return send(response, 404, "not found");
-  const filePath = path.join(mediaRoot, `episode${match[1]}.mkv`);
+  const episodeMatch = /^\/episode(1[0-2]|[1-9])\.mkv$/.exec(url.pathname);
+  const controlMatch =
+    /^\/(control-(?:h264-aac\.(?:mp4|mkv)|hevc-opus\.mkv))$/.exec(url.pathname);
+  const fileName =
+    episodeMatch?.[1] === undefined
+      ? controlMatch?.[1]
+      : `episode${episodeMatch[1]}.mkv`;
+  if (fileName === undefined) return send(response, 404, "not found");
+  const filePath = path.join(mediaRoot, fileName);
   let metadata;
   try {
     metadata = statSync(filePath);
@@ -71,10 +97,25 @@ const server = createServer((request, response) => {
   }
   const headers = {
     "accept-ranges": "bytes",
-    "content-type": "video/x-matroska",
+    "content-type": fileName.endsWith(".mp4")
+      ? "video/mp4"
+      : "video/x-matroska",
   };
   if (range === undefined) {
-    response.writeHead(200, { ...headers, "content-length": metadata.size });
+    const fullHeaders = { ...headers };
+    if (!(
+      request.method === "HEAD" && url.searchParams.get("head") === "no-size"
+    )) {
+      fullHeaders["content-length"] = metadata.size;
+    }
+    response.writeHead(200, fullHeaders);
+    recordRequest(
+      request.method ?? "GET",
+      url.pathname,
+      200,
+      false,
+      request.method === "HEAD" ? 0 : metadata.size,
+    );
     if (request.method === "HEAD") return response.end();
     return createReadStream(filePath).pipe(response);
   }
@@ -84,6 +125,13 @@ const server = createServer((request, response) => {
     "content-length": range.end - range.start + 1,
     "content-range": `bytes ${range.start}-${range.end}/${metadata.size}`,
   });
+  recordRequest(
+    request.method ?? "GET",
+    url.pathname,
+    206,
+    true,
+    request.method === "HEAD" ? 0 : range.end - range.start + 1,
+  );
   if (request.method === "HEAD") return response.end();
   return createReadStream(filePath, range).pipe(response);
 });

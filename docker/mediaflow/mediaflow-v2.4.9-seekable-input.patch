@@ -1,0 +1,369 @@
+diff --git a/mediaflow_proxy/remuxer/media_source.py b/mediaflow_proxy/remuxer/media_source.py
+index 9e63502..e2e51b9 100644
+--- a/mediaflow_proxy/remuxer/media_source.py
++++ b/mediaflow_proxy/remuxer/media_source.py
+@@ -186,6 +186,27 @@ class HTTPMediaSource:
+     def filename_hint(self) -> str:
+         return self._filename_hint
+ 
++    def pyav_open_input(self) -> tuple[str, dict[str, str]]:
++        """Return a seekable FFmpeg/PyAV HTTP input without exposing it publicly."""
++        forwarded = []
++        for raw_name, raw_value in self._headers.items():
++            name = str(raw_name).strip()
++            value = str(raw_value).strip()
++            if not name or any(ch in name or ch in value for ch in ("\r", "\n")):
++                continue
++            if name.lower() in {"connection", "host", "range", "transfer-encoding"}:
++                continue
++            forwarded.append(f"{name}: {value}\r\n")
++        options = {
++            "rw_timeout": "30000000",
++            "reconnect": "1",
++            "reconnect_streamed": "1",
++            "reconnect_delay_max": "2",
++        }
++        if forwarded:
++            options["headers"] = "".join(forwarded)
++        return self._url, options
++
+     async def resolve_file_size(self) -> int:
+         """Perform a HEAD request to determine file size if not already known."""
+         if self._file_size > 0:
+diff --git a/mediaflow_proxy/remuxer/pyav_demuxer.py b/mediaflow_proxy/remuxer/pyav_demuxer.py
+index 7b51128..7ca976c 100644
+--- a/mediaflow_proxy/remuxer/pyav_demuxer.py
++++ b/mediaflow_proxy/remuxer/pyav_demuxer.py
+@@ -159,6 +159,7 @@ class PyAVDemuxer:
+         self._feeder_task: asyncio.Task | None = None
+         self._write_fd: int | None = None
+         self._read_fd: int | None = None
++        self._stop_requested = threading.Event()
+ 
+     @property
+     def video_stream(self) -> DemuxedStream | None:
+@@ -240,7 +241,14 @@ class PyAVDemuxer:
+ 
+     # ── Demux side ───────────────────────────────────────────────────
+ 
+-    async def start(self, source: AsyncIterator[bytes]) -> None:
++    async def start(
++        self,
++        source: AsyncIterator[bytes] | None,
++        *,
++        input_url: str | None = None,
++        input_options: dict[str, str] | None = None,
++        seek_time_ms: float = 0.0,
++    ) -> None:
+         """
+         Start pipe-based streaming: writer thread feeds the pipe, a single
+         demux thread opens the container, discovers streams, and begins
+@@ -251,22 +259,25 @@ class PyAVDemuxer:
+         """
+         loop = asyncio.get_running_loop()
+ 
+-        # Create OS pipe
+-        self._read_fd, self._write_fd = os.pipe()
++        if input_url is None:
++            if source is None:
++                raise ValueError("A pipe source or seekable input URL is required")
++            # Create OS pipe
++            self._read_fd, self._write_fd = os.pipe()
+ 
+-        # Source buffer queue (async feeder task -> writer thread)
+-        self._source_queue = queue.Queue(maxsize=256)
++            # Source buffer queue (async feeder task -> writer thread)
++            self._source_queue = queue.Queue(maxsize=256)
+ 
+-        # Kick off the async feeder task
+-        self._feeder_task = asyncio.create_task(self._async_feeder(source))
++            # Kick off the async feeder task
++            self._feeder_task = asyncio.create_task(self._async_feeder(source))
+ 
+-        # Start writer thread (drains source_queue into the pipe)
+-        self._writer_thread = threading.Thread(
+-            target=self._write_chunks_sync,
+-            daemon=True,
+-            name="pyav-writer",
+-        )
+-        self._writer_thread.start()
++            # Start writer thread (drains source_queue into the pipe)
++            self._writer_thread = threading.Thread(
++                target=self._write_chunks_sync,
++                daemon=True,
++                name="pyav-writer",
++            )
++            self._writer_thread.start()
+ 
+         # Packet queue for demux-thread -> async consumer bridge
+         self._packet_queue = queue.Queue(maxsize=128)
+@@ -283,10 +294,25 @@ class PyAVDemuxer:
+             """
+             pkt_count = 0
+             pq = self._packet_queue
++
++            def put_packet(packet) -> None:
++                while not self._stop_requested.is_set():
++                    try:
++                        pq.put(packet, timeout=0.1)
++                        return
++                    except queue.Full:
++                        continue
++                raise RuntimeError("Demux stopped")
++
+             try:
+-                # Open container from read end of pipe
+-                read_file = os.fdopen(self._read_fd, "rb")
+-                self._read_fd = None  # ownership transferred
++                if input_url is None:
++                    # Open container from read end of pipe
++                    read_file = os.fdopen(self._read_fd, "rb")
++                    self._read_fd = None  # ownership transferred
++                else:
++                    # Let FFmpeg perform bounded HTTP Range seeks against the
++                    # original container instead of fabricating a partial file.
++                    read_file = input_url
+ 
+                 self._container = av.open(
+                     read_file,
+@@ -295,10 +321,22 @@ class PyAVDemuxer:
+                         # Tolerate mid-stream joins / broken data in live TS
+                         "err_detect": "ignore_err",
+                         "fflags": "+discardcorrupt+genpts",
++                        **(input_options or {}),
+                     },
+                 )
+                 self._discover_streams()
+ 
++                if seek_time_ms > 0:
++                    self._container.seek(
++                        int(seek_time_ms * 1000.0),
++                        backward=True,
++                        any_frame=False,
++                    )
++                    logger.info(
++                        "[pyav_demuxer] Seekable input positioned at %.3fs",
++                        seek_time_ms / 1000.0,
++                    )
++
+                 # Signal stream metadata is available
+                 streams_ready.set()
+ 
+@@ -352,7 +390,7 @@ class PyAVDemuxer:
+                         except Exception:
+                             frames = []
+                         for frame in frames:
+-                            pq.put(
++                            put_packet(
+                                 DemuxedPacket(
+                                     stream_index=packet.stream_index,
+                                     codec_type="video",
+@@ -375,7 +413,7 @@ class PyAVDemuxer:
+                         except Exception:
+                             frames = []
+                         for frame in frames:
+-                            pq.put(
++                            put_packet(
+                                 DemuxedPacket(
+                                     stream_index=packet.stream_index,
+                                     codec_type="audio",
+@@ -394,7 +432,7 @@ class PyAVDemuxer:
+                     else:
+                         tb_num = video_tb_num if is_video else audio_tb_num
+                         tb_den = video_tb_den if is_video else audio_tb_den
+-                        pq.put(
++                        put_packet(
+                             DemuxedPacket(
+                                 stream_index=packet.stream_index,
+                                 codec_type=stream.type,
+@@ -413,7 +451,7 @@ class PyAVDemuxer:
+                 if decode_video and video_stream_obj is not None:
+                     try:
+                         for frame in video_stream_obj.codec_context.decode(None):
+-                            pq.put(
++                            put_packet(
+                                 DemuxedPacket(
+                                     stream_index=video_stream_obj.index,
+                                     codec_type="video",
+@@ -435,7 +473,7 @@ class PyAVDemuxer:
+                 if decode_audio and audio_stream_obj is not None:
+                     try:
+                         for frame in audio_stream_obj.codec_context.decode(None):
+-                            pq.put(
++                            put_packet(
+                                 DemuxedPacket(
+                                     stream_index=audio_stream_obj.index,
+                                     codec_type="audio",
+@@ -461,7 +499,12 @@ class PyAVDemuxer:
+                 # Ensure streams_ready is set even on error
+                 streams_ready.set()
+             finally:
+-                pq.put(_SENTINEL)
++                while not self._stop_requested.is_set():
++                    try:
++                        pq.put(_SENTINEL, timeout=0.1)
++                        break
++                    except queue.Full:
++                        continue
+ 
+         self._demux_thread = threading.Thread(target=_open_and_demux, daemon=True, name="pyav-demux")
+         self._demux_thread.start()
+@@ -567,29 +610,33 @@ class PyAVDemuxer:
+         5. ONLY THEN close the container (no thread is using it).
+         6. Close any remaining pipe FDs (read end, if still open).
+         """
+-        # 1. Cancel feeder task
++        # 1. Tell a seekable demux thread blocked on a full packet queue to
++        # stop immediately when the segment consumer has enough media.
++        self._stop_requested.set()
++
++        # 2. Cancel feeder task
+         if self._feeder_task is not None:
+             self._feeder_task.cancel()
+             self._feeder_task = None
+ 
+-        # 2. Unblock writer thread so it exits and closes the pipe
++        # 3. Unblock writer thread so it exits and closes the pipe
+         if self._source_queue is not None:
+             try:
+                 self._source_queue.put_nowait(_SENTINEL)
+             except Exception:
+                 pass
+ 
+-        # 3. Join writer thread (it closes _write_fd in its finally block)
++        # 4. Join writer thread (it closes _write_fd in its finally block)
+         if self._writer_thread is not None:
+             self._writer_thread.join(timeout=5.0)
+             self._writer_thread = None
+ 
+-        # 4. Join demux thread -- must finish before we close the container
++        # 5. Join demux thread -- must finish before we close the container
+         if self._demux_thread is not None:
+             self._demux_thread.join(timeout=5.0)
+             self._demux_thread = None
+ 
+-        # 5. Now safe to close the container (no thread is using it)
++        # 6. Now safe to close the container (no thread is using it)
+         if self._container is not None:
+             try:
+                 self._container.close()
+@@ -597,7 +644,7 @@ class PyAVDemuxer:
+                 pass
+             self._container = None
+ 
+-        # 6. Close any remaining pipe FDs
++        # 7. Close any remaining pipe FDs
+         for fd_name in ("_read_fd", "_write_fd"):
+             fd = getattr(self, fd_name, None)
+             if fd is not None:
+diff --git a/mediaflow_proxy/remuxer/transcode_handler.py b/mediaflow_proxy/remuxer/transcode_handler.py
+index c35df6a..b4a73dd 100644
+--- a/mediaflow_proxy/remuxer/transcode_handler.py
++++ b/mediaflow_proxy/remuxer/transcode_handler.py
+@@ -465,7 +465,11 @@ async def handle_transcode(
+     #   AND video doesn't need re-encoding.
+     # - Universal PyAV path: for non-MKV containers (MP4/TS/WebM), or when
+     #   video re-encoding is required (any codec not natively browser-compatible).
+-    use_mkv_fast_path = cue_index is not None and not needs_video_transcode
++    use_mkv_fast_path = (
++        cue_index is not None
++        and bool(cue_index.seek_header)
++        and not needs_video_transcode
++    )
+     pipeline_name = "MKV fast-path" if use_mkv_fast_path else "universal PyAV"
+ 
+     logger.info(
+@@ -478,8 +482,17 @@ async def handle_transcode(
+         is_mp4,
+     )
+ 
++    pyav_input = getattr(source, "pyav_open_input", lambda: None)()
+     if use_mkv_fast_path:
+         content = stream_transcode_fmp4(media_source_gen())
++    elif pyav_input is not None:
++        input_url, input_options = pyav_input
++        content = stream_transcode_universal(
++            None,
++            input_url=input_url,
++            input_options=input_options,
++            input_start_time_ms=(start_time or 0.0) * 1000.0,
++        )
+     else:
+         content = stream_transcode_universal(media_source_gen())
+ 
+@@ -1048,6 +1061,7 @@ async def handle_transcode_hls_segment(
+     # with H.264 video, universal PyAV pipeline as fallback for everything else.
+     use_mkv_fastpath = (
+         probe.cue_index is not None
++        and bool(probe.cue_index.seek_header)
+         and probe.cue_index.video_codec_id
+         and not video_needs_reencode(probe.cue_index.video_codec_id)
+     )
+@@ -1067,14 +1081,20 @@ async def handle_transcode_hls_segment(
+             ):
+                 seg_chunks.append(chunk)
+         else:
+-            logger.info("[hls_segment] %s using universal PyAV pipeline", seg_label)
++            pyav_input = getattr(source, "pyav_open_input", lambda: None)()
++            path_name = "seekable HTTP universal" if pyav_input is not None else "partial-pipe universal"
++            logger.info("[hls_segment] %s using %s pipeline", seg_label, path_name)
++            input_url, input_options = pyav_input if pyav_input is not None else (None, None)
+             async for chunk in stream_transcode_universal(
+-                source_gen,
++                None if pyav_input is not None else source_gen,
+                 force_video_reencode=True,
+                 max_duration_ms=seg_duration_ms,
+                 start_decode_time_ms=seg_info.start_ms,
+                 emit_init_segment=False,
+                 force_software_encode=True,
++                input_url=input_url,
++                input_options=input_options,
++                input_start_time_ms=seg_info.start_ms,
+             ):
+                 seg_chunks.append(chunk)
+     except Exception:
+diff --git a/mediaflow_proxy/remuxer/transcode_pipeline.py b/mediaflow_proxy/remuxer/transcode_pipeline.py
+index e1d43fa..cfe0a43 100644
+--- a/mediaflow_proxy/remuxer/transcode_pipeline.py
++++ b/mediaflow_proxy/remuxer/transcode_pipeline.py
+@@ -737,13 +737,16 @@ def _update_init_extradata(
+ 
+ 
+ async def stream_transcode_universal(
+-    source: AsyncIterator[bytes],
++    source: AsyncIterator[bytes] | None,
+     *,
+     force_video_reencode: bool = False,
+     max_duration_ms: float | None = None,
+     start_decode_time_ms: float = 0.0,
+     emit_init_segment: bool = True,
+     force_software_encode: bool = False,
++    input_url: str | None = None,
++    input_options: dict[str, str] | None = None,
++    input_start_time_ms: float = 0.0,
+ ) -> AsyncIterator[bytes]:
+     """
+     Universal transcode pipeline using PyAV for demuxing and encoding.
+@@ -788,7 +791,12 @@ async def stream_transcode_universal(
+         # Phase 1: Start demuxing -- opens the container in a background thread,
+         # discovers streams, and starts enqueuing packets. Awaits until stream
+         # metadata is available.
+-        await demuxer.start(source)
++        await demuxer.start(
++            source,
++            input_url=input_url,
++            input_options=input_options,
++            seek_time_ms=input_start_time_ms,
++        )
+ 
+         vs = demuxer.video_stream
+         aus = demuxer.audio_stream
+@@ -1243,7 +1251,7 @@ async def stream_transcode_universal(
+                 pass
+         audio_encoder = None
+         audio_resampler = None
+-        if hasattr(source, "aclose"):
++        if source is not None and hasattr(source, "aclose"):
+             try:
+                 await source.aclose()
+             except Exception:

@@ -7,4 +7,5 @@ fixtures/hls/episode*/
 fixtures/hls/fmp4-episode*/
 !fixtures/hls/.gitkeep
 fixtures/media/*.mkv
+fixtures/media/*.mp4
 !fixtures/media/.gitkeep

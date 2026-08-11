@@ -1,0 +1,2 @@
+docker/mediaflow/*.patch text eol=lf whitespace=-blank-at-eol
+docker/mediaflow/Dockerfile text eol=lf

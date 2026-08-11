@@ -12,9 +12,13 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app.js";
 
 const execFileAsync = promisify(execFile);
-const metadataManifestUrl = process.env.METADATA_STREMIO_TEST_MANIFEST_URL!;
-const upstreamManifestUrl = process.env.UPSTREAM_TEST_MANIFEST_URL!;
-const mediaFlowUrl = process.env.MEDIAFLOW_TEST_URL!;
+const metadataManifestUrl =
+  process.env.METADATA_STREMIO_TEST_MANIFEST_URL ??
+  "http://127.0.0.1:19092/metadata/test-user/metadata-secret/manifest.json";
+const upstreamManifestUrl =
+  process.env.UPSTREAM_TEST_MANIFEST_URL ??
+  "http://127.0.0.1:18989/stremio/test-user/test-secret/manifest.json";
+const mediaFlowUrl = process.env.MEDIAFLOW_TEST_URL ?? "http://127.0.0.1:18888";
 const publicBaseUrl = new URL("http://127.0.0.1:13007/");
 let skipRequests = 0;
 
@@ -93,9 +97,10 @@ async function json<T>(url: string, init?: RequestInit): Promise<T> {
   return JSON.parse(body) as T;
 }
 
-async function media(tool: "ffmpeg" | "ffprobe", args: string[]) {
+async function media(tool: "ffmpeg" | "ffprobe", args: string[], cwd?: string) {
   return (
     await execFileAsync(tool, args, {
+      cwd,
       timeout: 300_000,
       maxBuffer: 20 * 1024 * 1024,
     })
@@ -377,21 +382,25 @@ describe("real 12-episode Season and Complete Cuts", () => {
     const file = path.join(directory, "complete.ass");
     try {
       await writeFile(file, japanese);
-      await media("ffmpeg", [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=black:s=320x180:r=25:d=228.1",
-        "-vf",
-        `ass=${file.replace(/\\/g, "/").replace(/:/g, "\\:")}`,
-        "-f",
-        "null",
-        "-",
-      ]);
+      await media(
+        "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-nostdin",
+          "-f",
+          "lavfi",
+          "-i",
+          "color=c=black:s=320x180:r=25:d=228.1",
+          "-vf",
+          "ass=filename=complete.ass",
+          "-f",
+          "null",
+          "-",
+        ],
+        directory,
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

@@ -8,6 +8,8 @@ services:
       FIXTURE_TEST_TOKEN: animetvcut-test
     volumes:
       - ..:/workspace:ro
+    ports:
+      - "127.0.0.1:18090:8090"
     networks: [phase2-test]
     healthcheck:
       test:
@@ -22,7 +24,10 @@ services:
       retries: 20
 
   mediaflow:
-    image: mhdzumair/mediaflow-proxy:v2.4.9
+    image: animetvcut-mediaflow:2.4.9-atc1
+    build:
+      context: ..
+      dockerfile: docker/mediaflow/Dockerfile
     environment:
       API_PASSWORD: phase2-integration-password
       ENABLE_TRANSCODE: "true"

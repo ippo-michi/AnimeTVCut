@@ -153,8 +153,10 @@ function cutId(url: string): string {
 async function runMediaTool(
   tool: "ffmpeg" | "ffprobe",
   args: string[],
+  cwd?: string,
 ): Promise<string> {
   const result = await execFileAsync(tool, args, {
+    cwd,
     timeout: 240_000,
     maxBuffer: 20 * 1024 * 1024,
   });
@@ -461,21 +463,25 @@ describe("real metadata addon to grouped Stremio TV Cuts", () => {
     const file = path.join(directory, "composed.ass");
     try {
       await writeFile(file, japaneseText);
-      await runMediaTool("ffmpeg", [
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-nostdin",
-        "-f",
-        "lavfi",
-        "-i",
-        "color=c=black:s=320x180:r=25:d=66.1",
-        "-vf",
-        `ass=${file.replace(/\\/g, "/").replace(/:/g, "\\:")}`,
-        "-f",
-        "null",
-        "-",
-      ]);
+      await runMediaTool(
+        "ffmpeg",
+        [
+          "-hide_banner",
+          "-loglevel",
+          "error",
+          "-nostdin",
+          "-f",
+          "lavfi",
+          "-i",
+          "color=c=black:s=320x180:r=25:d=66.1",
+          "-vf",
+          "ass=filename=composed.ass",
+          "-f",
+          "null",
+          "-",
+        ],
+        directory,
+      );
     } finally {
       await rm(directory, { recursive: true, force: true });
     }

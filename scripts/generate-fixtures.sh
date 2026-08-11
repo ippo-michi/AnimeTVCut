@@ -104,3 +104,50 @@ generate_direct_episode 9 0xe67700 1540
 generate_direct_episode 10 0xa61e4d 1650
 generate_direct_episode 11 0x1864ab 1760
 generate_direct_episode 12 0x862e9c 1870
+
+generate_mediaflow_control() {
+  local output_name="$1"
+  local video_codec="$2"
+  local audio_codec="$3"
+  local pixel_format="$4"
+  local output_file="${media_fixture_root}/${output_name}"
+
+  if [[ -f "${output_file}" ]] && [[ "${FORCE_FIXTURES:-0}" != "1" ]]; then
+    return
+  fi
+
+  mkdir -p "${media_fixture_root}"
+  local -a video_options=(
+    -c:v "${video_codec}"
+    -pix_fmt "${pixel_format}"
+    -g 150
+    -keyint_min 150
+    -force_key_frames "expr:gte(t,n_forced*6)"
+  )
+  if [[ "${video_codec}" == "libx264" ]]; then
+    video_options+=( -preset ultrafast -sc_threshold 0 )
+  else
+    video_options+=(
+      -preset ultrafast
+      -x265-params "pools=1:frame-threads=1:keyint=150:min-keyint=150:scenecut=0"
+    )
+  fi
+
+  local -a container_options=()
+  if [[ "${output_name}" == *.mp4 ]]; then
+    container_options+=( -movflags +faststart )
+  fi
+
+  ffmpeg -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=s=320x180:r=25:d=18" \
+    -f lavfi -i "sine=frequency=523:sample_rate=48000:duration=18" \
+    -map 0:v:0 -map 1:a:0 \
+    "${video_options[@]}" \
+    -c:a "${audio_codec}" -b:a 64k -ar 48000 \
+    "${container_options[@]}" \
+    "${output_file}"
+}
+
+generate_mediaflow_control control-h264-aac.mp4 libx264 aac yuv420p
+generate_mediaflow_control control-h264-aac.mkv libx264 aac yuv420p
+generate_mediaflow_control control-hevc-opus.mkv libx265 libopus yuv420p10le
