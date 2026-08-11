@@ -56,7 +56,7 @@ function seriesMeta() {
   };
 }
 
-function metadataClient() {
+function metadataClient(onCatalogUrl?: (url: URL) => void) {
   return new MetadataStremioClient(
     {
       manifestUrl:
@@ -71,17 +71,23 @@ function metadataClient() {
         return new Response(JSON.stringify(manifest));
       }
       if (url.pathname.includes("/catalog/")) {
+        onCatalogUrl?.(url);
         return new Response(
           JSON.stringify({
-            metas: [
-              {
-                id: sourceId,
-                type: "series",
-                name: "Synthetic Six",
-                poster: "https://images.test/poster.jpg",
-                unsafe: "must-not-pass",
-              },
-            ],
+            metas: url.pathname.includes("skip=3")
+              ? [
+                  { id: "unrelated-a", type: "series", name: "Unrelated A" },
+                  { id: "unrelated-b", type: "series", name: "Unrelated B" },
+                ]
+              : [
+                  {
+                    id: sourceId,
+                    type: "series",
+                    name: "Synthetic Six",
+                    poster: "https://images.test/poster.jpg",
+                    unsafe: "must-not-pass",
+                  },
+                ],
           }),
         );
       }
@@ -108,8 +114,15 @@ describe("public Stremio addon", () => {
     expect(manifestResponse.headers["access-control-allow-origin"]).toBe("*");
     expect(manifestResponse.json()).toMatchObject({
       id: "org.animetvcut.addon",
+      version: "0.1.1",
       types: ["series"],
-      catalogs: [{ id: "animetvcut", type: "series" }],
+      catalogs: [
+        {
+          id: "animetvcut",
+          type: "series",
+          extra: [{ name: "search", isRequired: true }],
+        },
+      ],
     });
     const empty = await app.inject({
       method: "GET",
@@ -119,6 +132,41 @@ describe("public Stremio addon", () => {
     const health = await app.inject({ method: "GET", url: "/health" });
     expect(health.headers["access-control-allow-origin"]).toBeUndefined();
   });
+
+  it("terminates legacy output pagination without forwarding skip upstream", async () => {
+    const catalogRequests: URL[] = [];
+    const app = createApp({
+      metadataClient: metadataClient((url) => catalogRequests.push(url)),
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut/search=Frieren&skip=3.json",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ metas: [] });
+    expect(catalogRequests).toEqual([]);
+    expect(response.body).not.toMatch(/Unrelated A|Unrelated B/);
+  });
+
+  it.each(["-1", "NaN", "100000000000000000000"])(
+    "rejects malformed legacy skip %s without an upstream request",
+    async (skip) => {
+      const catalogRequests: URL[] = [];
+      const app = createApp({
+        metadataClient: metadataClient((url) => catalogRequests.push(url)),
+      });
+      apps.push(app);
+      const response = await app.inject({
+        method: "GET",
+        url: `/catalog/series/animetvcut/search=Frieren&skip=${skip}.json`,
+      });
+      expect(response.statusCode).toBe(200);
+      expect(response.json()).toEqual({ metas: [] });
+      expect(catalogRequests).toEqual([]);
+    },
+  );
 
   it("transforms safe catalog previews and emits finalized virtual groups", async () => {
     const app = createApp({

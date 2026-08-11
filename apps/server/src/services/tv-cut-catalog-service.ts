@@ -129,10 +129,9 @@ export class TvCutCatalogService {
 
   public async search(
     query: string,
-    skip = 0,
     signal?: AbortSignal,
   ): Promise<readonly StremioMetaPreview[]> {
-    const source = await this.requireClient().searchSeries(query, skip, signal);
+    const source = await this.requireClient().searchSeries(query, 0, signal);
     const modes: LongFormCutMode[] = [
       ...(this.longCuts.exposeTv ? (["tv"] as const) : []),
       ...(this.longCuts.exposeSeason ? (["season"] as const) : []),

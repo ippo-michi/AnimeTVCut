@@ -20,17 +20,22 @@ import {
 } from "../services/stremio-upstream/errors.js";
 import type { TvCutCatalogService } from "../services/tv-cut-catalog-service.js";
 
-export const ANIMETVCUT_VERSION = "0.1.0";
+export const ANIMETVCUT_VERSION = "0.1.1";
 
-function parseExtra(extra: string): { search?: string; skip: number } {
+function parseExtra(extra: string): {
+  search?: string;
+  skip: number;
+  skipValid: boolean;
+} {
   const params = new URLSearchParams(extra);
   const search = params.get("search") ?? undefined;
   const rawSkip = params.get("skip");
   const skip = rawSkip === null ? 0 : Number(rawSkip);
-  if (!Number.isSafeInteger(skip) || skip < 0 || skip > 10_000) {
-    throw new Error("Catalog skip is invalid.");
-  }
-  return { ...(search === undefined ? {} : { search }), skip };
+  return {
+    ...(search === undefined ? {} : { search }),
+    skip,
+    skipValid: Number.isSafeInteger(skip) && skip >= 0 && skip <= 10_000,
+  };
 }
 
 function isResolvableStreamFailure(error: unknown): boolean {
@@ -102,10 +107,7 @@ export function publicStremioRoutes(
           type: "series",
           id: "animetvcut",
           name: "AnimeTVCut",
-          extra: [
-            { name: "search", isRequired: true },
-            { name: "skip", isRequired: false },
-          ],
+          extra: [{ name: "search", isRequired: true }],
         },
       ],
       behaviorHints: { configurable: false },
@@ -120,8 +122,12 @@ export function publicStremioRoutes(
           if (extra.search === undefined || extra.search.trim().length === 0) {
             return { metas: [] };
           }
+          // This catalog expands one upstream result into multiple cut modes,
+          // so its output-space pagination cannot be forwarded upstream.
+          // Legacy/cached clients receive a terminal empty page instead.
+          if (!extra.skipValid || extra.skip > 0) return { metas: [] };
           return {
-            metas: await service.search(extra.search, extra.skip),
+            metas: await service.search(extra.search),
           };
         } catch (error) {
           request.log.info(
