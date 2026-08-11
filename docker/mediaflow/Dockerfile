@@ -26,7 +26,7 @@ RUN printf '%s  %s\n' \
     && rm -rf /var/lib/apt/lists/* /tmp/animetvcut-mediaflow.patch
 
 LABEL org.opencontainers.image.title="AnimeTVCut MediaFlow repair" \
-      org.opencontainers.image.version="2.4.9-atc1" \
+      org.opencontainers.image.version="2.4.9-atc2" \
       org.opencontainers.image.description="Range-seekable PyAV input repair for MediaFlow HLS segments"
 
 USER mediaflow_proxy

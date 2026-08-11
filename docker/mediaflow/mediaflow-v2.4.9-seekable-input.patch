@@ -31,7 +31,7 @@ index 9e63502..e2e51b9 100644
          """Perform a HEAD request to determine file size if not already known."""
          if self._file_size > 0:
 diff --git a/mediaflow_proxy/remuxer/pyav_demuxer.py b/mediaflow_proxy/remuxer/pyav_demuxer.py
-index 7b51128..7ca976c 100644
+index 7b51128..2da9ff7 100644
 --- a/mediaflow_proxy/remuxer/pyav_demuxer.py
 +++ b/mediaflow_proxy/remuxer/pyav_demuxer.py
 @@ -159,6 +159,7 @@ class PyAVDemuxer:
@@ -194,7 +194,7 @@ index 7b51128..7ca976c 100644
                                  DemuxedPacket(
                                      stream_index=audio_stream_obj.index,
                                      codec_type="audio",
-@@ -461,7 +499,12 @@ class PyAVDemuxer:
+@@ -461,7 +499,21 @@ class PyAVDemuxer:
                  # Ensure streams_ready is set even on error
                  streams_ready.set()
              finally:
@@ -205,12 +205,30 @@ index 7b51128..7ca976c 100644
 +                        break
 +                    except queue.Full:
 +                        continue
++                # PyAV containers must be closed by the same thread that
++                # demuxes them. Closing from request cleanup while FFmpeg is
++                # blocked in network I/O can deadlock the entire ASGI worker.
++                if self._container is not None:
++                    try:
++                        self._container.close()
++                    except Exception:
++                        pass
++                    self._container = None
  
          self._demux_thread = threading.Thread(target=_open_and_demux, daemon=True, name="pyav-demux")
          self._demux_thread.start()
-@@ -567,29 +610,33 @@ class PyAVDemuxer:
-         5. ONLY THEN close the container (no thread is using it).
-         6. Close any remaining pipe FDs (read end, if still open).
+@@ -563,41 +615,40 @@ class PyAVDemuxer:
+            unblocks and exits. The writer's ``finally`` closes the pipe
+            write-end, which causes the demux thread to see EOF.
+         3. Join the writer thread (wait for it to drain and exit).
+-        4. Join the demux thread (it finishes after pipe EOF).
+-        5. ONLY THEN close the container (no thread is using it).
+-        6. Close any remaining pipe FDs (read end, if still open).
++        4. Give the demux thread a short opportunity to finish. The demux
++           thread owns and closes its container; if an HTTP read is still
++           blocked, it remains a daemon and exits after the configured I/O
++           timeout without blocking the ASGI worker.
++        5. Close any remaining pipe FDs (read end, if still open).
          """
 -        # 1. Cancel feeder task
 +        # 1. Tell a seekable demux thread blocked on a full packet queue to
@@ -237,27 +255,28 @@ index 7b51128..7ca976c 100644
              self._writer_thread = None
  
 -        # 4. Join demux thread -- must finish before we close the container
-+        # 5. Join demux thread -- must finish before we close the container
++        # 4. Briefly join the demux thread. Never close its container from
++        # this request thread: PyAV/FFmpeg may still be using it.
          if self._demux_thread is not None:
-             self._demux_thread.join(timeout=5.0)
+-            self._demux_thread.join(timeout=5.0)
++            self._demux_thread.join(timeout=0.25)
              self._demux_thread = None
  
 -        # 5. Now safe to close the container (no thread is using it)
-+        # 6. Now safe to close the container (no thread is using it)
-         if self._container is not None:
-             try:
-                 self._container.close()
-@@ -597,7 +644,7 @@ class PyAVDemuxer:
-                 pass
-             self._container = None
- 
+-        if self._container is not None:
+-            try:
+-                self._container.close()
+-            except Exception:
+-                pass
+-            self._container = None
+-
 -        # 6. Close any remaining pipe FDs
-+        # 7. Close any remaining pipe FDs
++        # 5. Close any remaining pipe FDs
          for fd_name in ("_read_fd", "_write_fd"):
              fd = getattr(self, fd_name, None)
              if fd is not None:
 diff --git a/mediaflow_proxy/remuxer/transcode_handler.py b/mediaflow_proxy/remuxer/transcode_handler.py
-index c35df6a..b4a73dd 100644
+index c35df6a..8eee101 100644
 --- a/mediaflow_proxy/remuxer/transcode_handler.py
 +++ b/mediaflow_proxy/remuxer/transcode_handler.py
 @@ -465,7 +465,11 @@ async def handle_transcode(
@@ -299,7 +318,7 @@ index c35df6a..b4a73dd 100644
          and probe.cue_index.video_codec_id
          and not video_needs_reencode(probe.cue_index.video_codec_id)
      )
-@@ -1067,14 +1081,20 @@ async def handle_transcode_hls_segment(
+@@ -1067,14 +1081,24 @@ async def handle_transcode_hls_segment(
              ):
                  seg_chunks.append(chunk)
          else:
@@ -310,8 +329,13 @@ index c35df6a..b4a73dd 100644
 +            input_url, input_options = pyav_input if pyav_input is not None else (None, None)
              async for chunk in stream_transcode_universal(
 -                source_gen,
+-                force_video_reencode=True,
 +                None if pyav_input is not None else source_gen,
-                 force_video_reencode=True,
++                # Preserve compatible H.264 packets so EXT-X-MAP source avcC
++                # metadata continues to describe every emitted media segment.
++                # HEVC and other unsupported codecs are still normalized by
++                # video_needs_reencode() inside the universal pipeline.
++                force_video_reencode=False,
                  max_duration_ms=seg_duration_ms,
                  start_decode_time_ms=seg_info.start_ms,
                  emit_init_segment=False,

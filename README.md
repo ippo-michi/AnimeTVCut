@@ -39,7 +39,7 @@ or another HTTP media endpoint. All such sources still pass through MediaFlow.
 
 Configure `MEDIAFLOW_URL`, `MEDIAFLOW_API_PASSWORD`, and optionally
 `MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` builds the
-project's `2.4.9-atc1` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
+project's `2.4.9-atc2` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
 copy `.env.example` to `.env` and replace the example password before starting the
 stack with `docker compose up -d --build`.
 
@@ -228,7 +228,7 @@ upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
 subtitle metadata discovery per constituent episode. Subtitle source fetches are
 bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
-Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc1` repair:
+Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc2` repair:
 
 ```bash
 pnpm test:stremio

@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc1` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc2` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
