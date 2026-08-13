@@ -11,6 +11,7 @@ export interface MetadataConfiguration {
   publicBaseUrl?: URL;
   grouping: TvCutGroupingConfig;
   longCuts: LongCutConfiguration;
+  aiometadataWatchTracking: boolean;
 }
 
 export interface LongCutConfiguration {
@@ -227,5 +228,10 @@ export function metadataConfigurationFromEnv(
         "LONG_CUT_SEASON_PREPARE_CONCURRENCY",
       ),
     },
+    aiometadataWatchTracking: parseBoolean(
+      env.AIOMETADATA_WATCH_TRACKING_ENABLED,
+      true,
+      "AIOMETADATA_WATCH_TRACKING_ENABLED",
+    ),
   };
 }

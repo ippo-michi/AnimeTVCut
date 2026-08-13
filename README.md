@@ -178,6 +178,7 @@ never returned by health, catalog, meta, stream, or media-playlist responses.
 METADATA_STREMIO_MANIFEST_URL=https://metadata.example/private/path/manifest.json
 METADATA_STREMIO_SEARCH_CATALOG_ID=
 METADATA_STREMIO_REQUEST_TIMEOUT_MS=10000
+AIOMETADATA_WATCH_TRACKING_ENABLED=true
 PUBLIC_BASE_URL=https://animetvcut.example
 ```
 
@@ -185,6 +186,23 @@ The metadata addon must declare `series`, `catalog`, `meta`, and a series catalo
 `extra` includes `search`. If no catalog ID is configured, AnimeTVCut selects the first
 compatible catalog in manifest order. AIOMetadata-style addons are the primary target;
 standard Cinemeta-compatible manifests use the same protocol seam.
+
+When the configured metadata addon identifies itself as AIOMetadata and declares its
+standard `subtitles` resource, AnimeTVCut can reuse AIOMetadata's linked watch tracking.
+After the final retained HLS segment of a source episode has been fully served,
+AnimeTVCut makes one internal, authenticated subtitle-resource request for that exact
+original episode ID. AIOMetadata then advances its linked AniList account. Finishing a
+TV Cut containing episodes 1–3 therefore leaves AniList at episode 3; stopping after an
+earlier episode can advance only that completed boundary. Stream creation, playlist
+requests, server lookahead prefetch, partial byte ranges, and manual development cuts do
+not trigger tracking. The authenticated metadata path is never returned or logged.
+
+Stremio does not currently provide addons with an exact playback-completion callback,
+so this integration is intentionally best-effort: player buffering requests the final
+segment shortly before it is displayed, and seeking to an episode's end can count it.
+Disable the bridge with `AIOMETADATA_WATCH_TRACKING_ENABLED=false`. AnimeTVCut never
+stores or requests a separate AniList token; AIOMetadata remains responsible for the
+account update.
 
 Install AnimeTVCut's own `/v2/manifest.json` in Stremio. The distinct v2 addon/catalog
 identity bypasses old Stremio catalog registrations which may have cached a failed

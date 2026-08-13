@@ -404,10 +404,14 @@ describe("public TV Cut stream authorization and caching", () => {
       cutId: "active-cut",
       playlistUrl: "/media/cut/active-cut/master.m3u8",
     }));
+    const enableWatchProgress = vi.fn();
     const service = new TvCutCatalogService(
       metadataClient(),
       { createAutomaticCut } as unknown as UpstreamCutService,
-      { isCutActive: () => true } as unknown as CutService,
+      {
+        isCutActive: () => true,
+        enableWatchProgress,
+      } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
       DEFAULT_TV_CUT_GROUPING_CONFIG,
       () => Date.parse("2026-01-01T00:00:00Z"),
@@ -429,6 +433,11 @@ describe("public TV Cut stream authorization and caching", () => {
         videoId: `opaque:exact:episode:${episode}`,
       })),
     );
+    expect(enableWatchProgress).toHaveBeenCalledWith("active-cut", [
+      "opaque:exact:episode:1",
+      "opaque:exact:episode:2",
+      "opaque:exact:episode:3",
+    ]);
   });
 
   it("uses an exact metadata MAL/Kitsu pair without leaking it across seasons", async () => {
@@ -461,7 +470,10 @@ describe("public TV Cut stream authorization and caching", () => {
     const service = new TvCutCatalogService(
       metadataClient(undefined, source),
       { createAutomaticCut } as unknown as UpstreamCutService,
-      { isCutActive: () => true } as unknown as CutService,
+      {
+        isCutActive: () => true,
+        enableWatchProgress: vi.fn(),
+      } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
       DEFAULT_TV_CUT_GROUPING_CONFIG,
       () => Date.parse("2026-01-01T00:00:00Z"),
@@ -491,7 +503,10 @@ describe("public TV Cut stream authorization and caching", () => {
     const service = new TvCutCatalogService(
       metadataClient(),
       { createAutomaticCut: vi.fn() } as unknown as UpstreamCutService,
-      { isCutActive: () => true } as unknown as CutService,
+      {
+        isCutActive: () => true,
+        enableWatchProgress: vi.fn(),
+      } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
       DEFAULT_TV_CUT_GROUPING_CONFIG,
       () => Date.parse("2026-01-01T00:00:00Z"),
@@ -508,6 +523,7 @@ describe("metadata environment configuration", () => {
     expect(config.stremio).toBeUndefined();
     expect(config.grouping).toEqual(DEFAULT_TV_CUT_GROUPING_CONFIG);
     expect(config.longCuts).toEqual(DEFAULT_LONG_CUT_CONFIGURATION);
+    expect(config.aiometadataWatchTracking).toBe(true);
   });
 
   it("treats an empty optional catalog ID as automatic selection", () => {
@@ -526,6 +542,13 @@ describe("metadata environment configuration", () => {
     });
     expect(config.publicBaseUrl?.href).toBe("https://cuts.example.test/");
     expect(config.stremio?.requestTimeoutMs).toBe(9000);
+  });
+
+  it("supports explicitly disabling AIOMetadata watch tracking", () => {
+    const config = metadataConfigurationFromEnv({
+      AIOMETADATA_WATCH_TRACKING_ENABLED: "false",
+    });
+    expect(config.aiometadataWatchTracking).toBe(false);
   });
 });
 

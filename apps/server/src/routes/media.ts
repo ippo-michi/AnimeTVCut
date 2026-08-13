@@ -13,6 +13,7 @@ import {
 } from "../services/hls-source-loader.js";
 import { MediaFlowError } from "../services/mediaflow/errors.js";
 import type { SubtitleService } from "../services/subtitle-service.js";
+import type { CutWatchProgressTracker } from "../services/watch-progress.js";
 
 interface MediaParams {
   cutId: string;
@@ -95,10 +96,32 @@ function parseRange(header: string): MediaReadRange | undefined {
   return end === undefined ? { start } : { start, end };
 }
 
+function responseContainsWholeResource(
+  statusCode: 200 | 206,
+  headers: Readonly<Record<string, string>>,
+): boolean {
+  if (statusCode === 200) return true;
+  const match = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(
+    headers["content-range"] ?? "",
+  );
+  if (match === null) return false;
+  const start = Number(match[1]);
+  const end = Number(match[2]);
+  const total = Number(match[3]);
+  return (
+    Number.isSafeInteger(start) &&
+    Number.isSafeInteger(end) &&
+    Number.isSafeInteger(total) &&
+    start === 0 &&
+    end + 1 === total
+  );
+}
+
 export function mediaRoutes(
   sessions: CutSessionStore,
   subtitles?: SubtitleService,
   prefetchResourceCount = 0,
+  watchProgress?: CutWatchProgressTracker,
 ): FastifyPluginAsync {
   if (
     !Number.isSafeInteger(prefetchResourceCount) ||
@@ -152,6 +175,17 @@ export function mediaRoutes(
           const opened = await resource.open(range, controller.signal);
           sessions.touch(request.params.cutId);
           prefetchAfter(session, resource, prefetchResourceCount);
+          if (
+            watchProgress !== undefined &&
+            responseContainsWholeResource(
+              opened.statusCode,
+              opened.responseHeaders,
+            )
+          ) {
+            opened.stream.once("end", () => {
+              watchProgress.sourceEpisodeCompleted(session, resource);
+            });
+          }
           reply.code(opened.statusCode).type(resource.contentType);
           for (const [name, value] of Object.entries(opened.responseHeaders)) {
             const normalized = name.toLowerCase();

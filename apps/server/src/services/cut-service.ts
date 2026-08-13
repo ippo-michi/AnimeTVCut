@@ -76,6 +76,31 @@ export class CutService {
     return this.sessions.get(cutId);
   }
 
+  public enableWatchProgress(
+    cutId: string,
+    sourceEpisodeIds: readonly string[],
+  ): void {
+    const session = this.sessions.get(cutId);
+    if (session === undefined) return;
+    const available = new Set(
+      session.pieces.map((piece) => piece.sourceEpisodeId),
+    );
+    const eligible = new Set(sourceEpisodeIds);
+    if (
+      eligible.size === 0 ||
+      [...eligible].some((episodeId) => !available.has(episodeId))
+    )
+      throw new Error(
+        "Watch-progress episodes do not match the composed cut timeline.",
+      );
+    session.watchProgress = {
+      eligibleSourceEpisodeIds: eligible,
+      triggeredSourceEpisodeIds: new Set(),
+      inFlightSourceEpisodeIds: new Set(),
+      unavailable: false,
+    };
+  }
+
   public attachOutputSkipSegments(
     cutId: string,
     sourceSegments: readonly SafeSourceSkipSegment[],
@@ -174,6 +199,11 @@ export class CutService {
     )
       throw new Error("Long Cut exceeds the configured manifest size limit.");
     const resources = new Map<string, SessionResource>();
+    const lastSegmentByEpisode = new Map<string, string>();
+    for (const resource of composed.resources) {
+      if (resource.kind === "segment")
+        lastSegmentByEpisode.set(resource.sourceEpisodeId, resource.id);
+    }
     const sourcesByEpisode = new Map(
       request.sources.map(({ source }) => [source.episodeId, source]),
     );
@@ -188,6 +218,10 @@ export class CutService {
       resources.set(resource.id, {
         id: resource.id,
         kind: resource.kind,
+        sourceEpisodeId: resource.sourceEpisodeId,
+        completesSourceEpisode:
+          resource.kind === "segment" &&
+          lastSegmentByEpisode.get(resource.sourceEpisodeId) === resource.id,
         ...resolved,
       });
     }

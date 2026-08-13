@@ -19,6 +19,15 @@ import type { LazyMediaResource } from "./hls-source-loader.js";
 export interface SessionResource extends LazyMediaResource {
   id: string;
   kind: HlsResourceKind;
+  sourceEpisodeId: string;
+  completesSourceEpisode: boolean;
+}
+
+export interface WatchProgressSessionState {
+  eligibleSourceEpisodeIds: ReadonlySet<string>;
+  triggeredSourceEpisodeIds: Set<string>;
+  inFlightSourceEpisodeIds: Set<string>;
+  unavailable: boolean;
 }
 
 export interface SessionSubtitleSource {
@@ -61,6 +70,7 @@ export interface CutSession {
   subtitleDiagnostics: SubtitleSessionDiagnostics;
   outputSkipSegments: readonly OutputSkipSegment[];
   outputSkipDiagnostics: readonly OutputSkipDiagnostic[];
+  watchProgress?: WatchProgressSessionState;
   chapters?: readonly VirtualChapter[];
   longFormDiagnostics?: {
     mode: "season" | "series";

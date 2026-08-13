@@ -434,6 +434,10 @@ export class TvCutCatalogService {
             expectedEpisodeDurationSeconds:
               scope.estimatedDurationSeconds / scope.episodes.length,
           });
+    this.cutService.enableWatchProgress(
+      cut.cutId,
+      scope.episodes.map((episode) => episode.id),
+    );
     if (scope.mode !== "tv" && "families" in cut) {
       const families = cut.families as readonly {
         season: number;

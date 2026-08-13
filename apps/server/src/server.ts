@@ -15,6 +15,7 @@ const app = createApp({
   publicBaseUrl: metadata.publicBaseUrl,
   groupingConfig: metadata.grouping,
   longCuts: metadata.longCuts,
+  aiometadataWatchTracking: metadata.aiometadataWatchTracking,
   sessionIdleTtlMilliseconds:
     Number(process.env.CUT_SESSION_IDLE_TTL_SECONDS ?? "21600") * 1000,
   sessionMaxLifetimeMilliseconds:

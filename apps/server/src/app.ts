@@ -49,6 +49,11 @@ import {
   type SubtitleConfigInput,
 } from "./services/subtitle-config.js";
 import { SubtitleService } from "./services/subtitle-service.js";
+import {
+  AiometadataWatchProgressReporter,
+  CutWatchProgressTracker,
+  type EpisodeWatchProgressReporter,
+} from "./services/watch-progress.js";
 
 export interface AppOptions {
   fixtureRoot?: string;
@@ -72,6 +77,8 @@ export interface AppOptions {
   streamCacheTtlMs?: number;
   subtitles?: SubtitleConfigInput;
   mediaPrefetchResources?: number;
+  aiometadataWatchTracking?: boolean;
+  watchProgressReporter?: EpisodeWatchProgressReporter;
 }
 
 export function createApp(options: AppOptions = {}): FastifyInstance {
@@ -141,6 +148,15 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     (options.metadataStremio === undefined
       ? undefined
       : new MetadataStremioClient(options.metadataStremio));
+  const watchProgressReporter =
+    options.watchProgressReporter ??
+    (metadataClient !== undefined && options.aiometadataWatchTracking !== false
+      ? new AiometadataWatchProgressReporter(metadataClient)
+      : undefined);
+  const watchProgressTracker =
+    watchProgressReporter === undefined
+      ? undefined
+      : new CutWatchProgressTracker(watchProgressReporter);
   const tvCutCatalogService = new TvCutCatalogService(
     metadataClient,
     upstreamCutService,
@@ -161,7 +177,12 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   void app.register(metadataRoutes(metadataClient, tvCutCatalogService));
   void app.register(publicStremioRoutes(tvCutCatalogService));
   void app.register(
-    mediaRoutes(sessions, subtitleService, options.mediaPrefetchResources ?? 0),
+    mediaRoutes(
+      sessions,
+      subtitleService,
+      options.mediaPrefetchResources ?? 0,
+      watchProgressTracker,
+    ),
   );
 
   return app;
