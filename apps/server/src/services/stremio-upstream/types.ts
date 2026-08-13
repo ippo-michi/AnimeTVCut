@@ -125,6 +125,11 @@ export interface SanitizedCandidateSelection {
 export interface EpisodeSourceResolver {
   resolve(
     episodes: readonly UpstreamEpisodeReference[],
-    options?: { allowMixedSources?: boolean; signal?: AbortSignal },
+    options?: {
+      allowMixedSources?: boolean;
+      signal?: AbortSignal;
+      excludedFamilies?: ReadonlySet<string>;
+      excludedCandidates?: ReadonlySet<string>;
+    },
   ): Promise<CandidateFamilySelection>;
 }

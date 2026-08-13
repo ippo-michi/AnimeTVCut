@@ -26,6 +26,7 @@ import {
   MediaFlowSourceError,
   MediaFlowUnavailableError,
 } from "./errors.js";
+import { MediaFlowTimelineTransform } from "./fmp4-timeline.js";
 
 const MAX_PLAYLIST_BYTES = 2 * 1024 * 1024;
 const HEADER_NAME_PATTERN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
@@ -171,6 +172,9 @@ export class MediaFlowClient {
       this.config.baseUrl,
     );
     playlistUrl.searchParams.set("d", sourceUrl.toString());
+    if (this.config.outputContainer === "mpegts") {
+      playlistUrl.searchParams.set("atc_container", "mpegts");
+    }
     if (this.config.apiPassword !== undefined) {
       playlistUrl.searchParams.set("api_password", this.config.apiPassword);
     }
@@ -215,7 +219,28 @@ export class MediaFlowClient {
     this.validateResource(resource.absoluteUri, resource.kind);
     return {
       contentType: resource.contentType,
-      open: async (range, signal) => this.openResource(resource, range, signal),
+      open: async (range, signal) => {
+        const opened = await this.openResource(resource, range, signal);
+        const { sourceStart, outputStart } = resource;
+        if (
+          resource.kind !== "segment" ||
+          resource.mediaFormat !== "fmp4" ||
+          sourceStart === undefined ||
+          outputStart === undefined ||
+          (range !== undefined && range.start !== 0)
+        )
+          return opened;
+        const offset = outputStart - sourceStart;
+        if (Math.abs(offset) < 1e-9) return opened;
+        const timeline = new MediaFlowTimelineTransform(offset);
+        opened.stream.once("error", (error: Error) => {
+          if (!timeline.destroyed) timeline.destroy(error);
+        });
+        return {
+          ...opened,
+          stream: opened.stream.pipe(timeline),
+        };
+      },
     };
   }
 
@@ -235,11 +260,25 @@ export class MediaFlowClient {
     range?: MediaReadRange,
     signal?: AbortSignal,
   ): Promise<OpenedMediaResource> {
+    const resourceUrl = new URL(resource.absoluteUri);
+    if (
+      resource.kind === "segment" &&
+      resource.mediaFormat === "mpegts" &&
+      resource.outputStart !== undefined
+    ) {
+      // Each MediaFlow TS subprocess starts from an independent source range.
+      // Give it the virtual placement so the muxer writes timestamps in the
+      // composed output timeline without decoding/re-encoding H.264 video.
+      resourceUrl.searchParams.set(
+        "atc_output_start_ms",
+        String(Math.round(resource.outputStart * 1_000)),
+      );
+    }
     const headers = new Headers();
     if (range !== undefined) {
       headers.set("range", `bytes=${range.start}-${range.end ?? ""}`);
     }
-    const response = await this.request(resource.absoluteUri, "resource", {
+    const response = await this.request(resourceUrl, "resource", {
       headers,
       signal,
     });
@@ -290,11 +329,13 @@ export class MediaFlowClient {
         "MediaFlow playlist contains a resource from another origin.",
       );
     }
-    const expectedPath =
-      kind === "map"
-        ? "/proxy/transcode/init.mp4"
-        : "/proxy/transcode/segment.m4s";
-    if (url.pathname !== expectedPath) {
+    const approvedPath =
+      (kind === "map" && url.pathname === "/proxy/transcode/init.mp4") ||
+      (kind === "segment" &&
+        (url.pathname === "/proxy/transcode/segment.m4s" ||
+          (this.config.outputContainer === "mpegts" &&
+            url.pathname === "/proxy/transcode/segment.ts")));
+    if (!approvedPath) {
       throw new MediaFlowInvalidResponseError(
         "MediaFlow playlist contains an unapproved resource path.",
       );
@@ -306,21 +347,30 @@ export class MediaFlowClient {
     kind: MediaFlowRequestKind,
     options: { headers?: Headers; signal?: AbortSignal } = {},
   ): Promise<Response> {
-    const timeoutSignal = AbortSignal.timeout(this.config.requestTimeoutMs);
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(
+      () => timeoutController.abort(),
+      this.config.requestTimeoutMs,
+    );
     const signal =
       options.signal === undefined
-        ? timeoutSignal
-        : AbortSignal.any([timeoutSignal, options.signal]);
+        ? timeoutController.signal
+        : AbortSignal.any([timeoutController.signal, options.signal]);
     if (kind === "health") this.counters.healthRequests += 1;
     if (kind === "playlist") this.counters.playlistRequests += 1;
     if (kind === "resource") this.counters.resourceRequests += 1;
     try {
-      return await this.fetchImplementation(url, {
+      const response = await this.fetchImplementation(url, {
         method: "GET",
         headers: options.headers,
         redirect: "manual",
         signal,
       });
+      // For media, this timeout bounds opening the upstream response, not how
+      // long a slow player is allowed to consume it. The caller signal remains
+      // attached to the response body and still cancels on disconnect.
+      if (kind === "resource") clearTimeout(timeout);
+      return response;
     } catch {
       if (options.signal?.aborted === true) {
         throw new MediaFlowUnavailableError("MediaFlow request was cancelled.");
@@ -328,6 +378,8 @@ export class MediaFlowClient {
       throw new MediaFlowUnavailableError(
         "MediaFlow request timed out or failed.",
       );
+    } finally {
+      if (kind === "resource") clearTimeout(timeout);
     }
   }
 

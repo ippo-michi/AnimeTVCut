@@ -169,6 +169,47 @@ describe("direct MediaFlow seekable source normalization", () => {
     ).toBe(true);
   });
 
+  it.each([
+    ["AAC", "control-h264-aac.mkv", "aac"],
+    ["E-AC-3", "control-h264-eac3.mkv", "eac3"],
+  ])(
+    "packet-copies %s continuously across MPEG-TS segment seams",
+    async (_label, fileName, expectedCodec) => {
+      const playlistUrl = transcodePlaylistUrl(fileName, true);
+      playlistUrl.searchParams.set("atc_container", "mpegts");
+      const result = await execFileAsync(
+        "ffprobe",
+        [
+          "-v",
+          "error",
+          "-select_streams",
+          "a:0",
+          "-show_entries",
+          "stream=codec_name:packet=pts_time,duration_time",
+          "-of",
+          "json",
+          playlistUrl.toString(),
+        ],
+        { timeout: 60_000 },
+      );
+      const probe = JSON.parse(result.stdout) as {
+        streams: Array<{ codec_name: string }>;
+        packets: Array<{ pts_time: string; duration_time: string }>;
+      };
+      expect(probe.streams[0]?.codec_name).toBe(expectedCodec);
+      const packets = probe.packets;
+      expect(packets.length).toBeGreaterThan(100);
+      const gaps = packets.slice(1).map((packet, index) => {
+        const previous = packets[index]!;
+        return (
+          Number(packet.pts_time) -
+          (Number(previous.pts_time) + Number(previous.duration_time))
+        );
+      });
+      expect(Math.max(...gaps.map(Math.abs))).toBeLessThan(0.001);
+    },
+  );
+
   it("opens and decodes the original MP4 independently of MediaFlow", async () => {
     const result = await execFileAsync(
       "ffprobe",

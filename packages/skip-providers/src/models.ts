@@ -39,6 +39,9 @@ export interface SkipLookupIdentity {
 }
 
 export interface ExplicitSkipIdentity {
+  imdbId?: string;
+  imdbSeason?: number;
+  imdbEpisode?: number;
   malAnimeId?: number;
   malEpisode?: number;
 }

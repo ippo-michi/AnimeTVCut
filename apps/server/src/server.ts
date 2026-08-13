@@ -20,6 +20,10 @@ const app = createApp({
   sessionMaxLifetimeMilliseconds:
     Number(process.env.CUT_SESSION_MAX_LIFETIME_SECONDS ?? "172800") * 1000,
   subtitles: subtitleConfigFromEnv(process.env),
+  mediaPrefetchResources: Number.parseInt(
+    process.env.MEDIA_PREFETCH_RESOURCES ?? "1",
+    10,
+  ),
 });
 const port = Number.parseInt(process.env.PORT ?? "3000", 10);
 const host = process.env.HOST ?? "127.0.0.1";

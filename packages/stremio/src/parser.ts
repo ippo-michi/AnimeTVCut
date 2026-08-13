@@ -29,6 +29,18 @@ function optionalString(value: unknown, max = 4096): string | undefined {
     : undefined;
 }
 
+function optionalPositiveInteger(value: unknown): number | undefined {
+  const numeric =
+    typeof value === "string" && /^\d{1,15}$/.test(value)
+      ? Number(value)
+      : value;
+  return typeof numeric === "number" &&
+    Number.isSafeInteger(numeric) &&
+    numeric > 0
+    ? numeric
+    : undefined;
+}
+
 function stringArray(value: unknown, name: string): readonly string[] {
   if (!Array.isArray(value) || value.length > 100) {
     throw new MetadataStremioInvalidResponseError(
@@ -159,7 +171,10 @@ export function parseCatalogResponse(
   return value.metas.map(parsePreview);
 }
 
-function parseEpisode(value: unknown): SourceEpisodeMeta | undefined {
+function parseEpisode(
+  value: unknown,
+  parseRuntime: (runtime: unknown) => number | undefined,
+): SourceEpisodeMeta | undefined {
   if (!isRecord(value)) return undefined;
   if (
     !Number.isSafeInteger(value.season) ||
@@ -172,10 +187,12 @@ function parseEpisode(value: unknown): SourceEpisodeMeta | undefined {
   const title = optionalString(value.title, 512);
   const released = optionalString(value.released, 128);
   const thumbnail = optionalString(value.thumbnail, 2048);
+  const runtimeSeconds = parseRuntime(value.runtime);
   return {
     id: requiredString(value.id, "episode id", 1024),
     season: Number(value.season),
     episode: Number(value.episode),
+    ...(runtimeSeconds === undefined ? {} : { runtimeSeconds }),
     ...(title === undefined ? {} : { title }),
     ...(released === undefined ? {} : { released }),
     ...(thumbnail === undefined ? {} : { thumbnail }),
@@ -198,11 +215,19 @@ export function parseMetaResponse(
     );
   }
   const runtimeSeconds = parseRuntime(value.meta.runtime);
+  const malAnimeId = optionalPositiveInteger(
+    value.meta._malId ?? value.meta.malId,
+  );
+  const kitsuAnimeId = optionalPositiveInteger(
+    value.meta._kitsuId ?? value.meta.kitsuId,
+  );
   return {
     ...preview,
     ...(runtimeSeconds === undefined ? {} : { runtimeSeconds }),
+    ...(malAnimeId === undefined ? {} : { malAnimeId }),
+    ...(kitsuAnimeId === undefined ? {} : { kitsuAnimeId }),
     videos: value.meta.videos
-      .map(parseEpisode)
+      .map((episode) => parseEpisode(episode, parseRuntime))
       .filter((episode): episode is SourceEpisodeMeta => episode !== undefined),
   };
 }

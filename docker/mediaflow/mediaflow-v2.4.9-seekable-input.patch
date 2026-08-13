@@ -97,7 +97,7 @@ index 7b51128..2da9ff7 100644
  
          # Packet queue for demux-thread -> async consumer bridge
          self._packet_queue = queue.Queue(maxsize=128)
-@@ -283,10 +294,25 @@ class PyAVDemuxer:
+@@ -283,10 +294,38 @@ class PyAVDemuxer:
              """
              pkt_count = 0
              pq = self._packet_queue
@@ -110,6 +110,19 @@ index 7b51128..2da9ff7 100644
 +                    except queue.Full:
 +                        continue
 +                raise RuntimeError("Demux stopped")
++
++            def before_requested_time(value) -> bool:
++                """Discard seek pre-roll after decoding reference frames."""
++                if seek_time_ms <= 0:
++                    return False
++                timestamp = getattr(value, "time", None)
++                if timestamp is None:
++                    pts = getattr(value, "pts", None)
++                    time_base = getattr(value, "time_base", None)
++                    if pts is None or time_base is None:
++                        return False
++                    timestamp = float(pts * time_base)
++                return float(timestamp) * 1000.0 < seek_time_ms - 1.0
 +
              try:
 -                # Open container from read end of pipe
@@ -135,7 +148,7 @@ index 7b51128..2da9ff7 100644
                  )
                  self._discover_streams()
  
-+                if seek_time_ms > 0:
++                if input_url is not None and seek_time_ms > 0:
 +                    self._container.seek(
 +                        int(seek_time_ms * 1000.0),
 +                        backward=True,
@@ -149,26 +162,32 @@ index 7b51128..2da9ff7 100644
                  # Signal stream metadata is available
                  streams_ready.set()
  
-@@ -352,7 +390,7 @@ class PyAVDemuxer:
+@@ -352,7 +403,9 @@ class PyAVDemuxer:
                          except Exception:
                              frames = []
                          for frame in frames:
++                            if before_requested_time(frame):
++                                continue
 -                            pq.put(
 +                            put_packet(
                                  DemuxedPacket(
                                      stream_index=packet.stream_index,
                                      codec_type="video",
-@@ -375,7 +413,7 @@ class PyAVDemuxer:
+@@ -375,7 +428,9 @@ class PyAVDemuxer:
                          except Exception:
                              frames = []
                          for frame in frames:
++                            if before_requested_time(frame):
++                                continue
 -                            pq.put(
 +                            put_packet(
                                  DemuxedPacket(
                                      stream_index=packet.stream_index,
                                      codec_type="audio",
-@@ -394,7 +432,7 @@ class PyAVDemuxer:
+@@ -394,7 +449,9 @@ class PyAVDemuxer:
                      else:
++                        if before_requested_time(packet):
++                            continue
                          tb_num = video_tb_num if is_video else audio_tb_num
                          tb_den = video_tb_den if is_video else audio_tb_den
 -                        pq.put(
@@ -217,7 +236,40 @@ index 7b51128..2da9ff7 100644
  
          self._demux_thread = threading.Thread(target=_open_and_demux, daemon=True, name="pyav-demux")
          self._demux_thread.start()
-@@ -563,41 +615,40 @@ class PyAVDemuxer:
+@@ -501,7 +572,19 @@ class PyAVDemuxer:
+     def _discover_streams(self) -> None:
+         """Inspect the opened container and record stream metadata."""
+         if self._container is None:
+             return
++        audio_streams = [
++            stream for stream in self._container.streams if stream.type == "audio"
++        ]
++        preferred_language = os.environ.get("ATC_AUDIO_LANGUAGE", "jpn").lower()
++        preferred_audio = next(
++            (
++                stream
++                for stream in audio_streams
++                if stream.metadata.get("language", "").lower() == preferred_language
++            ),
++            audio_streams[0] if audio_streams else None,
++        )
+ 
+         for stream in self._container.streams:
+             if stream.type == "video" and self._video_stream is None:
+@@ -529,6 +612,11 @@ class PyAVDemuxer:
+                     self._video_stream.fps,
+                 )
+ 
+-            elif stream.type == "audio" and self._audio_stream is None:
++            elif (
++                stream.type == "audio"
++                and self._audio_stream is None
++                and preferred_audio is not None
++                and stream.index == preferred_audio.index
++            ):
+                 codec_ctx = stream.codec_context
+                 self._audio_stream = DemuxedStream(
+@@ -563,41 +651,40 @@ class PyAVDemuxer:
             unblocks and exits. The writer's ``finally`` closes the pipe
             write-end, which causes the demux thread to see EOF.
          3. Join the writer thread (wait for it to drain and exit).
@@ -251,7 +303,8 @@ index 7b51128..2da9ff7 100644
 -        # 3. Join writer thread (it closes _write_fd in its finally block)
 +        # 4. Join writer thread (it closes _write_fd in its finally block)
          if self._writer_thread is not None:
-             self._writer_thread.join(timeout=5.0)
+-            self._writer_thread.join(timeout=5.0)
++            self._writer_thread.join(timeout=0.25)
              self._writer_thread = None
  
 -        # 4. Join demux thread -- must finish before we close the container
@@ -275,24 +328,226 @@ index 7b51128..2da9ff7 100644
          for fd_name in ("_read_fd", "_write_fd"):
              fd = getattr(self, fd_name, None)
              if fd is not None:
+diff --git a/mediaflow_proxy/remuxer/ebml_parser.py b/mediaflow_proxy/remuxer/ebml_parser.py
+index ae7bb98..e783214 100644
+--- a/mediaflow_proxy/remuxer/ebml_parser.py
++++ b/mediaflow_proxy/remuxer/ebml_parser.py
+@@ -13,6 +13,7 @@ video/audio parameters) and Cluster/SimpleBlock/BlockGroup for extracting
+ 
+ import bisect
+ import logging
++import os
+ import struct
+ from dataclasses import dataclass, field
+ 
+@@ -43,6 +43,8 @@ TRACK_ENTRY = 0xAE
+ TRACK_NUMBER = 0xD7
+ TRACK_UID = 0x73C5
+ TRACK_TYPE = 0x83
++TRACK_LANGUAGE = 0x22B59C
++TRACK_LANGUAGE_IETF = 0x22B59D
+ CODEC_ID = 0x86
+ CODEC_PRIVATE = 0x63A2
+ DEFAULT_DURATION = 0x23E383
+@@ -401,15 +403,33 @@ def build_seek_header(header_data: bytes, first_cluster_offset: int) -> bytes:
+     eid, segment_id_end = read_element_id(header_data, segment_id_start)
+     _segment_size, segment_data_start = read_element_size(header_data, segment_id_end)
+ 
+-    # Build the new header:
+-    # 1. Original EBML header (unchanged)
+-    # 2. Segment element ID (unchanged)
+-    # 3. Segment size rewritten to UNKNOWN_SIZE (8-byte VINT: 0x01 FF FF FF FF FF FF FF)
+-    # 4. Segment children from original (Info, Tracks, etc.) up to first Cluster
++    # Build a deliberately small synthetic header. Real anime MKVs can place
++    # megabytes of attachments, chapters, or tags before their first Cluster.
++    # Copying that entire prefix into every HLS segment defeats the remux fast
++    # path. The streaming demuxer only requires Info and Tracks before the
++    # range-fetched Cluster bytes.
++    scan_end = min(first_cluster_offset, len(header_data)) if first_cluster_offset > 0 else len(header_data)
++    segment_children = bytearray()
++    tracks_found = False
++    for child_id, child_data_start, child_size, child_start in iter_elements(
++        header_data,
++        segment_data_start,
++        scan_end,
++    ):
++        child_end = child_data_start + child_size
++        if child_end > len(header_data):
++            break
++        if child_id in (INFO, TRACKS):
++            segment_children.extend(header_data[child_start:child_end])
++            tracks_found = tracks_found or child_id == TRACKS
++
++    if not tracks_found:
++        raise ValueError("MKV header probe did not contain a complete Tracks element")
++
+     result = bytearray()
+     result.extend(header_data[:segment_id_end])  # EBML header + Segment ID
+     result.extend(b"\x01\xff\xff\xff\xff\xff\xff\xff")  # UNKNOWN_SIZE (8 bytes)
+-    result.extend(header_data[segment_data_start:first_cluster_offset])  # Info + Tracks
++    result.extend(segment_children)
+ 
+     return bytes(result)
+ 
+@@ -763,11 +783,10 @@ def build_cue_index(
+ 
+     # Build synthetic seek header (MKV header with Segment size = UNKNOWN)
+     seek_header = b""
+-    if first_cluster_offset > 0:
+-        try:
+-            seek_header = build_seek_header(header_data, first_cluster_offset)
+-        except Exception as e:
+-            logger.warning("[ebml] Failed to build seek header: %s", e)
++    try:
++        seek_header = build_seek_header(header_data, first_cluster_offset)
++    except Exception as e:
++        logger.warning("[ebml] Failed to build seek header: %s", e)
+ 
+     # Extract track metadata for size estimation and init segment generation
+     audio_codec_id = ""
+@@ -781,10 +800,22 @@ def build_cue_index(
+     video_fps = 0.0
+     video_default_duration_ns = 0
+ 
+-    audio_track = None
++    audio_tracks = [t for t in tracks if t.track_type == TRACK_TYPE_AUDIO]
++    preferred_audio = os.environ.get("ATC_AUDIO_LANGUAGE", "jpn").strip().lower()
++    preferred_aliases = {
++        "jpn": {"jpn", "ja", "jp"},
++        "eng": {"eng", "en"},
++    }.get(preferred_audio, {preferred_audio})
++    audio_track = next(
++        (
++            track
++            for track in audio_tracks
++            if track.language.strip().lower() in preferred_aliases
++        ),
++        audio_tracks[0] if audio_tracks else None,
++    )
+     for t in tracks:
+-        if t.track_type == TRACK_TYPE_AUDIO and not audio_track:
+-            audio_track = t
++        if t is audio_track:
+             audio_codec_id = t.codec_id
+             audio_channels = t.channels
+             audio_sample_rate = t.sample_rate
+@@ -868,6 +870,7 @@ class MKVTrack:
+     track_uid: int = 0
+     track_type: int = 0  # 1=video, 2=audio, 17=subtitle
+     codec_id: str = ""  # e.g. "V_MPEG4/ISO/AVC", "A_EAC3"
++    language: str = ""
+     codec_private: bytes = b""  # Codec-specific init data (avcC, AudioSpecificConfig, etc.)
+     default_duration_ns: int = 0  # Default frame duration in nanoseconds
+     codec_delay_ns: int = 0  # Codec delay in nanoseconds
+@@ -955,6 +958,8 @@ def parse_tracks(data: bytes, start: int, end: int) -> list[MKVTrack]:
+             elif child_eid == TRACK_TYPE:
+                 track.track_type = read_uint(data, child_off, child_size)
+             elif child_eid == CODEC_ID:
+                 track.codec_id = read_string(data, child_off, child_size)
++            elif child_eid in (TRACK_LANGUAGE, TRACK_LANGUAGE_IETF):
++                track.language = read_string(data, child_off, child_size)
+             elif child_eid == CODEC_PRIVATE:
+                 track.codec_private = bytes(data[child_off : child_off + child_size])
+             elif child_eid == DEFAULT_DURATION:
+diff --git a/mediaflow_proxy/remuxer/audio_transcoder.py b/mediaflow_proxy/remuxer/audio_transcoder.py
+index aa9f546..b74f2fd 100644
+--- a/mediaflow_proxy/remuxer/audio_transcoder.py
++++ b/mediaflow_proxy/remuxer/audio_transcoder.py
+@@ -149,6 +149,7 @@ class AudioTranscoder:
+         output_sample_rate: int = 48000,
+         output_channels: int = 2,
+         output_bitrate: int = 192000,
++        input_extradata: bytes = b"",
+     ) -> None:
+         """
+         Initialize the transcoder.
+@@ -167,4 +168,7 @@ class AudioTranscoder:
+         self._decoder = av.CodecContext.create(input_codec, "r")
+         self._decoder.sample_rate = input_sample_rate
++        if input_extradata:
++            self._decoder.extradata = input_extradata
+         input_layout = _CHANNEL_LAYOUT_MAP.get(input_channels, "stereo")
+         self._decoder.layout = input_layout
++        self._packetized_input = bool(input_extradata)
+@@ -243,7 +247,10 @@ class AudioTranscoder:
+         output = []
+ 
+-        # Parse raw bytes into packets
+-        packets = self._decoder.parse(raw_frame_data)
++        # Matroska AAC blocks are already complete access units and require
++        # the track's AudioSpecificConfig instead of ADTS parser framing.
++        packets = (
++            [av.Packet(raw_frame_data)] if self._packetized_input else self._decoder.parse(raw_frame_data)
++        )
+ 
+         for packet in packets:
+             # Decode to PCM frames
 diff --git a/mediaflow_proxy/remuxer/transcode_handler.py b/mediaflow_proxy/remuxer/transcode_handler.py
 index c35df6a..8eee101 100644
 --- a/mediaflow_proxy/remuxer/transcode_handler.py
 +++ b/mediaflow_proxy/remuxer/transcode_handler.py
-@@ -465,7 +465,11 @@ async def handle_transcode(
+@@ -44,7 +44,8 @@ from mediaflow_proxy.remuxer.container_probe import (
+     probe_mkv_cues,
+     probe_mp4_moov,
+ )
+-from mediaflow_proxy.remuxer.ebml_parser import CODEC_ID_H264, MKVTrack
++from mediaflow_proxy.remuxer.ebml_parser import CODEC_ID_AAC, CODEC_ID_H264, MKVTrack
++from mediaflow_proxy.remuxer.audio_transcoder import get_ffmpeg_codec_name
+ from mediaflow_proxy.remuxer.hls_manifest import generate_vod_playlist, merge_cue_points
+ from mediaflow_proxy.remuxer.media_source import MediaSource, _MKV_EXTENSIONS, _MP4_EXTENSIONS
+ from mediaflow_proxy.remuxer.mp4_muxer import build_fmp4_init_segment
+@@ -113,4 +114,41 @@ class _ProbeResult:
+     duration_ms: float = 0.0
+ 
+ 
++_REMUX_SAFE_AVC_PROFILES = frozenset({66, 77, 88, 100})
++_REMUX_SAFE_AAC_CODECS = frozenset(
++    {CODEC_ID_AAC, "A_AAC/MPEG2/LC", "A_AAC/MPEG4/LC"}
++)
++
++
++def _can_remux_hls_mkv(cue_index: MKVCueIndex | None) -> bool:
++    """Allow packet copy only when the public fMP4 contract is exact."""
++    if cue_index is None or not cue_index.seek_header:
++        logger.info("[hls_remux_guard] safe=False reason=missing_mkv_seek_metadata")
++        return False
++    avcc = ensure_avcc_extradata(cue_index.video_codec_private)
++    profile = avcc[1] if len(avcc) >= 4 and avcc[0] == 1 else None
++    audio_copy = (
++        cue_index.audio_codec_id in _REMUX_SAFE_AAC_CODECS
++        and round(cue_index.audio_sample_rate) == 48000
++        and cue_index.audio_channels == 2
++    )
++    audio_mode = "copy" if audio_copy else "normalize"
++    safe = (
++        cue_index.video_codec_id == CODEC_ID_H264
++        and profile in _REMUX_SAFE_AVC_PROFILES
++        and (audio_copy or get_ffmpeg_codec_name(cue_index.audio_codec_id) is not None)
++    )
++    logger.info(
++        "[hls_remux_guard] video=%s avc_profile=%s audio=%s rate=%s channels=%s mode=%s safe=%s",
++        cue_index.video_codec_id,
++        profile,
++        cue_index.audio_codec_id,
++        round(cue_index.audio_sample_rate),
++        cue_index.audio_channels,
++        audio_mode,
++        safe,
++    )
++    return safe
++
++
+ async def _probe_source(source: MediaSource) -> _ProbeResult:
+@@ -465,7 +489,7 @@ async def handle_transcode(
      #   AND video doesn't need re-encoding.
      # - Universal PyAV path: for non-MKV containers (MP4/TS/WebM), or when
      #   video re-encoding is required (any codec not natively browser-compatible).
 -    use_mkv_fast_path = cue_index is not None and not needs_video_transcode
-+    use_mkv_fast_path = (
-+        cue_index is not None
-+        and bool(cue_index.seek_header)
-+        and not needs_video_transcode
-+    )
++    use_mkv_fast_path = not needs_video_transcode and _can_remux_hls_mkv(cue_index)
      pipeline_name = "MKV fast-path" if use_mkv_fast_path else "universal PyAV"
  
      logger.info(
-@@ -478,8 +482,17 @@ async def handle_transcode(
+@@ -478,8 +502,17 @@ async def handle_transcode(
          is_mp4,
      )
  
@@ -310,19 +565,48 @@ index c35df6a..8eee101 100644
      else:
          content = stream_transcode_universal(media_source_gen())
  
-@@ -1048,6 +1061,7 @@ async def handle_transcode_hls_segment(
+@@ -834,8 +867,11 @@ async def _generate_init_segment(
+         audio_specific_config=default_asc,
+         video_timescale=90000,
+         audio_timescale=48000,
+-        duration_ms=duration_ms if 0 < duration_ms < 86400_000 else 0.0,
++        # This init map is reused after AnimeTVCut rebases fragments onto a
++        # multi-episode virtual timeline. A finite per-episode duration makes
++        # players reject or mishandle fragments beyond the original episode.
++        duration_ms=0.0,
+     )
+ 
+     logger.info(
+         "[hls_init] Built init segment: %dx%d @%.1ffps, extradata=%d bytes, init=%d bytes",
+@@ -925,8 +958,11 @@ async def handle_transcode_hls_init(
+     # to match the video passthrough in stream_segment_fmp4.
+     source_video_codec_private = b""
+     source_default_duration_ns = 0
+-    if probe.cue_index and probe.cue_index.video_codec_private:
++    # Only the MKV fast path copies source H.264 packets. Universal-path
++    # segments are encoded to the configured bitrate, so their init map must
++    # carry encoder SPS/PPS rather than the source file's avcC metadata.
++    if _can_remux_hls_mkv(probe.cue_index):
+         if not video_needs_reencode(probe.cue_index.video_codec_id):
+             source_video_codec_private = probe.cue_index.video_codec_private
+             source_default_duration_ns = probe.cue_index.video_default_duration_ns
+ 
+@@ -1048,6 +1084,4 @@ async def handle_transcode_hls_segment(
      # with H.264 video, universal PyAV pipeline as fallback for everything else.
      use_mkv_fastpath = (
-         probe.cue_index is not None
-+        and bool(probe.cue_index.seek_header)
-         and probe.cue_index.video_codec_id
-         and not video_needs_reencode(probe.cue_index.video_codec_id)
+-        probe.cue_index is not None
+-        and probe.cue_index.video_codec_id
+-        and not video_needs_reencode(probe.cue_index.video_codec_id)
++        _can_remux_hls_mkv(probe.cue_index)
      )
-@@ -1067,14 +1081,24 @@ async def handle_transcode_hls_segment(
+@@ -1067,14 +1101,25 @@ async def handle_transcode_hls_segment(
              ):
                  seg_chunks.append(chunk)
          else:
 -            logger.info("[hls_segment] %s using universal PyAV pipeline", seg_label)
++            # Open the real seekable container so demux timestamps remain on
++            # the source timeline. Synthetic partial MKV headers can rebase
++            # timestamps and make overlapping ranges replay or drop frames.
 +            pyav_input = getattr(source, "pyav_open_input", lambda: None)()
 +            path_name = "seekable HTTP universal" if pyav_input is not None else "partial-pipe universal"
 +            logger.info("[hls_segment] %s using %s pipeline", seg_label, path_name)
@@ -331,11 +615,9 @@ index c35df6a..8eee101 100644
 -                source_gen,
 -                force_video_reencode=True,
 +                None if pyav_input is not None else source_gen,
-+                # Preserve compatible H.264 packets so EXT-X-MAP source avcC
-+                # metadata continues to describe every emitted media segment.
-+                # HEVC and other unsupported codecs are still normalized by
-+                # video_needs_reencode() inside the universal pipeline.
-+                force_video_reencode=False,
++                # The universal fallback normalizes source bitrate as well as
++                # codecs. Its EXT-X-MAP is generated from the same encoder.
++                force_video_reencode=True,
                  max_duration_ms=seg_duration_ms,
                  start_decode_time_ms=seg_info.start_ms,
                  emit_init_segment=False,
@@ -350,7 +632,93 @@ diff --git a/mediaflow_proxy/remuxer/transcode_pipeline.py b/mediaflow_proxy/rem
 index e1d43fa..cfe0a43 100644
 --- a/mediaflow_proxy/remuxer/transcode_pipeline.py
 +++ b/mediaflow_proxy/remuxer/transcode_pipeline.py
-@@ -737,13 +737,16 @@ def _update_init_extradata(
+@@ -25,6 +25,7 @@ via ``StreamingResponse``.
+ import asyncio
+ import hashlib
+ import logging
++import os
+ from collections.abc import AsyncIterator
+ 
+ import av
+@@ -366,14 +367,20 @@ async def stream_segment_fmp4(
+         )
+ 
+         # Phase 2: Set up audio transcoder
+-        if audio_track and needs_transcode(audio_track.codec_id):
++        normalize_audio = audio_track and (
++            needs_transcode(audio_track.codec_id)
++            or round(audio_track.sample_rate) != 48000
++            or audio_track.channels != 2
++        )
++        if audio_track and normalize_audio:
+             ffmpeg_codec = get_ffmpeg_codec_name(audio_track.codec_id)
+             if ffmpeg_codec:
+                 transcoder = AudioTranscoder(
+                     input_codec=ffmpeg_codec,
+                     input_sample_rate=int(audio_track.sample_rate),
+                     input_channels=audio_track.channels,
+                     output_sample_rate=48000,
+                     output_channels=2,
+                     output_bitrate=192000,
++                    input_extradata=audio_track.codec_private,
+                 )
+@@ -397,7 +404,10 @@ async def stream_segment_fmp4(
+             video_timescale=_VIDEO_TIMESCALE,
+             audio_timescale=audio_timescale,
+             duration_ms=max_duration_ms or 0.0,
+-            fragment_duration_ms=2000.0,
++            # One indexed HLS resource should contain one multiplexed media
++            # fragment. Multiple independent track fragments are playable
++            # sequentially but cannot be sought reliably by HLS clients.
++            fragment_duration_ms=(max_duration_ms or 6000.0) + 1000.0,
+             start_decode_time_ms=start_decode_time_ms,
+             audio_frame_size=aac_frame_size,
+         )
+@@ -459,2 +460,4 @@ async def stream_segment_fmp4(
++                if frame.timestamp_ms < start_decode_time_ms - 1.0:
++                    continue
+                 if segment_end_ms is not None and frame.timestamp_ms >= segment_end_ms:
+                     _video_limit_hit = True
+@@ -521,3 +524,10 @@ async def stream_segment_fmp4(
+             # ── Audio frame ──
+             elif audio_track and frame.track_number == audio_track.track_number:
++                if frame.timestamp_ms < start_decode_time_ms - 1.0:
++                    continue
++                if segment_end_ms is not None and frame.timestamp_ms >= segment_end_ms:
++                    _audio_limit_hit = True
++                    if _video_limit_hit or video_track is None:
++                        break
++                    continue
+                 # Check frame-count limit
+@@ -662,12 +663,22 @@ def _find_video_track(header: MKVHeader) -> MKVTrack | None:
+     return None
+ 
+ 
+ def _find_audio_track(header: MKVHeader) -> MKVTrack | None:
+-    """Find the first audio track."""
+-    for track in header.tracks:
+-        if track.is_audio:
+-            return track
+-    return None
++    """Prefer the configured language, then fall back to the first audio track."""
++    audio_tracks = [track for track in header.tracks if track.is_audio]
++    preferred = os.environ.get("ATC_AUDIO_LANGUAGE", "jpn").strip().lower()
++    aliases = {
++        "jpn": {"jpn", "ja", "jp"},
++        "eng": {"eng", "en"},
++    }.get(preferred, {preferred})
++    return next(
++        (
++            track
++            for track in audio_tracks
++            if track.language.strip().lower() in aliases
++        ),
++        audio_tracks[0] if audio_tracks else None,
++    )
+ 
+ 
+ # =============================================================================
+@@ -737,13 +748,16 @@ def _update_init_extradata(
  
  
  async def stream_transcode_universal(
@@ -368,7 +736,7 @@ index e1d43fa..cfe0a43 100644
  ) -> AsyncIterator[bytes]:
      """
      Universal transcode pipeline using PyAV for demuxing and encoding.
-@@ -788,7 +791,12 @@ async def stream_transcode_universal(
+@@ -788,7 +802,12 @@ async def stream_transcode_universal(
          # Phase 1: Start demuxing -- opens the container in a background thread,
          # discovers streams, and starts enqueuing packets. Awaits until stream
          # metadata is available.
@@ -382,7 +750,7 @@ index e1d43fa..cfe0a43 100644
  
          vs = demuxer.video_stream
          aus = demuxer.audio_stream
-@@ -1243,7 +1251,7 @@ async def stream_transcode_universal(
+@@ -1243,7 +1262,7 @@ async def stream_transcode_universal(
                  pass
          audio_encoder = None
          audio_resampler = None
@@ -391,3 +759,56 @@ index e1d43fa..cfe0a43 100644
              try:
                  await source.aclose()
              except Exception:
+diff --git a/mediaflow_proxy/routes/proxy.py b/mediaflow_proxy/routes/proxy.py
+index a2e753f..980de18 100644
+--- a/mediaflow_proxy/routes/proxy.py
++++ b/mediaflow_proxy/routes/proxy.py
+@@ -98,25 +98,25 @@ def sanitize_url(url: str) -> str:
+     if "&key_id=" in url and "&key=" in url:
+         # Split the URL at the first occurrence of &key_id= to separate the base URL from the incorrectly appended parameters
+         base_url = url.split("&key_id=")[0]
+-        logger.info(f"Removed incorrectly appended key parameters from URL: '{url}' -> '{base_url}'")
++        logger.info("Removed malformed key parameters from upstream URL")
+         url = base_url
+ 
+     # Log if URL was changed
+     if url != original_url:
+-        logger.info(f"URL sanitized: '{original_url}' -> '{url}'")
++        logger.debug("Upstream URL was sanitized")
+ 
+     # Also try URL decoding to see what we get
+     try:
+         decoded_url = unquote(url)
+         if decoded_url != url:
+-            logger.info(f"URL after decoding: '{decoded_url}'")
++            logger.debug("Upstream URL was decoded")
+             # If after decoding we still have malformed protocol, fix it
+             if ':"/' in decoded_url:
+                 # Fix https:"// or http:"// patterns
+                 fixed_decoded = re.sub(r'([a-z]+):"//', r"\1://", decoded_url)
+-                logger.info(f"Fixed decoded URL: '{fixed_decoded}'")
++                logger.info("Repaired malformed upstream URL encoding")
+                 return fixed_decoded
+     except Exception as e:
+-        logger.warning(f"Error decoding URL '{url}': {e}")
++        logger.warning("Error decoding upstream URL: %s", type(e).__name__)
+ 
+     return url
+diff --git a/mediaflow_proxy/utils/redis_utils.py b/mediaflow_proxy/utils/redis_utils.py
+index b0e0c66..6cf318a 100644
+--- a/mediaflow_proxy/utils/redis_utils.py
++++ b/mediaflow_proxy/utils/redis_utils.py
+@@ -813,8 +813,10 @@ HLS_INIT_PREFIX = b"mfp:hls_init:"
+ HLS_SEG_META_PREFIX = "mfp:hls_smeta:"
+ 
+-HLS_SEG_TTL = 60  # 60 s -- short-lived; only for immediate retry/re-request
+-HLS_INIT_TTL = 3600  # 1 hour -- stable for the viewing session
+-HLS_SEG_META_TTL = 3600  # 1 hour -- needed for next-segment continuity
++# Match AnimeTVCut's default idle session lifetime. A one-minute segment cache
++# makes pause/resume retranscode the same source and stalls/repeats playback.
++HLS_SEG_TTL = 21600  # 6 hours; Redis maxmemory/allkeys-lru remains the hard bound
++HLS_INIT_TTL = 21600
++HLS_SEG_META_TTL = 21600
+ 
+ 
+ def _hls_seg_key(cache_key: str, seg_index: int) -> bytes:

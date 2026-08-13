@@ -67,6 +67,9 @@ seg0.m4s
         }),
       ]),
     );
+    expect(
+      composed.resources.find((resource) => resource.kind === "segment"),
+    ).toMatchObject({ sourceStart: 0, outputStart: 0 });
   });
 
   it("emits one map when the same map is reused", () => {
@@ -174,6 +177,12 @@ seg0.m4s
     ).toHaveLength(2);
     expect(composed.text).not.toContain("init.mp4");
     expect(composed.text).not.toContain("fixture://");
+    expect(
+      composed.resources.filter((resource) => resource.kind === "segment"),
+    ).toEqual([
+      expect.objectContaining({ sourceStart: 0, outputStart: 0 }),
+      expect.objectContaining({ sourceStart: 0, outputStart: 6 }),
+    ]);
   });
 
   it("preserves map byte ranges and includes them in map resource identity", () => {

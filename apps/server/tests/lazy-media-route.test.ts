@@ -36,6 +36,44 @@ function testLoader(open: ReturnType<typeof vi.fn>): HlsSourceLoader {
   };
 }
 
+function prefetchLoader(open: ReturnType<typeof vi.fn>): HlsSourceLoader {
+  return {
+    loadPlaylist: async () => ({
+      sourceUrl: "fixture://prefetch/playlist.m3u8",
+      targetDuration: 2,
+      mediaSequence: 0,
+      duration: 6,
+      independentSegments: true,
+      segments: Array.from({ length: 3 }, (_, index) => ({
+        index,
+        uri: `segment-${index}.ts`,
+        absoluteUri: `fixture://prefetch/segment-${index}.ts`,
+        duration: 2,
+        title: "",
+        start: index * 2,
+        end: (index + 1) * 2,
+        discontinuityBefore: false,
+        mediaFormat: "mpegts" as const,
+        contentType: "video/mp2t",
+        safeExtension: ".ts" as const,
+      })),
+    }),
+    createResource: ({ resource }) => ({
+      contentType: resource.contentType,
+      open: async () => {
+        open(resource.absoluteUri);
+        return {
+          statusCode: 200 as const,
+          contentType: resource.contentType,
+          contentLength: 5,
+          responseHeaders: { "content-length": "5" },
+          stream: Readable.from(Buffer.from("media")),
+        };
+      },
+    }),
+  };
+}
+
 describe("lazy media route", () => {
   const apps: ReturnType<typeof createApp>[] = [];
 
@@ -124,5 +162,48 @@ describe("lazy media route", () => {
     expect(response.statusCode).toBe(206);
     expect(response.headers["content-range"]).toBe("bytes 10-12/20");
     expect(response.body).toBe("abc");
+  });
+
+  it("warms only bounded lookahead resources after playback starts", async () => {
+    const open = vi.fn();
+    const app = createApp({
+      sourceLoader: prefetchLoader(open),
+      mediaPrefetchResources: 2,
+    });
+    apps.push(app);
+    const cut = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [
+          {
+            kind: "fixture_hls",
+            episodeId: "ep1",
+            playlistUrl: "fixture://prefetch",
+          },
+        ],
+        remove: [],
+      },
+    });
+    expect(open).not.toHaveBeenCalled();
+    const playlist = await app.inject({
+      method: "GET",
+      url: (cut.json() as { playlistUrl: string }).playlistUrl,
+    });
+    expect(open).not.toHaveBeenCalled();
+    const resourcePaths = playlist.body
+      .split("\n")
+      .filter((line) => line.startsWith("/media/cut/") && line.endsWith(".ts"));
+    expect(resourcePaths).toHaveLength(3);
+
+    const response = await app.inject({
+      method: "GET",
+      url: resourcePaths[0]!,
+    });
+    expect(response.statusCode).toBe(200);
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(3));
+    expect(open).toHaveBeenNthCalledWith(1, "fixture://prefetch/segment-0.ts");
+    expect(open).toHaveBeenNthCalledWith(2, "fixture://prefetch/segment-1.ts");
+    expect(open).toHaveBeenNthCalledWith(3, "fixture://prefetch/segment-2.ts");
   });
 });

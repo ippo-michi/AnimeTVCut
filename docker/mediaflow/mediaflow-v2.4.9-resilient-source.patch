@@ -1,0 +1,266 @@
+diff --git a/mediaflow_proxy/remuxer/media_source.py b/mediaflow_proxy/remuxer/media_source.py
+--- a/mediaflow_proxy/remuxer/media_source.py
++++ b/mediaflow_proxy/remuxer/media_source.py
+@@ -7,14 +7,25 @@ from any specific transport (Telegram, HTTP, etc.). Each transport
+ implements the MediaSource protocol to provide byte-range streaming.
+ """
+ 
++import asyncio
++import fcntl
+ import hashlib
++import json
+ import logging
++import os
++import time
+ from collections.abc import AsyncIterator
++from pathlib import Path
+ from typing import Protocol, runtime_checkable
+-from urllib.parse import urlparse, unquote
++from urllib.parse import urljoin, urlparse, unquote
+ 
++from aiohttp import ClientConnectionError, ClientResponseError
+ from mediaflow_proxy.utils.http_client import create_aiohttp_session
+ 
+ logger = logging.getLogger(__name__)
++_HTTP_RESOLUTION_TTL_SECONDS = 3600.0
++_HTTP_RESOLUTION_CACHE_DIR = Path("/tmp/mediaflow-atc-resolutions")
++_http_resolution_cache: dict[str, tuple[str, int, float]] = {}
++_http_resolution_locks: dict[str, asyncio.Lock] = {}
+ 
+ # Extensions mapped to container format hints used by transcode_handler
+@@ -171,7 +177,20 @@ class HTTPMediaSource:
+     def __init__(self, url: str, headers: dict | None = None, file_size: int = 0) -> None:
+-        self._url = url
+-        self._resolved_url = url
++        self._original_url = url
+         self._headers = headers or {}
+         self._file_size = file_size
+         self._filename_hint = filename_hint_from_url(url)
++        header_identity = "\0".join(
++            f"{str(name).lower()}={str(value)}"
++            for name, value in sorted(
++                self._headers.items(), key=lambda item: str(item[0]).lower()
++            )
++        )
++        self._resolution_key = hashlib.sha256(
++            f"{url}\0{header_identity}".encode()
++        ).hexdigest()
++        cached = self._cached_resolution()
++        self._url = cached[0] if cached is not None else url
++        self._resolved_url = self._url
++        if cached is not None and self._file_size <= 0:
++            self._file_size = cached[1]
+
+@@ -182,3 +203,3 @@ class HTTPMediaSource:
+     @property
+     def cache_key(self) -> str:
+-        return hashlib.sha256(self._url.encode()).hexdigest()[:16]
++        return self._resolution_key[:16]
+@@ -192,5 +214,103 @@ class HTTPMediaSource:
+         """Final redirect destination discovered during the source probe."""
+         return self._resolved_url
+ 
++    def _cached_resolution(self, stale_url: str | None = None) -> tuple[str, int] | None:
++        cached = _http_resolution_cache.get(self._resolution_key)
++        if cached is not None:
++            resolved_url, file_size, expires_at = cached
++            if expires_at > time.time() and resolved_url != stale_url:
++                return resolved_url, file_size
++        if cached is not None and cached[2] <= time.time():
++            _http_resolution_cache.pop(self._resolution_key, None)
++
++        cache_path = _HTTP_RESOLUTION_CACHE_DIR / f"{self._resolution_key}.json"
++        try:
++            payload = json.loads(cache_path.read_text(encoding="utf-8"))
++            resolved_url = payload["url"]
++            file_size = payload["file_size"]
++            expires_at = payload["expires_at"]
++            if (
++                not isinstance(resolved_url, str)
++                or not isinstance(file_size, int)
++                or not isinstance(expires_at, (int, float))
++                or expires_at <= time.time()
++                or resolved_url == stale_url
++            ):
++                return None
++            _http_resolution_cache[self._resolution_key] = (
++                resolved_url,
++                file_size,
++                float(expires_at),
++            )
++            return resolved_url, file_size
++        except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
++            return None
++
++    def _apply_resolution(self, resolved_url: str, file_size: int) -> None:
++        self._url = resolved_url
++        self._resolved_url = resolved_url
++        if file_size > 0:
++            self._file_size = file_size
++        expires_at = time.time() + _HTTP_RESOLUTION_TTL_SECONDS
++        _http_resolution_cache[self._resolution_key] = (
++            resolved_url,
++            self._file_size,
++            expires_at,
++        )
++        _HTTP_RESOLUTION_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
++        cache_path = _HTTP_RESOLUTION_CACHE_DIR / f"{self._resolution_key}.json"
++        temporary_path = cache_path.with_name(f"{cache_path.name}.{os.getpid()}.tmp")
++        temporary_path.write_text(
++            json.dumps(
++                {"url": resolved_url, "file_size": self._file_size, "expires_at": expires_at}
++            ),
++            encoding="utf-8",
++        )
++        temporary_path.chmod(0o600)
++        temporary_path.replace(cache_path)
++
++    async def _resolve_destination(self, stale_url: str | None = None) -> None:
++        lock = _http_resolution_locks.setdefault(self._resolution_key, asyncio.Lock())
++        async with lock:
++            _HTTP_RESOLUTION_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
++            lock_path = _HTTP_RESOLUTION_CACHE_DIR / f"{self._resolution_key}.lock"
++            lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
++            await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_EX)
++            try:
++                cached = self._cached_resolution(stale_url)
++                if cached is not None:
++                    self._apply_resolution(*cached)
++                    return
++
++                async with create_aiohttp_session(
++                    self._original_url, headers=self._headers
++                ) as (session, proxy_url):
++                    # Debrid playback endpoints commonly answer HEAD themselves and
++                    # redirect only GET. A one-byte GET captures the actual CDN once;
++                    # segment requests then bypass the rate-limited debrid endpoint.
++                    async with session.get(
++                        self._original_url,
++                        headers={**self._headers, "range": "bytes=0-0"},
++                        proxy=proxy_url,
++                        allow_redirects=True,
++                    ) as response:
++                        response.raise_for_status()
++                        resolved_url = str(response.url)
++                        file_size = self._file_size
++                        content_range = response.headers.get("content-range", "")
++                        if "/" in content_range:
++                            total = content_range.rsplit("/", 1)[1]
++                            if total.isdigit():
++                                file_size = int(total)
++                        if file_size <= 0:
++                            content_length = response.headers.get("content-length")
++                            if content_length is not None and content_length.isdigit():
++                                file_size = int(content_length)
++
++                self._apply_resolution(resolved_url, file_size)
++            finally:
++                await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_UN)
++                os.close(lock_fd)
++
+     def pyav_open_input(self) -> tuple[str, dict[str, str]]:
+         """Return a seekable FFmpeg/PyAV HTTP input without exposing it publicly."""
+@@ -214,58 +303,43 @@ class HTTPMediaSource:
+         return self._url, options
+ 
+     async def resolve_file_size(self) -> int:
+-        """Perform a HEAD request to determine file size if not already known."""
+-        if self._file_size > 0:
+-            return self._file_size
+-
+-        async with create_aiohttp_session(self._url, headers=self._headers) as (session, proxy_url):
+-            async with session.head(
+-                self._url,
+-                headers=self._headers,
+-                proxy=proxy_url,
+-                allow_redirects=True,
+-            ) as resp:
+-                cl = resp.headers.get("content-length") if resp.status < 400 else None
+-                if resp.status < 400:
+-                    self._resolved_url = str(resp.url)
+-                    self._url = self._resolved_url
+-                if cl:
+-                    self._file_size = int(cl)
+-                else:
+-                    # Try GET with range to get content-range
+-                    async with session.get(
+-                        self._url,
+-                        headers={**self._headers, "range": "bytes=0-0"},
+-                        proxy=proxy_url,
+-                        allow_redirects=True,
+-                    ) as range_resp:
+-                        cr = range_resp.headers.get("content-range", "")
+-                        if range_resp.status < 400:
+-                            self._resolved_url = str(range_resp.url)
+-                            self._url = self._resolved_url
+-                        if "/" in cr:
+-                            try:
+-                                self._file_size = int(cr.split("/")[-1])
+-                            except ValueError:
+-                                pass
++        """Resolve redirects once and retain the source size for segment requests."""
++        await self._resolve_destination()
+         return self._file_size
+ 
+     async def stream(self, offset: int = 0, limit: int | None = None) -> AsyncIterator[bytes]:
+         headers = dict(self._headers)
+-
+         if offset > 0 or limit is not None:
+             end = ""
+             if limit is not None:
+                 end = str(offset + limit - 1)
+             headers["range"] = f"bytes={offset}-{end}"
+ 
+-        async with create_aiohttp_session(self._url, headers=headers) as (session, proxy_url):
+-            async with session.get(
+-                self._url,
+-                headers=headers,
+-                proxy=proxy_url,
+-                allow_redirects=True,
+-            ) as resp:
+-                resp.raise_for_status()
+-                async for chunk in resp.content.iter_any():
+-                    yield chunk
++        for attempt in range(2):
++            yielded = False
++            try:
++                async with create_aiohttp_session(self._url, headers=headers) as (
++                    session,
++                    proxy_url,
++                ):
++                    async with session.get(
++                        self._url,
++                        headers=headers,
++                        proxy=proxy_url,
++                        allow_redirects=True,
++                    ) as response:
++                        response.raise_for_status()
++                        async for chunk in response.content.iter_any():
++                            yielded = True
++                            yield chunk
++                        return
++            except (ClientConnectionError, ClientResponseError) as error:
++                retryable_status = (
++                    isinstance(error, ClientConnectionError)
++                    or error.status in {401, 403, 404, 408, 429}
++                    or error.status >= 500
++                )
++                if attempt > 0 or yielded or not retryable_status or self._url == self._original_url:
++                    raise
++                stale_url = self._url
++                await self._resolve_destination(stale_url=stale_url)
+diff --git a/mediaflow_proxy/routes/proxy.py b/mediaflow_proxy/routes/proxy.py
+--- a/mediaflow_proxy/routes/proxy.py
++++ b/mediaflow_proxy/routes/proxy.py
+@@ -364,8 +364,9 @@ async def transcode_hls_playlist(
+     # Build URLs for init and segment endpoints that preserve query params
+     # (api_password, headers, etc.) from the current request.
+     # Reuse the final CDN URL and known size. Reopening a debrid redirect API
+-    # for every segment causes rate limits during playback and random seeks.
+-    base_params = _build_hls_query_params(request, source.resolved_url)
++    # for every segment causes rate limits during playback and random seeks. The
++    # original URL remains internal so a failed/expired CDN node can be refreshed.
++    base_params = _build_hls_query_params(request, destination)
+     base_params += f"&atc_file_size={source.file_size}"
+ 
+     if atc_container == "mpegts":

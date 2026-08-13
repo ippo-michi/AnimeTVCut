@@ -12,7 +12,12 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
 
   public async resolve(
     episodes: readonly UpstreamEpisodeReference[],
-    options: { allowMixedSources?: boolean; signal?: AbortSignal } = {},
+    options: {
+      allowMixedSources?: boolean;
+      signal?: AbortSignal;
+      excludedFamilies?: ReadonlySet<string>;
+      excludedCandidates?: ReadonlySet<string>;
+    } = {},
   ): Promise<CandidateFamilySelection> {
     const sets: EpisodeCandidateSet[] = await Promise.all(
       episodes.map(async (reference) => ({
@@ -22,6 +27,9 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
     );
     return selectCandidateFamily(sets, {
       allowMixedSources: options.allowMixedSources ?? false,
+      preferMediaFlowCompatible: true,
+      excludedFamilies: options.excludedFamilies,
+      excludedCandidates: options.excludedCandidates,
     });
   }
 }

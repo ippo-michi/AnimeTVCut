@@ -119,6 +119,74 @@ describe("provider reconciliation", () => {
     expect(reconciled.segments).toHaveLength(2);
     expect(reconciled.warnings[0]).toMatch(/conflicting/);
   });
+
+  it("combines a corroborating open start with another provider's bounded ending", () => {
+    const reconciled = reconcileSkipSegments(
+      [
+        result("theintrodb", [
+          {
+            type: "ending",
+            start: 1384.148,
+            end: null,
+            provider: "theintrodb",
+            automaticRemoval: false,
+            unsafeReason: "open_ended",
+          },
+        ]),
+        result("aniskip", [
+          {
+            type: "ending",
+            start: 1388.041,
+            end: 1478.041,
+            provider: "aniskip",
+            automaticRemoval: true,
+          },
+        ]),
+      ],
+      [intro, ani],
+    );
+    expect(
+      reconciled.segments.find((segment) => segment.automaticRemoval),
+    ).toMatchObject({
+      provider: "aniskip",
+      start: 1384.148,
+      end: 1478.041,
+    });
+    expect(reconciled.warnings).toEqual([
+      expect.stringMatching(/corroborating theintrodb ending start/),
+    ]);
+  });
+
+  it("does not widen a bounded ending from a distant open-ended report", () => {
+    const reconciled = reconcileSkipSegments(
+      [
+        result("theintrodb", [
+          {
+            type: "ending",
+            start: 1300,
+            end: null,
+            provider: "theintrodb",
+            automaticRemoval: false,
+            unsafeReason: "open_ended",
+          },
+        ]),
+        result("aniskip", [
+          {
+            type: "ending",
+            start: 1388,
+            end: 1478,
+            provider: "aniskip",
+            automaticRemoval: true,
+          },
+        ]),
+      ],
+      [intro, ani],
+    );
+    expect(
+      reconciled.segments.find((segment) => segment.automaticRemoval)?.start,
+    ).toBe(1388);
+    expect(reconciled.warnings).toEqual([]);
+  });
 });
 
 describe("provider resolver isolation and concurrency", () => {

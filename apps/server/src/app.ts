@@ -71,6 +71,7 @@ export interface AppOptions {
   now?: () => number;
   streamCacheTtlMs?: number;
   subtitles?: SubtitleConfigInput;
+  mediaPrefetchResources?: number;
 }
 
 export function createApp(options: AppOptions = {}): FastifyInstance {
@@ -159,7 +160,9 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   void app.register(upstreamRoutes(upstreamCutService));
   void app.register(metadataRoutes(metadataClient, tvCutCatalogService));
   void app.register(publicStremioRoutes(tvCutCatalogService));
-  void app.register(mediaRoutes(sessions, subtitleService));
+  void app.register(
+    mediaRoutes(sessions, subtitleService, options.mediaPrefetchResources ?? 0),
+  );
 
   return app;
 }

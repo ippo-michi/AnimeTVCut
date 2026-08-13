@@ -1,0 +1,117 @@
+--- a/mediaflow_proxy/remuxer/mp4_muxer.py
++++ b/mediaflow_proxy/remuxer/mp4_muxer.py
+@@ -1156,6 +1156,50 @@
+     return bytes(moof_fixed) + mdat
+ 
+ 
++def combine_fmp4_track_fragments(
++    sequence_number: int,
++    video_fragment: bytes,
++    audio_fragment: bytes,
++) -> bytes:
++    """Combine single-track fragments into one CMAF-style moof/mdat pair."""
++
++    def extract(fragment: bytes) -> tuple[bytearray, bytes]:
++        if len(fragment) < 24:
++            raise ValueError("Invalid fMP4 track fragment")
++        moof_size, moof_type = struct.unpack_from(">I4s", fragment, 0)
++        if moof_type != b"moof" or moof_size + 8 > len(fragment):
++            raise ValueError("Invalid fMP4 moof")
++        mdat_size, mdat_type = struct.unpack_from(">I4s", fragment, moof_size)
++        if mdat_type != b"mdat" or moof_size + mdat_size != len(fragment):
++            raise ValueError("Invalid fMP4 mdat")
++        traf_type = fragment.find(b"traf", 8, moof_size)
++        if traf_type < 4:
++            raise ValueError("Invalid fMP4 traf")
++        traf_offset = traf_type - 4
++        traf_size = struct.unpack_from(">I", fragment, traf_offset)[0]
++        if traf_offset + traf_size > moof_size:
++            raise ValueError("Invalid fMP4 traf size")
++        return (
++            bytearray(fragment[traf_offset : traf_offset + traf_size]),
++            fragment[moof_size + 8 : moof_size + mdat_size],
++        )
++
++    def set_data_offset(traf: bytearray, value: int) -> None:
++        trun_type = traf.find(b"trun")
++        if trun_type < 4:
++            raise ValueError("Invalid fMP4 trun")
++        struct.pack_into(">i", traf, trun_type + 12, value)
++
++    video_traf, video_data = extract(video_fragment)
++    audio_traf, audio_data = extract(audio_fragment)
++    mfhd = build_full_box(b"mfhd", 0, 0, struct.pack(">I", sequence_number))
++    moof = build_box(b"moof", mfhd + video_traf + audio_traf)
++    set_data_offset(video_traf, len(moof) + 8)
++    set_data_offset(audio_traf, len(moof) + 8 + len(video_data))
++    moof = build_box(b"moof", mfhd + video_traf + audio_traf)
++    return moof + build_box(b"mdat", video_data + audio_data)
++
++
+ class FMP4StreamMuxer:
+     """
+     Streaming fMP4 muxer that produces fragments on-the-fly.
+@@ -1325,8 +1369,6 @@
+         if not self._video_samples and not self._audio_samples:
+             return None
+ 
+-        result = bytearray()
+-
+         # When flushing at a keyframe, the last sample (the new keyframe)
+         # belongs to the NEXT fragment. Split there.
+         if not force and len(self._video_samples) > 1 and self._video_samples[-1].is_sync:
+@@ -1336,40 +1378,43 @@
+             video_to_emit = self._video_samples
+             video_remaining = []
+ 
+-        # Emit video fragment
++        video_fragment = b""
+         if video_to_emit:
+-            frag = build_fmp4_fragment(
++            video_fragment = build_fmp4_fragment(
+                 sequence_number=self._sequence_number,
+                 track_id=1,
+                 base_decode_time=self._video_decode_time,
+                 samples=video_to_emit,
+             )
+-            result.extend(frag)
+-            self._sequence_number += 1
+-
+             emitted_duration = sum(s.duration for s in video_to_emit)
+             self._video_decode_time += emitted_duration
+ 
+-        # Emit audio fragment (matching time range)
++        audio_fragment = b""
+         if self._audio_samples:
+-            frag = build_fmp4_fragment(
++            audio_fragment = build_fmp4_fragment(
+                 sequence_number=self._sequence_number,
+                 track_id=2,
+                 base_decode_time=self._audio_decode_time,
+                 samples=self._audio_samples,
+             )
+-            result.extend(frag)
+-            self._sequence_number += 1
+-
+             emitted_audio_duration = sum(s.duration for s in self._audio_samples)
+             self._audio_decode_time += emitted_audio_duration
+             self._audio_samples = []
+ 
++        if video_fragment and audio_fragment:
++            result = combine_fmp4_track_fragments(
++                self._sequence_number, video_fragment, audio_fragment
++            )
++        else:
++            result = video_fragment or audio_fragment
++        if result:
++            self._sequence_number += 1
++
+         # Reset for next fragment
+         self._video_samples = video_remaining
+         self._fragment_video_duration = sum(s.duration for s in video_remaining)
+ 
+-        return bytes(result) if result else None
++        return result or None
+ 
+     def flush_final(self) -> bytes | None:
+         """Flush any remaining samples as the final fragment."""

@@ -1,4 +1,5 @@
 export interface TvCutGroupingConfig {
+  episodesPerGroup: number;
   targetSeconds: number;
   minimumSeconds: number;
   maximumSeconds: number;
@@ -10,6 +11,7 @@ export interface TvCutGroupingConfig {
 }
 
 export const DEFAULT_TV_CUT_GROUPING_CONFIG: TvCutGroupingConfig = {
+  episodesPerGroup: 3,
   targetSeconds: 3600,
   minimumSeconds: 3000,
   maximumSeconds: 4500,
@@ -158,34 +160,17 @@ export function groupTvCutEpisodes(
   );
   const groups: TvCutGroup[] = [];
   for (const run of splitConsecutiveRuns(episodes)) {
+    const episodesPerGroup = Math.max(
+      1,
+      Math.min(config.episodesPerGroup, config.maximumEpisodes),
+    );
     let cursor = 0;
     while (cursor < run.length) {
-      const first = run[cursor]!;
-      if (estimatedCutDuration([first], config) > config.maximumSeconds) {
-        groups.push(makeGroup([first], true, config));
-        cursor += 1;
-        continue;
-      }
-      const selected: GroupableEpisode[] = [];
-      while (cursor < run.length && selected.length < config.maximumEpisodes) {
-        const candidate = run[cursor]!;
-        const expanded = [...selected, candidate];
-        if (
-          selected.length > 0 &&
-          estimatedCutDuration(expanded, config) > config.maximumSeconds
-        ) {
-          break;
-        }
-        selected.push(candidate);
-        cursor += 1;
-        if (estimatedCutDuration(selected, config) >= config.minimumSeconds) {
-          break;
-        }
-      }
-      const duration = estimatedCutDuration(selected, config);
+      const selected = run.slice(cursor, cursor + episodesPerGroup);
+      cursor += selected.length;
       const isTrailing = cursor === run.length;
       const finalized =
-        duration >= config.minimumSeconds ||
+        selected.length === episodesPerGroup ||
         !isTrailing ||
         isTrailingGroupFinal(selected, now, config);
       groups.push(makeGroup(selected, finalized, config));

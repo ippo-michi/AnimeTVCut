@@ -1,0 +1,38 @@
+diff --git a/mediaflow_proxy/remuxer/ebml_parser.py b/mediaflow_proxy/remuxer/ebml_parser.py
+--- a/mediaflow_proxy/remuxer/ebml_parser.py
++++ b/mediaflow_proxy/remuxer/ebml_parser.py
+@@ -734,6 +734,10 @@ def build_cue_index(
+             first_cluster_offset = elem_start
+             break
+ 
++    video_track_number = next(
++        (track.track_number for track in tracks if track.track_type == TRACK_TYPE_VIDEO),
++        None,
++    )
+     # Parse Cues from cues_data.
+     # cues_data starts with the Cues element header (ID + size), so we must
+     # first skip past it to reach the CuePoint children inside.
+@@ -768,11 +772,20 @@ def build_cue_index(
+             if child_eid == CUE_TIME:
+                 cue_time_ticks = read_uint(cues_data, child_off, child_size)
+             elif child_eid == CUE_TRACK_POSITIONS:
++                cue_track = None
++                cue_cluster_position = None
+                 ctp_end = child_off + child_size
+                 for ctp_eid, ctp_off, ctp_size, _ in iter_elements(cues_data, child_off, ctp_end):
+-                    if ctp_eid == CUE_CLUSTER_POSITION:
+-                        cluster_position = read_uint(cues_data, ctp_off, ctp_size)
+-                        break
++                    if ctp_eid == CUE_TRACK:
++                        cue_track = read_uint(cues_data, ctp_off, ctp_size)
++                    elif ctp_eid == CUE_CLUSTER_POSITION:
++                        cue_cluster_position = read_uint(cues_data, ctp_off, ctp_size)
++                if cue_cluster_position is not None and (
++                    video_track_number is None or cue_track == video_track_number
++                ):
++                    cluster_position = cue_cluster_position
++                    if video_track_number is not None:
++                        break
+ 
+         if cluster_position is not None:
+             time_ms = cue_time_ticks * scale_ms

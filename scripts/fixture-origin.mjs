@@ -11,9 +11,12 @@ const counts = {
   authorized: 0,
   denied: 0,
   ranges: 0,
+  redirects: 0,
+  primaryFailures: 0,
   bytesServed: 0,
   requests: [],
 };
+let primaryFailed = false;
 
 function recordRequest(method, pathname, statusCode, range, bytes) {
   counts.requests.push({ method, pathname, statusCode, range, bytes });
@@ -65,8 +68,15 @@ const server = createServer((request, response) => {
     counts.authorized = 0;
     counts.denied = 0;
     counts.ranges = 0;
+    counts.redirects = 0;
+    counts.primaryFailures = 0;
+    primaryFailed = false;
     counts.bytesServed = 0;
     counts.requests.length = 0;
+    return send(response, 200, "ok");
+  }
+  if (url.pathname === "/cdn/fail-primary") {
+    primaryFailed = true;
     return send(response, 200, "ok");
   }
   if (request.headers["x-test-token"] !== requiredToken) {
@@ -75,9 +85,31 @@ const server = createServer((request, response) => {
   }
   counts.authorized += 1;
 
-  const episodeMatch = /^\/episode(1[0-2]|[1-9])\.mkv$/.exec(url.pathname);
+  const redirectMatch = /^\/redirect\/(episode(?:1[0-2]|[1-9])\.mkv)$/.exec(
+    url.pathname,
+  );
+  if (redirectMatch?.[1] !== undefined) {
+    counts.redirects += 1;
+    recordRequest(request.method ?? "GET", url.pathname, 302, false, 0);
+    response.writeHead(302, {
+      location: `/${primaryFailed ? "secondary" : "primary"}/${redirectMatch[1]}`,
+    });
+    return response.end();
+  }
+
+  const episodeMatch =
+    /^(?:\/(?:primary|secondary))?\/episode(1[0-2]|[1-9])\.mkv$/.exec(
+      url.pathname,
+    );
+  if (url.pathname.startsWith("/primary/") && primaryFailed) {
+    counts.primaryFailures += 1;
+    recordRequest(request.method ?? "GET", url.pathname, 503, false, 0);
+    return send(response, 503, "primary CDN unavailable");
+  }
   const controlMatch =
-    /^\/(control-(?:h264-aac\.(?:mp4|mkv)|hevc-opus\.mkv))$/.exec(url.pathname);
+    /^\/(control-(?:h264-(?:aac\.(?:mp4|mkv)|eac3\.mkv)|hevc-opus\.mkv))$/.exec(
+      url.pathname,
+    );
   const fileName =
     episodeMatch?.[1] === undefined
       ? controlMatch?.[1]

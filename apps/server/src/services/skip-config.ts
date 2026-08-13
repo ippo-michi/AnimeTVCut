@@ -78,6 +78,15 @@ export function skipProvidersFromEnv(
                   environment.ANISKIP_REQUEST_TIMEOUT_MS,
                 ),
               }),
+          ...(optionalNumber(
+            environment.ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS,
+          ) === undefined
+            ? {}
+            : {
+                durationMismatchToleranceSeconds: optionalNumber(
+                  environment.ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS,
+                ),
+              }),
         })
       : new DisabledSkipProvider("aniskip"),
   ];

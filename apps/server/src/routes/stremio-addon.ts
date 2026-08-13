@@ -1,4 +1,4 @@
-import type { FastifyPluginAsync } from "fastify";
+import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
 import {
   InvalidVirtualStremioIdError,
@@ -20,7 +20,55 @@ import {
 } from "../services/stremio-upstream/errors.js";
 import type { TvCutCatalogService } from "../services/tv-cut-catalog-service.js";
 
-export const ANIMETVCUT_VERSION = "0.1.1";
+export const ANIMETVCUT_VERSION = "0.2.0";
+
+const LEGACY_ADDON_ID = "org.animetvcut.addon";
+const REPAIRED_ADDON_ID = "org.animetvcut.addon.v2";
+const LEGACY_CATALOG_ID = "animetvcut";
+const REPAIRED_CATALOG_ID = "animetvcut-v2";
+const REPAIRED_BASE_PATH = "/v2";
+
+function disableClientCaching(reply: FastifyReply): void {
+  void reply.header("cache-control", "no-store, max-age=0");
+  void reply.header("pragma", "no-cache");
+  void reply.header("expires", "0");
+}
+
+function addonManifest(id: string, catalogId: string, supportsSkip: boolean) {
+  return {
+    id,
+    version: ANIMETVCUT_VERSION,
+    name: "AnimeTVCut",
+    description: "Automatic TV, season, and complete series cuts",
+    resources: [
+      { name: "catalog", types: ["series"] },
+      {
+        name: "meta",
+        types: ["series"],
+        idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
+      },
+      {
+        name: "stream",
+        types: ["series"],
+        idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
+      },
+    ],
+    types: ["series"],
+    idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
+    catalogs: [
+      {
+        type: "series",
+        id: catalogId,
+        name: "AnimeTVCut",
+        extra: [
+          { name: "search", isRequired: true },
+          ...(supportsSkip ? [{ name: "skip" }] : []),
+        ],
+      },
+    ],
+    behaviorHints: { configurable: false },
+  };
+}
 
 function parseExtra(extra: string): {
   search?: string;
@@ -77,103 +125,138 @@ export function publicStremioRoutes(
       reply: { code: (code: number) => { send: () => unknown } },
     ) => reply.code(204).send();
     app.options("/manifest.json", optionsHandler);
+    app.options("/manifest-v2.json", optionsHandler);
+    app.options(`${REPAIRED_BASE_PATH}/manifest.json`, optionsHandler);
     app.options("/catalog/series/animetvcut.json", optionsHandler);
     app.options("/catalog/series/animetvcut/:extra.json", optionsHandler);
+    app.options("/catalog/series/animetvcut-v2.json", optionsHandler);
+    app.options("/catalog/series/animetvcut-v2/:extra.json", optionsHandler);
     app.options("/meta/series/:id.json", optionsHandler);
     app.options("/stream/series/:id.json", optionsHandler);
+    app.options(
+      `${REPAIRED_BASE_PATH}/catalog/series/animetvcut-v2.json`,
+      optionsHandler,
+    );
+    app.options(
+      `${REPAIRED_BASE_PATH}/catalog/series/animetvcut-v2/:extra.json`,
+      optionsHandler,
+    );
+    app.options(`${REPAIRED_BASE_PATH}/meta/series/:id.json`, optionsHandler);
+    app.options(`${REPAIRED_BASE_PATH}/stream/series/:id.json`, optionsHandler);
 
-    app.get("/manifest.json", async () => ({
-      id: "org.animetvcut.addon",
-      version: ANIMETVCUT_VERSION,
-      name: "AnimeTVCut",
-      description: "Automatic TV, season, and complete series cuts",
-      resources: [
-        { name: "catalog", types: ["series"] },
-        {
-          name: "meta",
-          types: ["series"],
-          idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
-        },
-        {
-          name: "stream",
-          types: ["series"],
-          idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
-        },
-      ],
-      types: ["series"],
-      idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
-      catalogs: [
-        {
-          type: "series",
-          id: "animetvcut",
-          name: "AnimeTVCut",
-          extra: [{ name: "search", isRequired: true }],
-        },
-      ],
-      behaviorHints: { configurable: false },
-    }));
+    app.get("/manifest.json", async (_request, reply) => {
+      disableClientCaching(reply);
+      return addonManifest(LEGACY_ADDON_ID, LEGACY_CATALOG_ID, false);
+    });
+    // A separate standards-compatible identity is intentional. Stremio may
+    // retain a poisoned catalog registration without issuing another HTTP
+    // request; installing this manifest creates a clean client-side record.
+    app.get("/manifest-v2.json", async (_request, reply) => {
+      disableClientCaching(reply);
+      return addonManifest(REPAIRED_ADDON_ID, REPAIRED_CATALOG_ID, true);
+    });
+    app.get(`${REPAIRED_BASE_PATH}/manifest.json`, async (_request, reply) => {
+      disableClientCaching(reply);
+      return addonManifest(REPAIRED_ADDON_ID, REPAIRED_CATALOG_ID, true);
+    });
 
-    app.get("/catalog/series/animetvcut.json", async () => ({ metas: [] }));
+    const emptyCatalog = async (
+      _request: FastifyRequest,
+      reply: FastifyReply,
+    ) => {
+      disableClientCaching(reply);
+      return { metas: [] };
+    };
+    const searchCatalog = async (
+      request: FastifyRequest<{ Params: { extra: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        disableClientCaching(reply);
+        const extra = parseExtra(request.params.extra);
+        if (extra.search === undefined || extra.search.trim().length === 0) {
+          return { metas: [] };
+        }
+        // `skip` is in this addon's expanded output space. Forwarding it to
+        // the metadata addon skips unrelated source shows; slicing the
+        // deterministic TV/season/series variants also supports clients
+        // which resume catalog pagination after a previous selection.
+        if (!extra.skipValid) return { metas: [] };
+        const metas = await service.search(extra.search);
+        return { metas: metas.slice(extra.skip) };
+      } catch (error) {
+        request.log.info(
+          { errorName: error instanceof Error ? error.name : "UnknownError" },
+          "Public catalog request rejected",
+        );
+        return reply.code(infrastructureStatus(error)).send({ metas: [] });
+      }
+    };
+
+    for (const catalogId of [LEGACY_CATALOG_ID, REPAIRED_CATALOG_ID]) {
+      app.get(`/catalog/series/${catalogId}.json`, emptyCatalog);
+      app.get<{ Params: { extra: string } }>(
+        `/catalog/series/${catalogId}/:extra.json`,
+        searchCatalog,
+      );
+    }
+    app.get(
+      `${REPAIRED_BASE_PATH}/catalog/series/${REPAIRED_CATALOG_ID}.json`,
+      emptyCatalog,
+    );
     app.get<{ Params: { extra: string } }>(
-      "/catalog/series/animetvcut/:extra.json",
-      async (request, reply) => {
-        try {
-          const extra = parseExtra(request.params.extra);
-          if (extra.search === undefined || extra.search.trim().length === 0) {
-            return { metas: [] };
-          }
-          // This catalog expands one upstream result into multiple cut modes,
-          // so its output-space pagination cannot be forwarded upstream.
-          // Legacy/cached clients receive a terminal empty page instead.
-          if (!extra.skipValid || extra.skip > 0) return { metas: [] };
-          return {
-            metas: await service.search(extra.search),
-          };
-        } catch (error) {
-          request.log.info(
-            { errorName: error instanceof Error ? error.name : "UnknownError" },
-            "Public catalog request rejected",
-          );
-          return reply.code(infrastructureStatus(error)).send({ metas: [] });
-        }
-      },
+      `${REPAIRED_BASE_PATH}/catalog/series/${REPAIRED_CATALOG_ID}/:extra.json`,
+      searchCatalog,
     );
 
+    const metaHandler = async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        return await service.publicMeta(request.params.id);
+      } catch (error) {
+        request.log.info(
+          { errorName: error instanceof Error ? error.name : "UnknownError" },
+          "Public meta request rejected",
+        );
+        return reply
+          .code(
+            error instanceof InvalidVirtualStremioIdError
+              ? 404
+              : infrastructureStatus(error),
+          )
+          .send({ meta: null });
+      }
+    };
+    app.get<{ Params: { id: string } }>("/meta/series/:id.json", metaHandler);
     app.get<{ Params: { id: string } }>(
-      "/meta/series/:id.json",
-      async (request, reply) => {
-        try {
-          return await service.publicMeta(request.params.id);
-        } catch (error) {
-          request.log.info(
-            { errorName: error instanceof Error ? error.name : "UnknownError" },
-            "Public meta request rejected",
-          );
-          return reply
-            .code(
-              error instanceof InvalidVirtualStremioIdError
-                ? 404
-                : infrastructureStatus(error),
-            )
-            .send({ meta: null });
-        }
-      },
+      `${REPAIRED_BASE_PATH}/meta/series/:id.json`,
+      metaHandler,
     );
 
+    const streamHandler = async (
+      request: FastifyRequest<{ Params: { id: string } }>,
+      reply: FastifyReply,
+    ) => {
+      try {
+        return await service.publicStream(request.params.id);
+      } catch (error) {
+        request.log.info(
+          { errorName: error instanceof Error ? error.name : "UnknownError" },
+          "Public stream request rejected",
+        );
+        if (isResolvableStreamFailure(error)) return { streams: [] };
+        return reply.code(infrastructureStatus(error)).send({ streams: [] });
+      }
+    };
     app.get<{ Params: { id: string } }>(
       "/stream/series/:id.json",
-      async (request, reply) => {
-        try {
-          return await service.publicStream(request.params.id);
-        } catch (error) {
-          request.log.info(
-            { errorName: error instanceof Error ? error.name : "UnknownError" },
-            "Public stream request rejected",
-          );
-          if (isResolvableStreamFailure(error)) return { streams: [] };
-          return reply.code(infrastructureStatus(error)).send({ streams: [] });
-        }
-      },
+      streamHandler,
+    );
+    app.get<{ Params: { id: string } }>(
+      `${REPAIRED_BASE_PATH}/stream/series/:id.json`,
+      streamHandler,
     );
   };
 }

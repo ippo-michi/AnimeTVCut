@@ -6,12 +6,14 @@ export interface MediaFlowConfigInput {
   baseUrl: string | URL;
   apiPassword?: string;
   requestTimeoutMs?: number;
+  outputContainer?: "fmp4" | "mpegts";
 }
 
 export interface MediaFlowConfig {
   baseUrl: URL;
   apiPassword?: string;
   requestTimeoutMs: number;
+  outputContainer: "fmp4" | "mpegts";
 }
 
 export function createMediaFlowConfig(
@@ -58,6 +60,15 @@ export function createMediaFlowConfig(
   ) {
     throw new MediaFlowConfigurationError("MEDIAFLOW_API_PASSWORD is invalid.");
   }
+  if (
+    input.outputContainer !== undefined &&
+    input.outputContainer !== "fmp4" &&
+    input.outputContainer !== "mpegts"
+  ) {
+    throw new MediaFlowConfigurationError(
+      "MEDIAFLOW_OUTPUT_CONTAINER must be fmp4 or mpegts.",
+    );
+  }
 
   return {
     baseUrl,
@@ -65,6 +76,7 @@ export function createMediaFlowConfig(
       ? {}
       : { apiPassword: input.apiPassword }),
     requestTimeoutMs,
+    outputContainer: input.outputContainer ?? "fmp4",
   };
 }
 
@@ -76,11 +88,15 @@ export function mediaFlowConfigFromEnv(
     return undefined;
   }
   const timeout = environment.MEDIAFLOW_REQUEST_TIMEOUT_MS;
+  const outputContainer = environment.MEDIAFLOW_OUTPUT_CONTAINER;
   return {
     baseUrl,
     ...(environment.MEDIAFLOW_API_PASSWORD === undefined
       ? {}
       : { apiPassword: environment.MEDIAFLOW_API_PASSWORD }),
     ...(timeout === undefined ? {} : { requestTimeoutMs: Number(timeout) }),
+    ...(outputContainer === undefined
+      ? {}
+      : { outputContainer: outputContainer as "fmp4" | "mpegts" }),
   };
 }

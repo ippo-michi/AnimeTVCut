@@ -21,6 +21,7 @@ interface SelectedSegment {
   sourceEpisodeId: string;
   segment: HlsSegment;
   discontinuityBefore: boolean;
+  outputStart: number;
 }
 
 function mapKey(map: HlsMap): string {
@@ -41,6 +42,7 @@ export function composeHlsVod(
   );
   const selected: SelectedSegment[] = [];
   let previousPiece: TimelinePiece | undefined;
+  let outputCursor = 0;
 
   for (const piece of pieces) {
     const playlist = playlists.get(piece.sourceEpisodeId);
@@ -75,7 +77,9 @@ export function composeHlsVod(
         sourceEpisodeId: piece.sourceEpisodeId,
         segment,
         discontinuityBefore: segment.discontinuityBefore || sourceBoundary,
+        outputStart: outputCursor,
       });
+      outputCursor += segment.duration;
     }
     previousPiece = piece;
   }
@@ -91,8 +95,9 @@ export function composeHlsVod(
     sourceEpisodeId: string,
     resource: HlsResourceMetadata & { absoluteUri: string; byteRange?: string },
     kind: HlsResourceKind,
+    placement?: { sourceStart: number; outputStart: number },
   ): string => {
-    const key = `${sourceEpisodeId}|${kind}|${resource.absoluteUri}|${resource.byteRange ?? ""}`;
+    const key = `${sourceEpisodeId}|${kind}|${resource.absoluteUri}|${resource.byteRange ?? ""}|${placement?.outputStart ?? ""}`;
     const known = resourceIds.get(key);
     if (known !== undefined) {
       return known;
@@ -110,6 +115,7 @@ export function composeHlsVod(
       ...(resource.byteRange === undefined
         ? {}
         : { byteRange: resource.byteRange }),
+      ...placement,
     });
     return id;
   };
@@ -152,7 +158,10 @@ export function composeHlsVod(
         activeMapKey = currentKey;
       }
     }
-    const segmentId = register(item.sourceEpisodeId, item.segment, "segment");
+    const segmentId = register(item.sourceEpisodeId, item.segment, "segment", {
+      sourceStart: item.segment.start,
+      outputStart: item.outputStart,
+    });
     lines.push(
       `#EXTINF:${formatDuration(item.segment.duration)},${item.segment.title}`,
       `/media/cut/${cutId}/segment/${segmentId}`,

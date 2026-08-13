@@ -37,6 +37,7 @@ export interface SourceEpisodeMeta {
   id: string;
   season: number;
   episode: number;
+  runtimeSeconds?: number;
   title?: string;
   released?: string;
   thumbnail?: string;
@@ -44,5 +45,7 @@ export interface SourceEpisodeMeta {
 
 export interface SourceSeriesMeta extends StremioMetaPreview {
   runtimeSeconds?: number;
+  malAnimeId?: number;
+  kitsuAnimeId?: number;
   videos: readonly SourceEpisodeMeta[];
 }

@@ -48,6 +48,34 @@ describe("stable TV cut grouping", () => {
     expect(result.groups.every((group) => group.finalized)).toBe(true);
   });
 
+  it("groups eleven episodes as three full groups and a final pair", () => {
+    const result = groupTvCutEpisodes(episodes(11), { now: oldNow });
+    expect(
+      result.groups.map((group) => [group.firstEpisode, group.lastEpisode]),
+    ).toEqual([
+      [1, 3],
+      [4, 6],
+      [7, 9],
+      [10, 11],
+    ]);
+    expect(result.groups.every((group) => group.finalized)).toBe(true);
+  });
+
+  it("keeps a long premiere with the next two episodes", () => {
+    const input = episodes(5).map((episode, index) => ({
+      ...episode,
+      runtimeSeconds: index === 0 ? 4_920 : 1_440,
+    }));
+    const result = groupTvCutEpisodes(input, { now: oldNow });
+    expect(
+      result.groups.map((group) => [group.firstEpisode, group.lastEpisode]),
+    ).toEqual([
+      [1, 3],
+      [4, 5],
+    ]);
+    expect(result.groups[0]?.estimatedDurationSeconds).toBe(7_440);
+  });
+
   it("keeps a fresh below-minimum tail pending without changing prior groups", () => {
     const first = groupTvCutEpisodes(episodes(4, "2025-12-31T00:00:00Z"), {
       now: oldNow,
@@ -77,7 +105,7 @@ describe("stable TV cut grouping", () => {
     });
   });
 
-  it("keeps even a maximum-sized below-minimum trailing group pending", () => {
+  it("finalizes a complete fixed-size group regardless of runtime estimate", () => {
     const config = {
       ...DEFAULT_TV_CUT_GROUPING_CONFIG,
       minimumSeconds: 10_000,
@@ -90,7 +118,16 @@ describe("stable TV cut grouping", () => {
       })),
       { now: oldNow, config },
     );
-    expect(result.groups[0]).toMatchObject({ finalized: false });
+    expect(result.groups[0]).toMatchObject({
+      firstEpisode: 1,
+      lastEpisode: 3,
+      finalized: true,
+    });
+    expect(result.groups[1]).toMatchObject({
+      firstEpisode: 4,
+      lastEpisode: 4,
+      finalized: false,
+    });
   });
 
   it("finalizes an aged trailing group", () => {
@@ -136,7 +173,7 @@ describe("stable TV cut grouping", () => {
     expect(result.groups).toEqual([]);
   });
 
-  it("honors maximum episodes and permits an overlong singleton", () => {
+  it("honors the configured episode cap without isolating long premieres", () => {
     const config = {
       ...DEFAULT_TV_CUT_GROUPING_CONFIG,
       minimumSeconds: 10_000,
@@ -145,12 +182,14 @@ describe("stable TV cut grouping", () => {
     const capped = groupTvCutEpisodes(episodes(3), { now: oldNow, config });
     expect(capped.groups[0]?.episodes).toHaveLength(2);
     const long = groupTvCutEpisodes(
-      [{ ...episodes(1)[0]!, runtimeSeconds: 5000 }],
+      [{ ...episodes(1)[0]!, runtimeSeconds: 5000 }, ...episodes(2).slice(1)],
       { now: oldNow },
     );
     expect(long.groups[0]).toMatchObject({
       finalized: true,
-      estimatedDurationSeconds: 5000,
+      firstEpisode: 1,
+      lastEpisode: 2,
+      estimatedDurationSeconds: 6260,
     });
   });
 });

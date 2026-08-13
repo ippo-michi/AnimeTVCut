@@ -39,9 +39,17 @@ or another HTTP media endpoint. All such sources still pass through MediaFlow.
 
 Configure `MEDIAFLOW_URL`, `MEDIAFLOW_API_PASSWORD`, and optionally
 `MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` builds the
-project's `2.4.9-atc2` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
+project's `2.4.9-atc10` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
 copy `.env.example` to `.env` and replace the example password before starting the
 stack with `docker compose up -d --build`.
+
+The Compose default `MEDIAFLOW_OUTPUT_CONTAINER=mpegts` uses independently seekable
+MPEG-TS HLS segments. Ordinary 8-bit H.264 video and compatible AAC audio are
+packet-copied without re-encoding; all source audio tracks and their language metadata
+are retained. Incompatible audio is normalized to 48 kHz stereo AAC. Unsafe passthrough codecs/profiles (for
+example HEVC, AV1, and Hi10 AVC) use the compatibility video-transcode path. Each
+segment is muxed directly onto its actual AnimeTVCut output-timeline position, so
+forward/backward seeks do not scan from the start or replay an earlier episode.
 
 Upstream MediaFlow `v2.4.9` constructs partial synthetic MP4/MKV containers for HLS
 segments. Those partial containers can omit required container context or retain sample
@@ -106,11 +114,15 @@ INTRODB_MIN_CONFIDENCE=
 ANISKIP_ENABLED=true
 ANISKIP_BASE_URL=https://api.aniskip.com/v2
 ANISKIP_REQUEST_TIMEOUT_MS=10000
+ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS=5
 ```
 
 TheIntroDB derives its IMDb identity conservatively from Stremio IDs such as
-`tt1234567:1:3`. AniSkip runs only when an episode includes an explicit MAL identity;
-AnimeTVCut does not perform IMDb-to-MAL mapping.
+`tt1234567:1:3`. AnimeTVCut never guesses an IMDb-to-MAL mapping. AniSkip runs when an
+episode includes an explicit MAL identity or when metadata provides an exact MAL/Kitsu
+pair and the episode's Kitsu anime ID matches that pair. A different Kitsu ID in a later
+season does not inherit the first season's MAL identity. Small source-release duration
+differences are accepted within the configured tolerance; timestamps are never scaled.
 
 `POST /api/v1/dev/skip/resolve` returns provider-neutral diagnostics without creating a
 cut. `POST /api/v1/dev/cuts/from-upstream/auto` loads each normalized playlist once,
@@ -174,10 +186,13 @@ The metadata addon must declare `series`, `catalog`, `meta`, and a series catalo
 compatible catalog in manifest order. AIOMetadata-style addons are the primary target;
 standard Cinemeta-compatible manifests use the same protocol seam.
 
-Install AnimeTVCut's own `/manifest.json` in Stremio. Its search-only catalog exposes
+Install AnimeTVCut's own `/v2/manifest.json` in Stremio. The distinct v2 addon/catalog
+identity bypasses old Stremio catalog registrations which may have cached a failed
+search indefinitely; uninstall the legacy AnimeTVCut entry before installing it. Its
+search-only catalog exposes
 three independently configurable views of each source series:
 
-- **TV Cut** — backward-compatible approximately one-hour parts.
+- **TV Cut** — stable three-episode parts by default (the last part may be shorter).
 - **Season Cut** — one entire finalized source season.
 - **Complete Cut** — all finalized normal seasons in one stream, within safety limits.
 
@@ -203,10 +218,12 @@ source metadata, regenerates the deterministic plan, authorizes the exact finali
 scope, then sends only those opaque episode IDs into the automatic-cut flow.
 MediaFlow remains a normalizer and never owns grouping, retained ranges, or cut policy.
 
-Defaults target a one-hour part: 3000–4500 seconds, at most four episodes, assuming
-90-second openings/endings and a 1440-second fallback runtime. With 24-minute episodes,
-groups are 1–3, 4–6, and so on. A fresh trailing group below the minimum remains pending
-for 14 days, preventing already-published groups from shifting as weekly episodes land.
+TV Cut defaults to stable three-episode groups: 1–3, 4–6, and so on. A completed
+11-episode season therefore ends with 10–11. Episode runtimes are estimates only and do
+not isolate a movie-length premiere from the following two episodes. The group size is
+controlled by `TV_CUT_EPISODES_PER_GROUP` and bounded by `TV_CUT_MAX_EPISODES`. A fresh
+incomplete trailing group remains pending for 14 days, preventing already-published
+groups from shifting as weekly episodes land.
 
 `PUBLIC_BASE_URL` is mandatory for public stream playback and is the only authority
 used to construct playlist URLs; request `Host` headers are ignored. Public stream
@@ -228,7 +245,7 @@ upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
 subtitle metadata discovery per constituent episode. Subtitle source fetches are
 bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
-Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc2` repair:
+Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc10` repair:
 
 ```bash
 pnpm test:stremio

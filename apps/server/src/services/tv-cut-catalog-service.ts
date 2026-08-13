@@ -69,6 +69,8 @@ interface CutScope {
   episodes: readonly SourceEpisodeMeta[];
   title: string;
   estimatedDurationSeconds: number;
+  malAnimeId?: number;
+  kitsuAnimeId?: number;
   season?: number;
   version?: string;
 }
@@ -159,15 +161,16 @@ export class TvCutCatalogService {
     signal?: AbortSignal,
   ): Promise<PlannedSeries> {
     const source = await this.requireClient().getSeriesMeta(sourceId, signal);
-    const runtimeSeconds =
-      source.runtimeSeconds ?? this.groupingConfig.fallbackRuntimeSeconds;
     const groupable = source.videos.map((episode) => ({
       sourceId: episode.id,
       season: episode.season,
       episode: episode.episode,
       ...(episode.title === undefined ? {} : { title: episode.title }),
       ...(episode.released === undefined ? {} : { released: episode.released }),
-      runtimeSeconds,
+      runtimeSeconds:
+        episode.runtimeSeconds ??
+        source.runtimeSeconds ??
+        this.groupingConfig.fallbackRuntimeSeconds,
     }));
     const tv = groupTvCutEpisodes(groupable, {
       now: this.now(),
@@ -296,7 +299,11 @@ export class TvCutCatalogService {
     const videos =
       coordinates.mode === "tv"
         ? plan.groups
-            .filter((group) => group.finalized)
+            // Metadata providers commonly put shorts/mini-anime in season 0.
+            // Showing them first makes Stremio open a short "Part 1" instead
+            // of the actual series. Existing season-zero video IDs remain
+            // valid, but the main TV Cut listing contains normal seasons.
+            .filter((group) => group.finalized && group.season > 0)
             .map((group) => ({
               id: group.virtualVideoId,
               title: `Part ${group.part} (Episodes ${group.firstEpisode}–${group.lastEpisode})`,
@@ -369,11 +376,34 @@ export class TvCutCatalogService {
   ): Promise<PublicStreamResponse> {
     const scope = await this.validateScope(virtualVideoId, signal);
     this.requireModeEnabled(scope.mode);
-    const references = scope.episodes.map((episode) => ({
-      episodeId: episode.id,
-      type: "series",
-      videoId: episode.id,
-    }));
+    const sourceImdbId = /^tt\d{7,8}$/.test(scope.sourceSeriesId)
+      ? scope.sourceSeriesId
+      : undefined;
+    const references = scope.episodes.map((episode) => {
+      const malAnimeId = this.malAnimeIdForEpisode(scope, episode);
+      const hasImdbIdentity = sourceImdbId !== undefined && episode.season >= 1;
+      return {
+        episodeId: episode.id,
+        type: "series",
+        videoId: episode.id,
+        ...(!hasImdbIdentity && malAnimeId === undefined
+          ? {}
+          : {
+              skipIdentity: {
+                ...(hasImdbIdentity
+                  ? {
+                      imdbId: sourceImdbId,
+                      imdbSeason: episode.season,
+                      imdbEpisode: episode.episode,
+                    }
+                  : {}),
+                ...(malAnimeId === undefined
+                  ? {}
+                  : { malAnimeId, malEpisode: episode.episode }),
+              },
+            }),
+      };
+    });
     const chapterEpisodes = scope.episodes.map((episode) => ({
       sourceEpisodeId: episode.id,
       season: episode.season,
@@ -385,6 +415,8 @@ export class TvCutCatalogService {
         ? await this.upstreamCutService.createAutomaticCut({
             episodes: references,
             chapterEpisodes,
+            expectedEpisodeDurationSeconds:
+              scope.estimatedDurationSeconds / scope.episodes.length,
           })
         : await this.upstreamCutService.createLongAutomaticCut({
             seasons: [
@@ -399,6 +431,8 @@ export class TvCutCatalogService {
             chapterEpisodes,
             maxMediaSegments: this.longCuts.maxMediaSegments,
             maxManifestBytes: this.longCuts.maxManifestBytes,
+            expectedEpisodeDurationSeconds:
+              scope.estimatedDurationSeconds / scope.episodes.length,
           });
     if (scope.mode !== "tv" && "families" in cut) {
       const families = cut.families as readonly {
@@ -504,6 +538,12 @@ export class TvCutCatalogService {
         episodes: this.sourceEpisodes(plan.source, group.episodes),
         title: `TV Cut Part ${group.part} · Episodes ${group.firstEpisode}–${group.lastEpisode}`,
         estimatedDurationSeconds: group.estimatedDurationSeconds,
+        ...(plan.source.malAnimeId === undefined
+          ? {}
+          : { malAnimeId: plan.source.malAnimeId }),
+        ...(plan.source.kitsuAnimeId === undefined
+          ? {}
+          : { kitsuAnimeId: plan.source.kitsuAnimeId }),
         season: group.season,
       };
     }
@@ -524,6 +564,12 @@ export class TvCutCatalogService {
         episodes: this.sourceEpisodes(plan.source, season.episodes),
         title: `Season Cut · Episodes ${coordinates.firstEpisode}–${coordinates.lastEpisode}`,
         estimatedDurationSeconds: season.estimatedDurationSeconds,
+        ...(plan.source.malAnimeId === undefined
+          ? {}
+          : { malAnimeId: plan.source.malAnimeId }),
+        ...(plan.source.kitsuAnimeId === undefined
+          ? {}
+          : { kitsuAnimeId: plan.source.kitsuAnimeId }),
         season: coordinates.season,
       };
     }
@@ -543,8 +589,39 @@ export class TvCutCatalogService {
       episodes: this.sourceEpisodes(plan.source, plan.seriesCut.episodes),
       title: `Complete Cut · ${plan.seriesCut.episodes.length} Episodes`,
       estimatedDurationSeconds: plan.seriesCut.estimatedDurationSeconds,
+      ...(plan.source.malAnimeId === undefined
+        ? {}
+        : { malAnimeId: plan.source.malAnimeId }),
+      ...(plan.source.kitsuAnimeId === undefined
+        ? {}
+        : { kitsuAnimeId: plan.source.kitsuAnimeId }),
       version: coordinates.version,
     };
+  }
+
+  private malAnimeIdForEpisode(
+    scope: CutScope,
+    episode: SourceEpisodeMeta,
+  ): number | undefined {
+    if (episode.season < 1) return undefined;
+    const directMal = /^mal:(\d+):(\d+)$/.exec(episode.id);
+    if (
+      directMal?.[1] !== undefined &&
+      directMal[2] !== undefined &&
+      Number(directMal[2]) === episode.episode
+    ) {
+      const animeId = Number(directMal[1]);
+      if (Number.isSafeInteger(animeId) && animeId > 0) return animeId;
+    }
+    if (scope.malAnimeId === undefined || scope.kitsuAnimeId === undefined)
+      return undefined;
+    const kitsu = /^kitsu:(\d+):(\d+)$/.exec(episode.id);
+    return kitsu?.[1] !== undefined &&
+      kitsu[2] !== undefined &&
+      Number(kitsu[1]) === scope.kitsuAnimeId &&
+      Number(kitsu[2]) === episode.episode
+      ? scope.malAnimeId
+      : undefined;
   }
 
   private sourceEpisodes(

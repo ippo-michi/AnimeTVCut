@@ -106,6 +106,11 @@ export function metadataConfigurationFromEnv(
       ? {}
       : { publicBaseUrl: normalizePublicBaseUrl(publicBase) }),
     grouping: {
+      episodesPerGroup: parsePositiveInteger(
+        env.TV_CUT_EPISODES_PER_GROUP,
+        DEFAULT_TV_CUT_GROUPING_CONFIG.episodesPerGroup,
+        "TV_CUT_EPISODES_PER_GROUP",
+      ),
       targetSeconds: parsePositiveInteger(
         env.TV_CUT_TARGET_SECONDS,
         DEFAULT_TV_CUT_GROUPING_CONFIG.targetSeconds,

@@ -1,0 +1,337 @@
+--- a/mediaflow_proxy/remuxer/hls_manifest.py
++++ b/mediaflow_proxy/remuxer/hls_manifest.py
+@@ -120,12 +120,13 @@
+ 
+     lines: list[str] = [
+         "#EXTM3U",
+-        "#EXT-X-VERSION:7",
++        f"#EXT-X-VERSION:{7 if init_url else 3}",
+         f"#EXT-X-TARGETDURATION:{target_duration}",
+         "#EXT-X-PLAYLIST-TYPE:VOD",
+         "#EXT-X-MEDIA-SEQUENCE:0",
+-        f'#EXT-X-MAP:URI="{init_url}"',
+     ]
++    if init_url:
++        lines.append(f'#EXT-X-MAP:URI="{init_url}"')
+ 
+     for seg_num, (start_ms, end_ms, dur_s) in enumerate(segments):
+         lines.append(f"#EXTINF:{dur_s:.3f},")
+--- a/mediaflow_proxy/routes/proxy.py
++++ b/mediaflow_proxy/routes/proxy.py
+@@ -336,6 +336,7 @@
+     request: Request,
+     proxy_headers: Annotated[ProxyRequestHeaders, Depends(get_proxy_headers)],
+     destination: str = Query(..., description="The URL of the source media.", alias="d"),
++    atc_container: str | None = Query(None, description="AnimeTVCut HLS container."),
+ ):
+     """
+     Generate an HLS VOD M3U8 playlist for on-the-fly transcoded content.
+@@ -363,10 +364,16 @@
+     # (api_password, headers, etc.) from the current request.
+     base_params = _build_hls_query_params(request, destination)
+ 
+-    init_url = f"/proxy/transcode/init.mp4?{base_params}"
+-    segment_url_template = (
+-        f"/proxy/transcode/segment.m4s?{base_params}&seg={{seg}}&start_ms={{start_ms}}&end_ms={{end_ms}}"
+-    )
++    if atc_container == "mpegts":
++        init_url = ""
++        segment_url_template = (
++            f"/proxy/transcode/segment.ts?{base_params}&seg={{seg}}&start_ms={{start_ms}}&end_ms={{end_ms}}"
++        )
++    else:
++        init_url = f"/proxy/transcode/init.mp4?{base_params}"
++        segment_url_template = (
++            f"/proxy/transcode/segment.m4s?{base_params}&seg={{seg}}&start_ms={{start_ms}}&end_ms={{end_ms}}"
++        )
+ 
+     return await handle_transcode_hls_playlist(
+         request,
+@@ -438,6 +445,37 @@
+         request, source, start_time_ms=start_ms, end_time_ms=end_ms, segment_number=seg
+     )
+ 
++
++@proxy_router.get("/transcode/segment.ts")
++async def transcode_hls_ts_segment(
++    request: Request,
++    proxy_headers: Annotated[ProxyRequestHeaders, Depends(get_proxy_headers)],
++    destination: str = Query(..., description="The URL of the source media.", alias="d"),
++    start_ms: float = Query(..., description="Segment start time in milliseconds."),
++    end_ms: float = Query(..., description="Segment end time in milliseconds."),
++    atc_output_start_ms: float | None = Query(
++        None, description="AnimeTVCut virtual output timestamp."
++    ),
++    seg: int | None = Query(None, description="Segment number (informational, for logging)."),
++):
++    """Serve an MPEG-TS HLS segment with copied video and normalized audio."""
++    if not settings.enable_transcode:
++        raise HTTPException(status_code=503, detail="Transcoding support is disabled")
++    HTTPMediaSource, _, _, _, _ = _load_transcode_components()
++    from mediaflow_proxy.remuxer.transcode_handler import handle_transcode_hls_ts_segment
++
++    destination = sanitize_url(destination)
++    source = HTTPMediaSource(url=destination, headers=dict(proxy_headers.request))
++    await source.resolve_file_size()
++    return await handle_transcode_hls_ts_segment(
++        request,
++        source,
++        start_time_ms=start_ms,
++        end_time_ms=end_ms,
++        output_start_time_ms=atc_output_start_ms,
++        segment_number=seg,
++    )
++
+ 
+ def _build_hls_query_params(request: Request, destination: str) -> str:
+     """
+--- a/mediaflow_proxy/remuxer/transcode_handler.py
++++ b/mediaflow_proxy/remuxer/transcode_handler.py
+@@ -22,7 +22,9 @@
+ from __future__ import annotations
+ 
+ import asyncio
++import contextlib
+ import logging
++import os
+ from collections.abc import AsyncIterator
+ from dataclasses import dataclass
+ from typing import TYPE_CHECKING
+@@ -1181,3 +1183,237 @@
+             "content-length": str(len(seg_data)),
+         },
+     )
++
++
++async def _mux_mpegts_segment(
++    source: AsyncIterator[bytes],
++    start_time_ms: float,
++    end_time_ms: float,
++    output_start_time_ms: float,
++    copy_video: bool,
++    copy_audio: bool,
++    audio_languages: list[str],
++    preferred_audio: str,
++) -> bytes:
++    """Run a bounded FFmpeg remux without exposing the upstream URL."""
++    preferred_aliases = {
++        "jpn": {"jpn", "ja", "jp"},
++        "eng": {"eng", "en"},
++    }.get(preferred_audio, {preferred_audio})
++    preferred_indices = [
++        index
++        for index, language in enumerate(audio_languages)
++        if language.strip().lower() in preferred_aliases
++    ]
++    audio_order = preferred_indices + [
++        index
++        for index in range(len(audio_languages))
++        if index not in preferred_indices
++    ]
++    audio_map_args = (
++        [item for index in audio_order for item in ("-map", f"0:a:{index}")]
++        if audio_order
++        else ["-map", "0:a?"]
++    )
++    if copy_audio:
++        timing_args = [
++            "-ss",
++            f"{start_time_ms / 1000.0:.6f}",
++            "-t",
++            f"{(end_time_ms - start_time_ms) / 1000.0:.6f}",
++        ]
++        audio_args = ["-c:a", "copy"]
++        timestamp_offset = output_start_time_ms
++    else:
++        timing_args = ["-to", f"{end_time_ms / 1000.0:.6f}"]
++        audio_args = [
++            "-af",
++            f"atrim=start={start_time_ms / 1000.0:.6f},asetpts=PTS+1024",
++            "-c:a",
++            "aac",
++            "-ar",
++            "48000",
++            "-ac",
++            "2",
++            "-b:a",
++            "192k",
++        ]
++        timestamp_offset = output_start_time_ms - start_time_ms
++    command = [
++        "ffmpeg",
++        "-hide_banner",
++        "-loglevel",
++        "error",
++        "-nostdin",
++        "-f",
++        "matroska",
++        "-i",
++        "pipe:0",
++        *timing_args,
++        "-map",
++        "0:v:0",
++        *audio_map_args,
++        "-sn",
++        "-dn",
++        "-c:v",
++        "copy" if copy_video else "libx264",
++        *audio_args,
++        "-copyts",
++        "-avoid_negative_ts",
++        "disabled",
++        "-muxdelay",
++        "0",
++        "-muxpreload",
++        "0",
++        "-mpegts_flags",
++        "resend_headers",
++        "-output_ts_offset",
++        f"{timestamp_offset / 1000.0:.6f}",
++        "-f",
++        "mpegts",
++        "pipe:1",
++    ]
++    process = await asyncio.create_subprocess_exec(
++        *command,
++        stdin=asyncio.subprocess.PIPE,
++        stdout=asyncio.subprocess.PIPE,
++        stderr=asyncio.subprocess.PIPE,
++    )
++
++    async def feed() -> None:
++        assert process.stdin is not None
++        try:
++            async for chunk in source:
++                process.stdin.write(chunk)
++                await process.stdin.drain()
++        except (BrokenPipeError, ConnectionResetError):
++            pass
++        finally:
++            if hasattr(source, "aclose"):
++                with contextlib.suppress(Exception):
++                    await source.aclose()
++            process.stdin.close()
++            with contextlib.suppress(BrokenPipeError, ConnectionResetError):
++                await process.stdin.wait_closed()
++
++    assert process.stdout is not None and process.stderr is not None
++    feed_task = asyncio.create_task(feed())
++    stdout_task = asyncio.create_task(process.stdout.read())
++    stderr_task = asyncio.create_task(process.stderr.read())
++    try:
++        output, stderr, _ = await asyncio.gather(
++            stdout_task, stderr_task, feed_task
++        )
++        return_code = await process.wait()
++    except BaseException:
++        process.kill()
++        await process.wait()
++        raise
++    if return_code != 0 or not output:
++        logger.warning(
++            "[hls_ts_segment] FFmpeg remux failed code=%s detail_bytes=%d",
++            return_code,
++            len(stderr),
++        )
++        raise RuntimeError("MPEG-TS remux failed")
++    return output
++
++
++async def handle_transcode_hls_ts_segment(
++    request: Request,
++    source: MediaSource,
++    start_time_ms: float,
++    end_time_ms: float,
++    output_start_time_ms: float | None = None,
++    segment_number: int | None = None,
++) -> Response:
++    """Serve a seekable MPEG-TS segment while copying compatible H.264 video."""
++    del request, end_time_ms
++    result = await _extract_probe_data(source)
++    if result is None:
++        return PlainTextResponse("Cannot serve MPEG-TS segment", status_code=404)
++    probe, cue_points, duration_ms, file_size, seg_data_offset = result
++    boundaries = _compute_segment_boundaries(
++        cue_points, duration_ms, file_size, seg_data_offset
++    )
++    seg_info = _find_segment(boundaries, start_time_ms)
++    if seg_info is None:
++        return PlainTextResponse("Segment boundary was not found", status_code=404)
++
++    language = os.environ.get("ATC_AUDIO_LANGUAGE", "jpn").strip().lower()
++    audio_languages: list[str] = []
++    audio_codec_ids: list[str] = []
++    if probe.cue_index is not None and probe.cue_index.seek_header:
++        try:
++            from mediaflow_proxy.remuxer.mkv_demuxer import MKVDemuxer
++
++            async def header_source() -> AsyncIterator[bytes]:
++                yield probe.cue_index.seek_header
++
++            header = await MKVDemuxer().read_header(header_source())
++            audio_languages = [
++                track.language for track in header.tracks if track.is_audio
++            ]
++            audio_codec_ids = [
++                track.codec_id for track in header.tracks if track.is_audio
++            ]
++        except Exception:
++            logger.warning("[hls_ts_segment] audio track order probe failed")
++    virtual_start_ms = (
++        seg_info.start_ms if output_start_time_ms is None else output_start_time_ms
++    )
++    cache_key = f"{source.cache_key}:mpegts:{language}:{virtual_start_ms:.3f}"
++    if is_redis_configured():
++        cached = await hls_get_segment(cache_key, seg_info.index)
++        if cached is not None:
++            return Response(
++                content=cached,
++                media_type="video/mp2t",
++                headers={
++                    "access-control-allow-origin": "*",
++                    "cache-control": "public, max-age=300",
++                    "content-length": str(len(cached)),
++                },
++            )
++
++    source_gen = _build_segment_source(source, seg_info, probe)
++    copy_video = _can_remux_hls_mkv(probe.cue_index)
++    mpegts_copy_audio_codecs = _REMUX_SAFE_AAC_CODECS | {"A_AC3", "A_EAC3"}
++    copy_audio = bool(audio_codec_ids) and all(
++        codec_id in mpegts_copy_audio_codecs for codec_id in audio_codec_ids
++    )
++    label = segment_number if segment_number is not None else seg_info.index
++    logger.info(
++        "[hls_ts_segment] seg=%s mode=%s audio=%s tracks=all",
++        label,
++        "video_copy" if copy_video else "video_encode",
++        "copy" if copy_audio else "encode",
++    )
++    try:
++        segment = await _mux_mpegts_segment(
++            source_gen,
++            seg_info.start_ms,
++            seg_info.end_ms,
++            virtual_start_ms,
++            copy_video,
++            copy_audio,
++            audio_languages,
++            language,
++        )
++    except (asyncio.CancelledError, GeneratorExit):
++        raise
++    except Exception:
++        logger.exception("[hls_ts_segment] seg=%s failed", label)
++        return PlainTextResponse("MPEG-TS segment generation failed", status_code=503)
++
++    if is_redis_configured():
++        await hls_set_segment(cache_key, seg_info.index, segment)
++    return Response(
++        content=segment,
++        media_type="video/mp2t",
++        headers={
++            "access-control-allow-origin": "*",
++            "cache-control": "public, max-age=300",
++            "content-length": str(len(segment)),
++        },
++    )

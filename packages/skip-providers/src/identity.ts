@@ -24,11 +24,34 @@ export function extractImdbSkipIdentity(
   return { id: match[1]!, season, episode };
 }
 
+function explicitImdbSkipIdentity(
+  explicit?: ExplicitSkipIdentity,
+): ImdbSkipIdentity | undefined {
+  if (
+    explicit?.imdbId === undefined ||
+    explicit.imdbSeason === undefined ||
+    explicit.imdbEpisode === undefined ||
+    !/^tt\d{7,8}$/.test(explicit.imdbId) ||
+    !Number.isSafeInteger(explicit.imdbSeason) ||
+    explicit.imdbSeason < 1 ||
+    !Number.isSafeInteger(explicit.imdbEpisode) ||
+    explicit.imdbEpisode < 1
+  ) {
+    return undefined;
+  }
+  return {
+    id: explicit.imdbId,
+    season: explicit.imdbSeason,
+    episode: explicit.imdbEpisode,
+  };
+}
+
 export function deriveSkipLookupIdentity(
   videoId: string,
   explicit?: ExplicitSkipIdentity,
 ): SkipLookupIdentity {
-  const imdb = extractImdbSkipIdentity(videoId);
+  const imdb =
+    explicitImdbSkipIdentity(explicit) ?? extractImdbSkipIdentity(videoId);
   const hasCompleteMalIdentity =
     explicit?.malAnimeId !== undefined && explicit.malEpisode !== undefined;
   const mal = hasCompleteMalIdentity

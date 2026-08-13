@@ -1,0 +1,105 @@
+diff --git a/mediaflow_proxy/remuxer/media_source.py b/mediaflow_proxy/remuxer/media_source.py
+--- a/mediaflow_proxy/remuxer/media_source.py
++++ b/mediaflow_proxy/remuxer/media_source.py
+@@ -168,5 +168,6 @@ class HTTPMediaSource:
+     def __init__(self, url: str, headers: dict | None = None, file_size: int = 0) -> None:
+         self._url = url
++        self._resolved_url = url
+         self._headers = headers or {}
+         self._file_size = file_size
+         self._filename_hint = filename_hint_from_url(url)
+@@ -186,6 +187,11 @@ class HTTPMediaSource:
+     def filename_hint(self) -> str:
+         return self._filename_hint
+ 
++    @property
++    def resolved_url(self) -> str:
++        """Final redirect destination discovered during the source probe."""
++        return self._resolved_url
++
+     def pyav_open_input(self) -> tuple[str, dict[str, str]]:
+         """Return a seekable FFmpeg/PyAV HTTP input without exposing it publicly."""
+         forwarded = []
+@@ -224,6 +230,9 @@ class HTTPMediaSource:
+                 allow_redirects=True,
+             ) as resp:
+                 cl = resp.headers.get("content-length") if resp.status < 400 else None
++                if resp.status < 400:
++                    self._resolved_url = str(resp.url)
++                    self._url = self._resolved_url
+                 if cl:
+                     self._file_size = int(cl)
+                 else:
+@@ -236,6 +245,9 @@ class HTTPMediaSource:
+                         allow_redirects=True,
+                     ) as range_resp:
+                         cr = range_resp.headers.get("content-range", "")
++                        if range_resp.status < 400:
++                            self._resolved_url = str(range_resp.url)
++                            self._url = self._resolved_url
+                         if "/" in cr:
+                             try:
+                                 self._file_size = int(cr.split("/")[-1])
+diff --git a/mediaflow_proxy/routes/proxy.py b/mediaflow_proxy/routes/proxy.py
+--- a/mediaflow_proxy/routes/proxy.py
++++ b/mediaflow_proxy/routes/proxy.py
+@@ -363,7 +363,10 @@ async def transcode_hls_playlist(
+ 
+     # Build URLs for init and segment endpoints that preserve query params
+     # (api_password, headers, etc.) from the current request.
+-    base_params = _build_hls_query_params(request, destination)
++    # Reuse the final CDN URL and known size. Reopening a debrid redirect API
++    # for every segment causes rate limits during playback and random seeks.
++    base_params = _build_hls_query_params(request, source.resolved_url)
++    base_params += f"&atc_file_size={source.file_size}"
+ 
+     if atc_container == "mpegts":
+         init_url = ""
+@@ -389,3 +392,4 @@ async def transcode_hls_init(
+     proxy_headers: Annotated[ProxyRequestHeaders, Depends(get_proxy_headers)],
+     destination: str = Query(..., description="The URL of the source media.", alias="d"),
++    atc_file_size: int = Query(0, ge=0, description="Known source size."),
+ ):
+@@ -408,5 +412,9 @@ async def transcode_hls_init(
+     HTTPMediaSource, _, handle_transcode_hls_init, _, _ = _load_transcode_components()
+     destination = sanitize_url(destination)
+-    source = HTTPMediaSource(url=destination, headers=dict(proxy_headers.request))
++    source = HTTPMediaSource(
++        url=destination,
++        headers=dict(proxy_headers.request),
++        file_size=atc_file_size,
++    )
+     await source.resolve_file_size()
+ 
+@@ -423,3 +431,4 @@ async def transcode_hls_segment(
+     end_ms: float = Query(..., description="Segment end time in milliseconds."),
+     seg: int | None = Query(None, description="Segment number (informational, for logging)."),
++    atc_file_size: int = Query(0, ge=0, description="Known source size."),
+ ):
+@@ -445,4 +454,8 @@ async def transcode_hls_segment(
+     HTTPMediaSource, _, _, _, handle_transcode_hls_segment = _load_transcode_components()
+     destination = sanitize_url(destination)
+-    source = HTTPMediaSource(url=destination, headers=dict(proxy_headers.request))
++    source = HTTPMediaSource(
++        url=destination,
++        headers=dict(proxy_headers.request),
++        file_size=atc_file_size,
++    )
+     await source.resolve_file_size()
+@@ -464,4 +477,5 @@ async def transcode_hls_ts_segment(
+         None, description="AnimeTVCut virtual output timestamp."
+     ),
+     seg: int | None = Query(None, description="Segment number (informational, for logging)."),
++    atc_file_size: int = Query(0, ge=0, description="Known source size."),
+ ):
+@@ -476,5 +490,9 @@ async def transcode_hls_ts_segment(
+ 
+     destination = sanitize_url(destination)
+-    source = HTTPMediaSource(url=destination, headers=dict(proxy_headers.request))
++    source = HTTPMediaSource(
++        url=destination,
++        headers=dict(proxy_headers.request),
++        file_size=atc_file_size,
++    )
+     await source.resolve_file_size()
+     return await handle_transcode_hls_ts_segment(

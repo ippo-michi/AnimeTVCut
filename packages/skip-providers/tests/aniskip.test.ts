@@ -103,6 +103,32 @@ describe("AniSkip provider", () => {
     });
   });
 
+  it("accepts small release-duration differences by default", async () => {
+    const provider = new AniSkipProvider({
+      cacheTtlMs: 0,
+      fetchImplementation: jsonFetch({
+        found: true,
+        results: [
+          {
+            interval: { startTime: 1388.041, endTime: 1478.041 },
+            skipType: "ed",
+            episodeLength: 1479.5197,
+          },
+        ],
+      }),
+    });
+    const result = await provider.getSegments({
+      identity: { mal: { animeId: 52_034, episode: 2 } },
+      durationSeconds: 1482,
+    });
+    expect(result.segments[0]).toMatchObject({
+      type: "ending",
+      start: 1388.041,
+      end: 1478.041,
+      automaticRemoval: true,
+    });
+  });
+
   it("preserves invalid known intervals diagnostically and ignores malformed ones", async () => {
     const provider = new AniSkipProvider({
       cacheTtlMs: 0,

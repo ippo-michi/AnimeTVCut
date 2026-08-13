@@ -1,6 +1,12 @@
+import type { Readable } from "node:stream";
+
 import type { FastifyPluginAsync } from "fastify";
 
-import type { CutSessionStore } from "../services/cut-session-store.js";
+import type {
+  CutSession,
+  CutSessionStore,
+  SessionResource,
+} from "../services/cut-session-store.js";
 import {
   MediaRangeNotSatisfiableError,
   type MediaReadRange,
@@ -19,6 +25,55 @@ const SAFE_RESPONSE_HEADERS = new Set([
   "content-length",
   "content-range",
 ]);
+
+const prefetchInFlight = new WeakMap<SessionResource, Promise<void>>();
+const prefetchedResources = new WeakSet<SessionResource>();
+
+function beginPrefetch(resource: SessionResource): void {
+  if (prefetchedResources.has(resource) || prefetchInFlight.has(resource))
+    return;
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 60_000);
+  const task = (async () => {
+    let stream: Readable | undefined;
+    try {
+      const opened = await resource.open(undefined, controller.signal);
+      stream = opened.stream;
+      for await (const chunk of opened.stream) {
+        void chunk;
+        // Drain only to warm MediaFlow's bounded derived-resource cache.
+      }
+      prefetchedResources.add(resource);
+    } catch {
+      // Prefetch is opportunistic; the normal player request remains
+      // authoritative and reports any real upstream error.
+    } finally {
+      clearTimeout(timeout);
+      stream?.destroy();
+      prefetchInFlight.delete(resource);
+    }
+  })();
+  prefetchInFlight.set(resource, task);
+}
+
+function prefetchAfter(
+  session: CutSession,
+  current: SessionResource,
+  count: number,
+): void {
+  if (count <= 0) return;
+  let foundCurrent = false;
+  let remaining = count;
+  for (const resource of session.resources.values()) {
+    if (!foundCurrent) {
+      foundCurrent = resource === current;
+      continue;
+    }
+    beginPrefetch(resource);
+    remaining -= 1;
+    if (remaining === 0) return;
+  }
+}
 
 function parseRange(header: string): MediaReadRange | undefined {
   const match = /^bytes=(\d+)-(\d*)$/.exec(header);
@@ -43,7 +98,15 @@ function parseRange(header: string): MediaReadRange | undefined {
 export function mediaRoutes(
   sessions: CutSessionStore,
   subtitles?: SubtitleService,
+  prefetchResourceCount = 0,
 ): FastifyPluginAsync {
+  if (
+    !Number.isSafeInteger(prefetchResourceCount) ||
+    prefetchResourceCount < 0 ||
+    prefetchResourceCount > 8
+  ) {
+    throw new Error("Media prefetch resource count must be between 0 and 8.");
+  }
   return async (app) => {
     app.get<{ Params: Pick<MediaParams, "cutId"> }>(
       "/media/cut/:cutId/master.m3u8",
@@ -84,8 +147,11 @@ export function mediaRoutes(
         reply.raw.once("close", cancel);
 
         try {
+          const pendingPrefetch = prefetchInFlight.get(resource);
+          if (pendingPrefetch !== undefined) await pendingPrefetch;
           const opened = await resource.open(range, controller.signal);
           sessions.touch(request.params.cutId);
+          prefetchAfter(session, resource, prefetchResourceCount);
           reply.code(opened.statusCode).type(resource.contentType);
           for (const [name, value] of Object.entries(opened.responseHeaders)) {
             const normalized = name.toLowerCase();

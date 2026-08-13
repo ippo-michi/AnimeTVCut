@@ -10,6 +10,8 @@ const execFileAsync = promisify(execFile);
 const mediaFlowUrl = process.env.MEDIAFLOW_TEST_URL ?? "http://127.0.0.1:18888";
 const originUrl =
   process.env.MEDIAFLOW_TEST_ORIGIN_URL ?? "http://fixture-origin:8090";
+const originStatsUrl =
+  process.env.MEDIAFLOW_TEST_ORIGIN_STATS_URL ?? "http://127.0.0.1:18090";
 const password = "phase2-integration-password";
 const sourceToken = "animetvcut-test";
 const app = createApp({
@@ -17,6 +19,7 @@ const app = createApp({
     baseUrl: mediaFlowUrl,
     apiPassword: password,
     requestTimeoutMs: 60_000,
+    outputContainer: "mpegts",
   },
 });
 
@@ -44,7 +47,7 @@ async function runMediaTool(
 }
 
 async function decodeWindow(start: number, seconds: number): Promise<void> {
-  await runMediaTool("ffmpeg", [
+  const progress = await runMediaTool("ffmpeg", [
     "-hide_banner",
     "-loglevel",
     "error",
@@ -62,7 +65,12 @@ async function decodeWindow(start: number, seconds: number): Promise<void> {
     "-f",
     "null",
     "-",
+    "-progress",
+    "pipe:1",
   ]);
+  const frames = [...progress.matchAll(/^frame=(\d+)$/gm)].at(-1)?.[1];
+  expect(Number(frames ?? 0)).toBeGreaterThan(0);
+  expect(progress).toContain("progress=end");
 }
 
 async function requestStats(): Promise<{
@@ -99,7 +107,7 @@ beforeAll(async () => {
       sources: [1, 2, 3].map((episode) => ({
         kind: "http_file",
         episodeId: `ep${episode}`,
-        url: `${originUrl}/episode${episode}.mkv`,
+        url: `${originUrl}/redirect/episode${episode}.mkv`,
         headers: { "X-Test-Token": sourceToken },
       })),
       remove: [
@@ -162,27 +170,19 @@ describe("real MKV to MediaFlow to AnimeTVCut composition", () => {
     ]);
   });
 
-  it("emits only opaque fMP4 map and segment URLs with no secrets", () => {
+  it("emits only opaque seekable MPEG-TS URLs with no secrets", () => {
     const parsed = parseHlsVodPlaylist(playlistText, playlistUrl);
     expect(parsed.segments).toHaveLength(11);
-    expect(playlistText).toContain("#EXT-X-MAP");
+    expect(playlistText).not.toContain("#EXT-X-MAP");
     expect(playlistText.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(2);
     expect(playlistText).not.toMatch(
       /MEDIAFLOW|mediaflow|fixture-origin|episode[123]\.mkv|api_password|phase2-integration-password|animetvcut-test/,
     );
-    const maps = new Set(
-      parsed.segments.flatMap((segment) =>
-        segment.map === undefined ? [] : [segment.map.absoluteUri],
-      ),
-    );
-    expect(maps.size).toBe(3);
-    for (const map of maps) {
-      expect(new URL(map).pathname).toMatch(/\/segment\/r\d+\.mp4$/);
-    }
     for (const segment of parsed.segments) {
-      expect(segment.mediaFormat).toBe("fmp4");
+      expect(segment.map).toBeUndefined();
+      expect(segment.mediaFormat).toBe("mpegts");
       expect(new URL(segment.absoluteUri).pathname).toMatch(
-        /\/segment\/r\d+\.m4s$/,
+        /\/segment\/r\d+\.ts$/,
       );
     }
   });
@@ -197,11 +197,54 @@ describe("real MKV to MediaFlow to AnimeTVCut composition", () => {
     if (firstSegment === undefined) throw new Error("No normalized segment");
     const response = await fetch(firstSegment.absoluteUri);
     expect(response.status).toBe(200);
-    expect(response.headers.get("content-type")).toContain("video/mp4");
+    expect(response.headers.get("content-type")).toContain("video/mp2t");
     expect((await response.arrayBuffer()).byteLength).toBeGreaterThan(0);
 
     const after = await requestStats();
     expect(after.resourceRequests).toBe(1);
+  });
+
+  it("resolves each debrid-style redirect once and reuses its final CDN URL", async () => {
+    const statsResponse = await fetch(`${originStatsUrl}/stats`);
+    const stats = (await statsResponse.json()) as {
+      redirects: number;
+      requests: Array<{ pathname: string }>;
+    };
+    expect(stats.redirects).toBe(3);
+    expect(
+      stats.requests.filter(({ pathname }) =>
+        pathname.startsWith("/redirect/"),
+      ),
+    ).toHaveLength(3);
+  });
+
+  it("coalesces a failed CDN refresh and retries through the new destination", async () => {
+    const failResponse = await fetch(`${originStatsUrl}/cdn/fail-primary`);
+    expect(failResponse.status).toBe(200);
+
+    const parsed = parseHlsVodPlaylist(playlistText, playlistUrl);
+    const secondSegment = parsed.segments[1];
+    if (secondSegment === undefined) throw new Error("No second segment");
+    const requests = await Promise.all(
+      Array.from({ length: 4 }, async () => fetch(secondSegment.absoluteUri)),
+    );
+    expect(requests.every((response) => response.status === 200)).toBe(true);
+    await Promise.all(requests.map(async (response) => response.arrayBuffer()));
+
+    const statsResponse = await fetch(`${originStatsUrl}/stats`);
+    const stats = (await statsResponse.json()) as {
+      redirects: number;
+      primaryFailures: number;
+      requests: Array<{ pathname: string; statusCode: number }>;
+    };
+    expect(stats.redirects).toBe(4);
+    expect(stats.primaryFailures).toBeGreaterThan(0);
+    expect(
+      stats.requests.some(
+        ({ pathname, statusCode }) =>
+          pathname.startsWith("/secondary/") && statusCode === 206,
+      ),
+    ).toBe(true);
   });
 
   it("reports H.264 video, AAC audio, and the calculated duration", async () => {

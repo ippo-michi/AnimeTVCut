@@ -12,11 +12,13 @@ import type {
   SubtitleOutputFormat,
   SubtitleSourceFormat,
 } from "@animetvcut/subtitles";
+import type { HlsResourceKind } from "@animetvcut/hls";
 
 import type { LazyMediaResource } from "./hls-source-loader.js";
 
 export interface SessionResource extends LazyMediaResource {
   id: string;
+  kind: HlsResourceKind;
 }
 
 export interface SessionSubtitleSource {

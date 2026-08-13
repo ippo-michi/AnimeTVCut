@@ -38,6 +38,18 @@ function mediaFlowPlaylist(
   ].join("\n");
 }
 
+function mediaFlowMpegTsPlaylist(): string {
+  return [
+    "#EXTM3U",
+    "#EXT-X-VERSION:3",
+    "#EXT-X-TARGETDURATION:6",
+    "#EXTINF:6.000000,",
+    "/proxy/transcode/segment.ts?id=1",
+    "#EXT-X-ENDLIST",
+    "",
+  ].join("\n");
+}
+
 function fetchMock(
   implementation: (
     input: URL | RequestInfo,
@@ -64,6 +76,49 @@ describe("MediaFlow client", () => {
     );
     expect(url.searchParams.get("h_X-Test-Token")).toBe("animetvcut-test");
     expect(url.searchParams.has("skip")).toBe(false);
+  });
+
+  it("requests and validates the seekable MPEG-TS passthrough mode", async () => {
+    const mock = fetchMock(async (input) => {
+      const url = new URL(input.toString());
+      expect(url.searchParams.get("atc_container")).toBe("mpegts");
+      return new Response(mediaFlowMpegTsPlaylist());
+    });
+    const client = new MediaFlowClient(
+      { baseUrl: "http://mediaflow:8888", outputContainer: "mpegts" },
+      mock,
+    );
+    const playlist = await client.loadTranscodePlaylist(source);
+    expect(playlist.segments[0]).toMatchObject({
+      mediaFormat: "mpegts",
+      contentType: "video/mp2t",
+    });
+    expect(playlist.segments[0]).not.toHaveProperty("map");
+  });
+
+  it("places MPEG-TS timestamps on the virtual output timeline lazily", async () => {
+    const mock = fetchMock(async (input) => {
+      const url = new URL(input.toString());
+      expect(url.searchParams.get("atc_output_start_ms")).toBe("12345");
+      return new Response(new Uint8Array([1]));
+    });
+    const client = new MediaFlowClient(
+      { baseUrl: "http://mediaflow:8888", outputContainer: "mpegts" },
+      mock,
+    );
+    const lazy = client.createLazyResource({
+      id: "r1.ts",
+      sourceEpisodeId: "ep2",
+      absoluteUri: "http://mediaflow:8888/proxy/transcode/segment.ts?id=1",
+      kind: "segment",
+      mediaFormat: "mpegts",
+      contentType: "video/mp2t",
+      sourceStart: 300,
+      outputStart: 12.345,
+    });
+    expect(mock).not.toHaveBeenCalled();
+    await lazy.open();
+    expect(mock).toHaveBeenCalledOnce();
   });
 
   it("redacts all sensitive query parameters", () => {
@@ -242,5 +297,40 @@ describe("MediaFlow client", () => {
     const opening = lazy.open(undefined, controller.signal);
     controller.abort();
     await expect(opening).rejects.toThrow(MediaFlowUnavailableError);
+  });
+
+  it("does not truncate an opened resource while a slow player consumes it", async () => {
+    const mock = fetchMock(async (_input, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          setTimeout(() => {
+            if (init?.signal?.aborted === true) {
+              controller.error(new Error("absolute timeout truncated body"));
+              return;
+            }
+            controller.enqueue(new Uint8Array([1, 2, 3]));
+            controller.close();
+          }, 25);
+        },
+      });
+      return new Response(body);
+    });
+    const client = new MediaFlowClient(
+      { baseUrl: "http://mediaflow:8888", requestTimeoutMs: 5 },
+      mock,
+    );
+    const opened = await client
+      .createLazyResource({
+        id: "r1.m4s",
+        sourceEpisodeId: "ep1",
+        absoluteUri: "http://mediaflow:8888/proxy/transcode/segment.m4s?id=1",
+        kind: "segment",
+        mediaFormat: "fmp4",
+        contentType: "video/mp4",
+      })
+      .open();
+    const chunks: Buffer[] = [];
+    for await (const chunk of opened.stream) chunks.push(chunk as Buffer);
+    expect(Buffer.concat(chunks)).toEqual(Buffer.from([1, 2, 3]));
   });
 });

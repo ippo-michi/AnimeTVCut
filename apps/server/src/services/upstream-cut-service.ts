@@ -16,6 +16,11 @@ import type {
   DevCutResponse,
   PreparedInputSource,
 } from "./cut-service.js";
+import {
+  MediaFlowInvalidResponseError,
+  MediaFlowSourceError,
+  MediaFlowUnavailableError,
+} from "./mediaflow/errors.js";
 import { sanitizeSkipResolution, type SkipService } from "./skip-service.js";
 import { StremioUpstreamNotConfiguredError } from "./stremio-upstream/errors.js";
 import { sanitizeCandidateSelection } from "./stremio-upstream/resolver.js";
@@ -53,6 +58,7 @@ export interface AutomaticUpstreamCutRequest {
   chapterEpisodes?: readonly ChapterEpisodeInput[];
   maxMediaSegments?: number;
   maxManifestBytes?: number;
+  expectedEpisodeDurationSeconds?: number;
 }
 
 export interface LongAutomaticUpstreamCutRequest extends Omit<
@@ -70,6 +76,18 @@ export interface SanitizedSeasonFamily {
   season: number;
   method: "binge_group" | "filename_family";
   episodeCount: number;
+}
+
+class ImplausibleNormalizedDurationError extends Error {}
+
+export function isStructurallyPlausibleEpisodeDuration(
+  durationSeconds: number,
+): boolean {
+  return (
+    Number.isFinite(durationSeconds) &&
+    durationSeconds >= 60 &&
+    durationSeconds <= 12 * 60 * 60
+  );
 }
 
 export class UpstreamCutService {
@@ -132,10 +150,26 @@ export class UpstreamCutService {
     if (this.skipService === undefined) {
       throw new Error("Skip timestamp providers are not configured.");
     }
-    const selection = await this.resolver.resolve(request.episodes, {
-      allowMixedSources: request.allowMixedSources ?? false,
-    });
-    return this.createAutomaticCutFromSelection(request, selection);
+    const excludedCandidates = new Set<string>();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const selection = await this.resolver.resolve(request.episodes, {
+        allowMixedSources: request.allowMixedSources ?? false,
+        excludedCandidates,
+      });
+      try {
+        return await this.createAutomaticCutFromSelection(request, selection);
+      } catch (error) {
+        if (!this.isRetryableSourceFailure(error)) throw error;
+        lastError = error;
+        for (const episode of selection.episodes) {
+          excludedCandidates.add(
+            `${episode.episodeId}:${episode.upstreamRank}`,
+          );
+        }
+      }
+    }
+    throw lastError;
   }
 
   public async createLongAutomaticCut(
@@ -224,6 +258,10 @@ export class UpstreamCutService {
     }
     const prepared = await this.cutService.prepareSources(
       selection.episodes.map((episode) => episode.mediaSource),
+    );
+    this.validatePreparedDurations(
+      prepared,
+      request.expectedEpisodeDurationSeconds,
     );
     const preparedByEpisode = new Map(
       prepared.map((item) => [item.source.episodeId, item]),
@@ -321,5 +359,35 @@ export class UpstreamCutService {
       throw new Error(`Missing normalized source for ${reference.episodeId}.`);
     }
     return source.playlist.duration;
+  }
+
+  private validatePreparedDurations(
+    prepared: readonly PreparedInputSource[],
+    expectedSeconds?: number,
+  ): void {
+    if (
+      expectedSeconds === undefined ||
+      !Number.isFinite(expectedSeconds) ||
+      expectedSeconds <= 0
+    )
+      return;
+    const invalid = prepared.find(
+      ({ playlist }) =>
+        !isStructurallyPlausibleEpisodeDuration(playlist.duration),
+    );
+    if (invalid !== undefined) {
+      throw new ImplausibleNormalizedDurationError(
+        "Normalized episode duration is structurally implausible; refusing a broken cut.",
+      );
+    }
+  }
+
+  private isRetryableSourceFailure(error: unknown): boolean {
+    return (
+      error instanceof ImplausibleNormalizedDurationError ||
+      error instanceof MediaFlowUnavailableError ||
+      error instanceof MediaFlowInvalidResponseError ||
+      error instanceof MediaFlowSourceError
+    );
   }
 }

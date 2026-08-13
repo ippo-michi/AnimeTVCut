@@ -15,7 +15,10 @@ import type {
   EpisodeSourceResolver,
   UpstreamEpisodeReference,
 } from "../src/services/stremio-upstream/types.js";
-import { UpstreamCutService } from "../src/services/upstream-cut-service.js";
+import {
+  UpstreamCutService,
+  isStructurallyPlausibleEpisodeDuration,
+} from "../src/services/upstream-cut-service.js";
 
 function selection(episodeId: string): CandidateFamilySelection {
   return {
@@ -51,6 +54,15 @@ function selection(episodeId: string): CandidateFamilySelection {
 }
 
 describe("long-cut upstream orchestration", () => {
+  it("accepts a movie-length premiere without trusting uniform series runtime", () => {
+    expect(isStructurallyPlausibleEpisodeDuration(4_920)).toBe(true);
+    expect(isStructurallyPlausibleEpisodeDuration(1_440)).toBe(true);
+    expect(isStructurallyPlausibleEpisodeDuration(59)).toBe(false);
+    expect(isStructurallyPlausibleEpisodeDuration(12 * 60 * 60 + 1)).toBe(
+      false,
+    );
+  });
+
   it("bounds per-season selection and prepares every chosen playlist once", async () => {
     let active = 0;
     let maxActive = 0;

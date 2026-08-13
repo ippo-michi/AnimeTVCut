@@ -150,4 +150,5 @@ generate_mediaflow_control() {
 
 generate_mediaflow_control control-h264-aac.mp4 libx264 aac yuv420p
 generate_mediaflow_control control-h264-aac.mkv libx264 aac yuv420p
+generate_mediaflow_control control-h264-eac3.mkv libx264 eac3 yuv420p
 generate_mediaflow_control control-hevc-opus.mkv libx265 libopus yuv420p10le

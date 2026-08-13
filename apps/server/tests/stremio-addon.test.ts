@@ -20,7 +20,10 @@ import {
   NoUsableStreamsError,
   StremioUpstreamUnavailableError,
 } from "../src/services/stremio-upstream/errors.js";
-import type { UpstreamCutService } from "../src/services/upstream-cut-service.js";
+import type {
+  AutomaticUpstreamCutRequest,
+  UpstreamCutService,
+} from "../src/services/upstream-cut-service.js";
 
 const sourceId = "opaque:fixture:series/α";
 const manifest = {
@@ -56,7 +59,10 @@ function seriesMeta() {
   };
 }
 
-function metadataClient(onCatalogUrl?: (url: URL) => void) {
+function metadataClient(
+  onCatalogUrl?: (url: URL) => void,
+  sourceMeta: ReturnType<typeof seriesMeta> = seriesMeta(),
+) {
   return new MetadataStremioClient(
     {
       manifestUrl:
@@ -91,7 +97,7 @@ function metadataClient(onCatalogUrl?: (url: URL) => void) {
           }),
         );
       }
-      return new Response(JSON.stringify({ meta: seriesMeta() }));
+      return new Response(JSON.stringify({ meta: sourceMeta }));
     },
   );
 }
@@ -114,7 +120,7 @@ describe("public Stremio addon", () => {
     expect(manifestResponse.headers["access-control-allow-origin"]).toBe("*");
     expect(manifestResponse.json()).toMatchObject({
       id: "org.animetvcut.addon",
-      version: "0.1.1",
+      version: "0.2.0",
       types: ["series"],
       catalogs: [
         {
@@ -133,7 +139,53 @@ describe("public Stremio addon", () => {
     expect(health.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
-  it("terminates legacy output pagination without forwarding skip upstream", async () => {
+  it("publishes a clean v2 identity with explicit output pagination", async () => {
+    const app = createApp({ metadataClient: metadataClient() });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/manifest-v2.json",
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(response.headers["cache-control"]).toBe("no-store, max-age=0");
+    expect(response.json()).toMatchObject({
+      id: "org.animetvcut.addon.v2",
+      version: "0.2.0",
+      catalogs: [
+        {
+          id: "animetvcut-v2",
+          type: "series",
+          extra: [{ name: "search", isRequired: true }, { name: "skip" }],
+        },
+      ],
+    });
+
+    const catalog = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=Frieren&skip=0.json",
+    });
+    expect(catalog.statusCode).toBe(200);
+    expect(catalog.json().metas).toHaveLength(3);
+    expect(catalog.headers["cache-control"]).toBe("no-store, max-age=0");
+
+    const installableManifest = await app.inject({
+      method: "GET",
+      url: "/v2/manifest.json",
+    });
+    expect(installableManifest.statusCode).toBe(200);
+    expect(installableManifest.json()).toEqual(response.json());
+
+    const prefixedCatalog = await app.inject({
+      method: "GET",
+      url: "/v2/catalog/series/animetvcut-v2/search=Frieren&skip=0.json",
+    });
+    expect(prefixedCatalog.statusCode).toBe(200);
+    expect(prefixedCatalog.json().metas).toHaveLength(3);
+  });
+
+  it("paginates expanded results without forwarding skip upstream", async () => {
     const catalogRequests: URL[] = [];
     const app = createApp({
       metadataClient: metadataClient((url) => catalogRequests.push(url)),
@@ -142,12 +194,27 @@ describe("public Stremio addon", () => {
 
     const response = await app.inject({
       method: "GET",
-      url: "/catalog/series/animetvcut/search=Frieren&skip=3.json",
+      url: "/catalog/series/animetvcut/search=Frieren&skip=1.json",
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ metas: [] });
-    expect(catalogRequests).toEqual([]);
+    expect(
+      response.json().metas.map((meta: { name: string }) => meta.name),
+    ).toEqual(["Synthetic Six — Season Cut", "Synthetic Six — Complete Cut"]);
+    expect(catalogRequests).toHaveLength(1);
+    expect(catalogRequests[0]!.pathname).not.toContain("skip=1");
     expect(response.body).not.toMatch(/Unrelated A|Unrelated B/);
+    expect(response.headers["cache-control"]).toBe("no-store, max-age=0");
+  });
+
+  it("returns the same search results after a prior selection", async () => {
+    const app = createApp({ metadataClient: metadataClient() });
+    apps.push(app);
+    const url = "/catalog/series/animetvcut/search=Frieren&skip=0.json";
+    const first = await app.inject({ method: "GET", url });
+    const second = await app.inject({ method: "GET", url });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    expect(second.json().metas).toHaveLength(3);
   });
 
   it.each(["-1", "NaN", "100000000000000000000"])(
@@ -231,6 +298,70 @@ describe("public Stremio addon", () => {
     ]);
   });
 
+  it("does not advertise season-zero shorts as the first TV Cut part", async () => {
+    const normal = seriesMeta();
+    const app = createApp({
+      metadataClient: metadataClient(undefined, {
+        ...normal,
+        videos: [
+          {
+            id: "opaque:special:1",
+            season: 0,
+            episode: 1,
+            title: "Mini Anime",
+            released: "2025-01-01T00:00:00Z",
+          },
+          ...normal.videos,
+        ],
+      }),
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/meta/series/${encodeURIComponent(createVirtualMetaId(sourceId))}.json`,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(
+      response
+        .json()
+        .meta.videos.map((video: { season: number }) => video.season),
+    ).toEqual([1, 1]);
+    expect(response.body).not.toContain("Mini Anime");
+  });
+
+  it("publishes stable three-episode parts for an eleven-episode season", async () => {
+    const source = seriesMeta();
+    const app = createApp({
+      metadataClient: metadataClient(undefined, {
+        ...source,
+        runtime: "27 min",
+        videos: Array.from({ length: 11 }, (_, index) => ({
+          id: `opaque:eleven:${index + 1}`,
+          season: 1,
+          episode: index + 1,
+          released: "2025-01-01T00:00:00Z",
+        })),
+      }),
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+    });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: `/meta/series/${encodeURIComponent(createVirtualMetaId(sourceId))}.json`,
+    });
+    expect(
+      response
+        .json()
+        .meta.videos.map((video: { title: string }) => video.title),
+    ).toEqual([
+      "Part 1 (Episodes 1–3)",
+      "Part 2 (Episodes 4–6)",
+      "Part 3 (Episodes 7–9)",
+      "Part 4 (Episodes 10–11)",
+    ]);
+  });
+
   it("does not expose metadata credentials in diagnostics", async () => {
     const app = createApp({ metadataClient: metadataClient() });
     apps.push(app);
@@ -298,6 +429,62 @@ describe("public TV Cut stream authorization and caching", () => {
         videoId: `opaque:exact:episode:${episode}`,
       })),
     );
+  });
+
+  it("uses an exact metadata MAL/Kitsu pair without leaking it across seasons", async () => {
+    const createAutomaticCut = vi.fn(async () => ({
+      cutId: `active-cut-${createAutomaticCut.mock.calls.length}`,
+      playlistUrl: `/media/cut/active-cut-${createAutomaticCut.mock.calls.length}/master.m3u8`,
+    }));
+    const source = {
+      ...seriesMeta(),
+      _malId: "52034",
+      _kitsuId: "46170",
+      videos: [
+        ...Array.from({ length: 3 }, (_, index) => ({
+          id: `kitsu:46170:${index + 1}`,
+          season: 1,
+          episode: index + 1,
+          released: "2025-01-01T00:00:00Z",
+        })),
+        ...Array.from({ length: 3 }, (_, index) => ({
+          id: `kitsu:47659:${index + 1}`,
+          season: 2,
+          episode: index + 1,
+          released: "2025-01-01T00:00:00Z",
+        })),
+      ],
+    } as ReturnType<typeof seriesMeta> & {
+      _malId: string;
+      _kitsuId: string;
+    };
+    const service = new TvCutCatalogService(
+      metadataClient(undefined, source),
+      { createAutomaticCut } as unknown as UpstreamCutService,
+      { isCutActive: () => true } as unknown as CutService,
+      new URL("https://public.animetvcut.test/"),
+      DEFAULT_TV_CUT_GROUPING_CONFIG,
+      () => Date.parse("2026-01-01T00:00:00Z"),
+    );
+    await service.publicStream(createVirtualVideoId(sourceId, 1, 1, 3));
+    await service.publicStream(createVirtualVideoId(sourceId, 2, 1, 3));
+    const firstRequest = createAutomaticCut.mock.calls[0]?.[0] as
+      AutomaticUpstreamCutRequest | undefined;
+    const secondRequest = createAutomaticCut.mock.calls[1]?.[0] as
+      AutomaticUpstreamCutRequest | undefined;
+    expect(
+      firstRequest?.episodes.map((episode) => episode.skipIdentity),
+    ).toEqual(
+      [1, 2, 3].map((episode) => ({
+        malAnimeId: 52_034,
+        malEpisode: episode,
+      })),
+    );
+    expect(
+      secondRequest?.episodes.every(
+        (episode) => episode.skipIdentity === undefined,
+      ),
+    ).toBe(true);
   });
 
   it("rejects a syntactically valid group absent from the current plan", async () => {

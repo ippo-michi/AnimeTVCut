@@ -187,6 +187,7 @@ export class CutService {
       const resolved = this.sourceLoader.createResource({ source, resource });
       resources.set(resource.id, {
         id: resource.id,
+        kind: resource.kind,
         ...resolved,
       });
     }

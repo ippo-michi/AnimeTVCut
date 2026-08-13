@@ -6,6 +6,7 @@ import type {
 } from "./models.js";
 
 const STRONG_OVERLAP_RATIO = 0.8;
+const CORROBORATED_OPEN_START_TOLERANCE_SECONDS = 15;
 
 function stronglyOverlaps(left: SkipSegment, right: SkipSegment): boolean {
   if (left.end === null || right.end === null || left.type !== right.type) {
@@ -26,12 +27,33 @@ export function reconcileSkipSegments(
   const priorities = new Map(
     providers.map((provider) => [provider.name, provider.priority]),
   );
-  const safe = results
-    .flatMap((result) => [...result.segments])
+  const reports = results.flatMap((result) => [...result.segments]);
+  const boundaryWarnings: string[] = [];
+  const safe = reports
     .filter(
       (segment): segment is SkipSegment & { end: number } =>
         segment.automaticRemoval && segment.end !== null,
     )
+    .map((segment) => {
+      const corroboratingStart = reports
+        .filter(
+          (candidate) =>
+            candidate.type === "ending" &&
+            candidate.type === segment.type &&
+            candidate.provider !== segment.provider &&
+            candidate.end === null &&
+            candidate.unsafeReason === "open_ended" &&
+            candidate.start < segment.start &&
+            segment.start - candidate.start <=
+              CORROBORATED_OPEN_START_TOLERANCE_SECONDS,
+        )
+        .sort((left, right) => right.start - left.start)[0];
+      if (corroboratingStart === undefined) return segment;
+      boundaryWarnings.push(
+        `Used a corroborating ${corroboratingStart.provider} ending start with the bounded ${segment.provider} ending range.`,
+      );
+      return { ...segment, start: corroboratingStart.start };
+    })
     .sort((left, right) => {
       const type = left.type.localeCompare(right.type);
       if (type !== 0) return type;
@@ -44,7 +66,7 @@ export function reconcileSkipSegments(
       return left.provider.localeCompare(right.provider);
     });
   const canonical: ReconciledSkipSegment[] = [];
-  const warnings: string[] = [];
+  const warnings: string[] = [...new Set(boundaryWarnings)];
   for (const segment of safe) {
     const matchingIndex = canonical.findIndex((existing) =>
       stronglyOverlaps(existing, segment),
@@ -74,8 +96,7 @@ export function reconcileSkipSegments(
     }
   }
 
-  const unsafe = results
-    .flatMap((result) => [...result.segments])
+  const unsafe = reports
     .filter((segment) => !segment.automaticRemoval || segment.end === null)
     .map((segment) => ({ ...segment }));
   return {

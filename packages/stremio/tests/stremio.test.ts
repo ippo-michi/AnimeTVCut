@@ -83,8 +83,15 @@ describe("generic Stremio metadata protocol", () => {
               type: "series",
               name: "Fixture",
               runtime: "24 min",
+              _malId: "52991",
+              _kitsuId: 7442,
               videos: [
-                { id: "opaque:episode:exact:1", season: 1, episode: 1 },
+                {
+                  id: "opaque:episode:exact:1",
+                  season: 1,
+                  episode: 1,
+                  runtime: "1h 22m",
+                },
                 { id: "bad", season: 1, episode: 0 },
               ],
             },
@@ -101,8 +108,15 @@ describe("generic Stremio metadata protocol", () => {
     );
     const meta = await client.getSeriesMeta("opaque:series/α");
     expect(meta.runtimeSeconds).toBe(1440);
+    expect(meta.malAnimeId).toBe(52_991);
+    expect(meta.kitsuAnimeId).toBe(7_442);
     expect(meta.videos).toEqual([
-      { id: "opaque:episode:exact:1", season: 1, episode: 1 },
+      {
+        id: "opaque:episode:exact:1",
+        season: 1,
+        episode: 1,
+        runtimeSeconds: 4_920,
+      },
     ]);
   });
 

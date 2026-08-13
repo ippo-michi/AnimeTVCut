@@ -37,5 +37,10 @@ describe("skip provider bootstrap configuration", () => {
     expect(() =>
       skipProvidersFromEnv({ ANISKIP_BASE_URL: "file:///tmp/provider" }),
     ).toThrow(/HTTP or HTTPS/);
+    expect(() =>
+      skipProvidersFromEnv({
+        ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS: "-1",
+      }),
+    ).toThrow(/tolerance must be non-negative/);
   });
 });

@@ -72,6 +72,16 @@ describe("skip identity", () => {
     ).toEqual({ mal: { animeId: 52_991, episode: 2 } });
     expect(deriveSkipLookupIdentity("tt1234567:1:2")).not.toHaveProperty("mal");
   });
+
+  it("accepts validated provider-only IMDb coordinates for opaque episode IDs", () => {
+    expect(
+      deriveSkipLookupIdentity("kitsu:7442:4", {
+        imdbId: "tt2560140",
+        imdbSeason: 1,
+        imdbEpisode: 4,
+      }),
+    ).toEqual({ imdb: { id: "tt2560140", season: 1, episode: 4 } });
+  });
 });
 
 describe("automatic cut policy", () => {

@@ -8,7 +8,6 @@ import type {
   UnsafeSkipReason,
 } from "./models.js";
 import {
-  DURATION_ROUNDING_TOLERANCE_SECONDS,
   isRecord,
   normalizedBoundedSegment,
   optionalFiniteNumber,
@@ -17,6 +16,7 @@ import {
 const DEFAULT_BASE_URL = "https://api.aniskip.com/v2";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_CACHE_TTL_MS = 6 * 60 * 60_000;
+const DEFAULT_DURATION_MISMATCH_TOLERANCE_SECONDS = 5;
 const MAXIMUM_RESPONSE_BYTES = 512 * 1024;
 const REQUEST_TYPES = ["op", "ed", "mixed-op", "mixed-ed", "recap"] as const;
 
@@ -72,7 +72,7 @@ export class AniSkipProvider implements SkipSegmentProvider {
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.durationTolerance =
       options.durationMismatchToleranceSeconds ??
-      DURATION_ROUNDING_TOLERANCE_SECONDS;
+      DEFAULT_DURATION_MISMATCH_TOLERANCE_SECONDS;
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1) {
       throw new Error("ANISKIP_REQUEST_TIMEOUT_MS must be a positive integer.");
