@@ -61,6 +61,9 @@ describe("long-cut upstream orchestration", () => {
     expect(isStructurallyPlausibleEpisodeDuration(12 * 60 * 60 + 1)).toBe(
       false,
     );
+    expect(isStructurallyPlausibleEpisodeDuration(120, 1_440)).toBe(false);
+    expect(isStructurallyPlausibleEpisodeDuration(360, 1_440)).toBe(true);
+    expect(isStructurallyPlausibleEpisodeDuration(4_920, 1_440)).toBe(true);
   });
 
   it("bounds per-season selection and prepares every chosen playlist once", async () => {

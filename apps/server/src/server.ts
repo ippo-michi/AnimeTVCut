@@ -22,7 +22,7 @@ const app = createApp({
     Number(process.env.CUT_SESSION_MAX_LIFETIME_SECONDS ?? "172800") * 1000,
   subtitles: subtitleConfigFromEnv(process.env),
   mediaPrefetchResources: Number.parseInt(
-    process.env.MEDIA_PREFETCH_RESOURCES ?? "1",
+    process.env.MEDIA_PREFETCH_RESOURCES ?? "3",
     10,
   ),
 });

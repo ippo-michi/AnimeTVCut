@@ -136,6 +136,7 @@ function usableCandidates(
 }
 
 interface NormalizationScore {
+  implausiblySmall: number;
   codec: number;
   audio: number;
   englishOnly: number;
@@ -175,6 +176,14 @@ function normalizationScore(candidate: UrlStreamCandidate): NormalizationScore {
       ? 2
       : 1;
   return {
+    // Tiny two-minute samples and placeholder files are not episode sources.
+    // Missing size metadata remains usable; only an explicit implausible size
+    // is penalized so standards-compliant addons need not provide videoSize.
+    implausiblySmall:
+      candidate.videoSize !== undefined &&
+      candidate.videoSize < 10 * 1024 * 1024
+        ? 1
+        : 0,
     // AVC Hi10/10-bit still requires transcoding. Check the incompatible
     // markers first so a filename containing both "AVC" and "Hi10" cannot
     // accidentally win the remux preference.
@@ -196,6 +205,7 @@ function compareScore(
   right: NormalizationScore,
 ): number {
   return (
+    left.implausiblySmall - right.implausiblySmall ||
     left.codec - right.codec ||
     left.audio - right.audio ||
     left.englishOnly - right.englishOnly ||
@@ -318,6 +328,8 @@ function completeFamily(
             (total, candidate) => {
               const score = normalizationScore(candidate);
               return {
+                implausiblySmall:
+                  total.implausiblySmall + score.implausiblySmall,
                 codec: total.codec + score.codec,
                 audio: total.audio + score.audio,
                 englishOnly: total.englishOnly + score.englishOnly,
@@ -329,6 +341,7 @@ function completeFamily(
               };
             },
             {
+              implausiblySmall: 0,
               codec: 0,
               audio: 0,
               englishOnly: 0,

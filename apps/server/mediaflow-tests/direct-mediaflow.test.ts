@@ -169,6 +169,35 @@ describe("direct MediaFlow seekable source normalization", () => {
     ).toBe(true);
   });
 
+  it("normalizes an MP4 source into seekable MPEG-TS", async () => {
+    const playlistUrl = transcodePlaylistUrl("control-h264-aac.mp4");
+    playlistUrl.searchParams.set("atc_container", "mpegts");
+    const result = await execFileAsync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-show_entries",
+        "stream=codec_name,codec_type:format=duration",
+        "-of",
+        "json",
+        playlistUrl.toString(),
+      ],
+      { timeout: 60_000 },
+    );
+    const probe = JSON.parse(result.stdout) as {
+      streams: Array<{ codec_name: string; codec_type: string }>;
+      format: { duration: string };
+    };
+    expect(probe.streams).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ codec_name: "h264", codec_type: "video" }),
+        expect.objectContaining({ codec_name: "aac", codec_type: "audio" }),
+      ]),
+    );
+    expect(Number(probe.format.duration)).toBeGreaterThan(17);
+  });
+
   it.each([
     ["AAC", "control-h264-aac.mkv", "aac"],
     ["E-AC-3", "control-h264-eac3.mkv", "eac3"],
@@ -209,6 +238,113 @@ describe("direct MediaFlow seekable source normalization", () => {
       expect(Math.max(...gaps.map(Math.abs))).toBeLessThan(0.001);
     },
   );
+
+  it.each([
+    ["AAC", "control-h264-aac.mkv"],
+    ["E-AC-3", "control-h264-eac3.mkv"],
+  ])(
+    "keeps the boundary H.264 GOP across %s MPEG-TS segment seams",
+    async (_label, fileName) => {
+      const playlistUrl = transcodePlaylistUrl(fileName, true);
+      playlistUrl.searchParams.set("atc_container", "mpegts");
+      const result = await execFileAsync(
+        "ffprobe",
+        [
+          "-v",
+          "error",
+          "-select_streams",
+          "v:0",
+          "-show_entries",
+          "stream=codec_name:packet=dts_time,duration_time,flags",
+          "-of",
+          "json",
+          playlistUrl.toString(),
+        ],
+        { timeout: 60_000 },
+      );
+      const probe = JSON.parse(result.stdout) as {
+        streams: Array<{ codec_name: string }>;
+        packets: Array<{
+          dts_time?: string;
+          duration_time: string;
+          flags: string;
+        }>;
+      };
+      expect(probe.streams[0]?.codec_name).toBe("h264");
+      const packets = probe.packets.filter(
+        (packet): packet is typeof packet & { dts_time: string } =>
+          packet.dts_time !== undefined,
+      );
+      expect(packets.length).toBeGreaterThan(100);
+      const gaps = packets.slice(1).map((packet, index) => {
+        const previous = packets[index]!;
+        return (
+          Number(packet.dts_time) -
+          (Number(previous.dts_time) + Number(previous.duration_time))
+        );
+      });
+      // One frame of rounding is acceptable. Missing a boundary GOP creates
+      // the visible 0.5-2 second freeze this regression guards against.
+      expect(Math.max(...gaps.map(Math.abs))).toBeLessThan(0.05);
+    },
+  );
+
+  it("keeps normalized FLAC audio timestamps continuous across seams", async () => {
+    const playlistUrl = transcodePlaylistUrl("control-h264-flac.mkv", true);
+    playlistUrl.searchParams.set("atc_container", "mpegts");
+    const result = await execFileAsync(
+      "ffprobe",
+      [
+        "-v",
+        "error",
+        "-select_streams",
+        "a:0",
+        "-show_entries",
+        "stream=codec_name:packet=pts_time,duration_time",
+        "-of",
+        "json",
+        playlistUrl.toString(),
+      ],
+      { timeout: 60_000 },
+    );
+    const probe = JSON.parse(result.stdout) as {
+      streams: Array<{ codec_name: string }>;
+      packets: Array<{ pts_time: string; duration_time: string }>;
+    };
+    expect(probe.streams[0]?.codec_name).toBe("aac");
+    const gaps = probe.packets.slice(1).map((packet, index) => {
+      const previous = probe.packets[index]!;
+      return (
+        Number(packet.pts_time) -
+        (Number(previous.pts_time) + Number(previous.duration_time))
+      );
+    });
+    expect(Math.max(...gaps.map(Math.abs))).toBeLessThan(0.001);
+  });
+
+  it("marks independent MPEG-TS continuity-counter resets", async () => {
+    const playlistUrl = transcodePlaylistUrl("control-h264-aac.mkv", true);
+    playlistUrl.searchParams.set("atc_container", "mpegts");
+    const result = await execFileAsync(
+      "ffmpeg",
+      [
+        "-v",
+        "warning",
+        "-i",
+        playlistUrl.toString(),
+        "-map",
+        "0:v:0",
+        "-map",
+        "0:a:0",
+        "-f",
+        "null",
+        "-",
+      ],
+      { timeout: 60_000 },
+    );
+    expect(result.stderr).not.toContain("Packet corrupt");
+    expect(result.stderr).not.toContain("corrupt input packet");
+  });
 
   it("opens and decodes the original MP4 independently of MediaFlow", async () => {
     const result = await execFileAsync(

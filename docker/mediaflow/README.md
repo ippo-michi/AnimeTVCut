@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc10` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc13` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
@@ -15,6 +15,12 @@ and its language metadata are retained. Incompatible audio is normalized to 48 k
 stereo AAC. Hi10/10-bit AVC, HEVC, AV1, and uncertain video layouts use the compatibility video-transcode path. Every independently generated
 segment is muxed onto its virtual AnimeTVCut output timestamp; the cache key includes
 that placement so cuts with different retained timelines cannot reuse stale timestamps.
+The MPEG-TS remux maps each already keyframe-aligned Matroska slice without
+output-side seeking, so reordered H.264 DTS cannot discard the boundary GOP.
+Audio packet ownership is kept continuous across those seams.
+Each independently generated transport stream marks its initial packets as a
+standards-compliant discontinuity so continuity-counter resets are not decoded
+as corrupt packets.
 The fMP4 path remains available for format/regression testing.
 
 All fallback HTTP sources use the original range-capable URL as a seekable PyAV/FFmpeg

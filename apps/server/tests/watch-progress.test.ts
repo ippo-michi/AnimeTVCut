@@ -145,7 +145,7 @@ describe("cut watch-progress tracking", () => {
   const apps: ReturnType<typeof Fastify>[] = [];
 
   afterEach(async () => {
-    await Promise.all(apps.splice(0).map(async (app) => app.close()));
+    for (const app of apps.splice(0)) await app.close();
   });
 
   async function trackedCut(

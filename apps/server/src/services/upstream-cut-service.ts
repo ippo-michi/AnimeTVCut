@@ -82,11 +82,16 @@ class ImplausibleNormalizedDurationError extends Error {}
 
 export function isStructurallyPlausibleEpisodeDuration(
   durationSeconds: number,
+  expectedSeconds?: number,
 ): boolean {
   return (
     Number.isFinite(durationSeconds) &&
     durationSeconds >= 60 &&
-    durationSeconds <= 12 * 60 * 60
+    durationSeconds <= 12 * 60 * 60 &&
+    (expectedSeconds === undefined ||
+      !Number.isFinite(expectedSeconds) ||
+      expectedSeconds <= 0 ||
+      durationSeconds >= expectedSeconds * 0.25)
   );
 }
 
@@ -373,7 +378,10 @@ export class UpstreamCutService {
       return;
     const invalid = prepared.find(
       ({ playlist }) =>
-        !isStructurallyPlausibleEpisodeDuration(playlist.duration),
+        !isStructurallyPlausibleEpisodeDuration(
+          playlist.duration,
+          expectedSeconds,
+        ),
     );
     if (invalid !== undefined) {
       throw new ImplausibleNormalizedDurationError(

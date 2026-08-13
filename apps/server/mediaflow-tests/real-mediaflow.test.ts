@@ -69,7 +69,10 @@ async function decodeWindow(start: number, seconds: number): Promise<void> {
     "pipe:1",
   ]);
   const frames = [...progress.matchAll(/^frame=(\d+)$/gm)].at(-1)?.[1];
-  expect(Number(frames ?? 0)).toBeGreaterThan(0);
+  expect(
+    Number(frames ?? 0),
+    `no video frames after seeking to ${start}s`,
+  ).toBeGreaterThan(0);
   expect(progress).toContain("progress=end");
 }
 

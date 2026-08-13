@@ -276,6 +276,40 @@ describe("cross-episode candidate family selection", () => {
     ]);
   });
 
+  it("does not select tiny sample files as full episodes", () => {
+    const selection = selectCandidateFamily(
+      [
+        set(1, [
+          url(0, {
+            bingeGroup: "sample",
+            filename: "Show.S01E01.480p.H264.AAC.Sample.mp4",
+            videoSize: 1_000_000,
+          }),
+          url(5, {
+            bingeGroup: "episode",
+            filename: "Show.S01E01.1080p.H264.AAC.Japanese.mkv",
+            videoSize: 800_000_000,
+          }),
+        ]),
+        set(2, [
+          url(0, {
+            bingeGroup: "sample",
+            filename: "Show.S01E02.480p.H264.AAC.Sample.mp4",
+            videoSize: 1_000_000,
+          }),
+          url(5, {
+            bingeGroup: "episode",
+            filename: "Show.S01E02.1080p.H264.AAC.Japanese.mkv",
+            videoSize: 800_000_000,
+          }),
+        ]),
+      ],
+      { preferMediaFlowCompatible: true },
+    );
+
+    expect(selection.familyKey).toBe("episode");
+  });
+
   it("does not mistake AVC Hi10 for a remux-compatible H.264 family", () => {
     const selection = selectCandidateFamily(
       [

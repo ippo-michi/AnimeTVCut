@@ -97,19 +97,22 @@
  from collections.abc import AsyncIterator
  from dataclasses import dataclass
  from typing import TYPE_CHECKING
-@@ -1181,3 +1183,237 @@
+@@ -1181,3 +1183,333 @@
              "content-length": str(len(seg_data)),
          },
      )
 +
 +
 +async def _mux_mpegts_segment(
-+    source: AsyncIterator[bytes],
++    source: AsyncIterator[bytes] | None,
 +    start_time_ms: float,
 +    end_time_ms: float,
 +    output_start_time_ms: float,
 +    copy_video: bool,
 +    copy_audio: bool,
++    input_format: str,
++    input_url: str | None,
++    input_options: dict[str, str] | None,
 +    audio_languages: list[str],
 +    preferred_audio: str,
 +) -> bytes:
@@ -128,25 +131,56 @@
 +        for index in range(len(audio_languages))
 +        if index not in preferred_indices
 +    ]
++    # When audio must be encoded, input 0 is the keyframe-bounded video
++    # slice and input 1 is a separately pre-seeked view of the same source.
++    # This gives the audio decoder packets preceding the boundary without
++    # admitting the previous video GOP into the segment.
++    audio_input_index = 1 if source is not None and input_url is not None else 0
 +    audio_map_args = (
-+        [item for index in audio_order for item in ("-map", f"0:a:{index}")]
++        [
++            item
++            for index in audio_order
++            for item in ("-map", f"{audio_input_index}:a:{index}")
++        ]
 +        if audio_order
-+        else ["-map", "0:a?"]
++        else ["-map", f"{audio_input_index}:a?"]
 +    )
 +    if copy_audio:
++        # The bounded Matroska slice already begins at the boundary keyframe.
++        # Do not apply an output-side seek: with reordered H.264 frames the
++        # keyframe DTS can precede its PTS, so even a guarded seek can discard
++        # the entire first GOP. Map original packet timestamps directly onto
++        # the virtual output timeline instead.
++        end_guard_ms = 250.0
 +        timing_args = [
-+            "-ss",
-+            f"{start_time_ms / 1000.0:.6f}",
-+            "-t",
-+            f"{(end_time_ms - start_time_ms) / 1000.0:.6f}",
++            "-to",
++            f"{(end_time_ms + end_guard_ms) / 1000.0:.6f}",
 +        ]
 +        audio_args = ["-c:a", "copy"]
-+        timestamp_offset = output_start_time_ms
++        timestamp_offset = output_start_time_ms - start_time_ms + 1.0
 +    else:
-+        timing_args = ["-to", f"{end_time_ms / 1000.0:.6f}"]
++        # Independently encoded segments must share one global AAC packet
++        # grid. The current keyframe cluster contains the audio packets that
++        # own this boundary; trimming on source timestamps prevents overlap.
++        aac_frame_ms = 1024.0 * 1000.0 / 48000.0
++        audio_start_ms = (
++            int((start_time_ms + aac_frame_ms - 0.000001) / aac_frame_ms)
++            * aac_frame_ms
++        )
++        audio_end_ms = (
++            int((end_time_ms + 0.000001) / aac_frame_ms)
++            * aac_frame_ms
++        )
++        timing_args = [
++            "-to",
++            f"{(end_time_ms + 250.0) / 1000.0:.6f}",
++        ]
 +        audio_args = [
 +            "-af",
-+            f"atrim=start={start_time_ms / 1000.0:.6f},asetpts=PTS+1024",
++            (
++                f"atrim=start={audio_start_ms / 1000.0:.6f}:"
++                f"end={audio_end_ms / 1000.0:.6f},asetpts=PTS+1024"
++            ),
 +            "-c:a",
 +            "aac",
 +            "-ar",
@@ -156,25 +190,50 @@
 +            "-b:a",
 +            "192k",
 +        ]
-+        timestamp_offset = output_start_time_ms - start_time_ms
++        timestamp_offset = output_start_time_ms - start_time_ms + 1.0
++    video_args = ["-c:v", "copy"]
++    if not copy_video:
++        video_args = [
++            "-c:v",
++            "libx264",
++            "-preset",
++            "veryfast",
++            "-force_key_frames",
++            "expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))",
++        ]
++    input_args = ["-f", input_format]
++    if source is not None:
++        input_args.extend(("-i", "pipe:0"))
++    if input_url is not None:
++        # MP4 chunk tables cannot describe an arbitrary partial-file pipe.
++        # Let FFmpeg seek MediaFlow's already validated internal HTTP source.
++        # An encoded-audio second input starts early to preserve decoder
++        # history; atrim still assigns frames to the exact segment interval.
++        input_seek_ms = (
++            start_time_ms
++            if source is None
++            else max(0.0, start_time_ms - 1000.0)
++        )
++        input_args.extend(
++            ("-noaccurate_seek", "-ss", f"{input_seek_ms / 1000.0:.6f}")
++        )
++        for option, value in (input_options or {}).items():
++            input_args.extend((f"-{option}", value))
++        input_args.extend(("-i", input_url))
 +    command = [
 +        "ffmpeg",
 +        "-hide_banner",
 +        "-loglevel",
 +        "error",
 +        "-nostdin",
-+        "-f",
-+        "matroska",
-+        "-i",
-+        "pipe:0",
++        *input_args,
 +        *timing_args,
 +        "-map",
 +        "0:v:0",
 +        *audio_map_args,
 +        "-sn",
 +        "-dn",
-+        "-c:v",
-+        "copy" if copy_video else "libx264",
++        *video_args,
 +        *audio_args,
 +        "-copyts",
 +        "-avoid_negative_ts",
@@ -184,7 +243,7 @@
 +        "-muxpreload",
 +        "0",
 +        "-mpegts_flags",
-+        "resend_headers",
++        "resend_headers+initial_discontinuity",
 +        "-output_ts_offset",
 +        f"{timestamp_offset / 1000.0:.6f}",
 +        "-f",
@@ -193,12 +252,18 @@
 +    ]
 +    process = await asyncio.create_subprocess_exec(
 +        *command,
-+        stdin=asyncio.subprocess.PIPE,
++        stdin=(
++            asyncio.subprocess.PIPE
++            if source is not None
++            else asyncio.subprocess.DEVNULL
++        ),
 +        stdout=asyncio.subprocess.PIPE,
 +        stderr=asyncio.subprocess.PIPE,
 +    )
 +
 +    async def feed() -> None:
++        if source is None:
++            return
 +        assert process.stdin is not None
 +        try:
 +            async for chunk in source:
@@ -280,7 +345,10 @@
 +    virtual_start_ms = (
 +        seg_info.start_ms if output_start_time_ms is None else output_start_time_ms
 +    )
-+    cache_key = f"{source.cache_key}:mpegts:{language}:{virtual_start_ms:.3f}"
++    # Version the derived bytes whenever mux timing changes. Redis may retain
++    # segments across container upgrades; serving an older first-GOP-trimmed
++    # segment would otherwise preserve the playback freeze after deployment.
++    cache_key = f"{source.cache_key}:mpegts-v13:{language}:{virtual_start_ms:.3f}"
 +    if is_redis_configured():
 +        cached = await hls_get_segment(cache_key, seg_info.index)
 +        if cached is not None:
@@ -294,12 +362,37 @@
 +                },
 +            )
 +
-+    source_gen = _build_segment_source(source, seg_info, probe)
 +    copy_video = _can_remux_hls_mkv(probe.cue_index)
 +    mpegts_copy_audio_codecs = _REMUX_SAFE_AAC_CODECS | {"A_AC3", "A_EAC3"}
 +    copy_audio = bool(audio_codec_ids) and all(
 +        codec_id in mpegts_copy_audio_codecs for codec_id in audio_codec_ids
 +    )
++    # Bound this input at the next keyframe cluster. The normal fMP4 path
++    # deliberately reads one cluster ahead, but MPEG-TS can retain audio
++    # packets that straddle the boundary without also admitting the next
++    # segment's video keyframe.
++    mux_seg_info = seg_info
++    if seg_info.index + 1 < len(boundaries):
++        byte_offset = seg_info.byte_offset
++        byte_end = boundaries[seg_info.index + 1].byte_offset
++        mux_seg_info = HLSSegmentInfo(
++            index=seg_info.index,
++            start_ms=seg_info.start_ms,
++            end_ms=seg_info.end_ms,
++            byte_offset=byte_offset,
++            byte_end=byte_end,
++        )
++    input_url: str | None = None
++    input_options: dict[str, str] | None = None
++    source_gen: AsyncIterator[bytes] | None
++    pyav_input = source.pyav_open_input()
++    if probe.mp4_index is not None:
++        input_url, input_options = pyav_input
++        source_gen = None
++    else:
++        source_gen = _build_segment_source(source, mux_seg_info, probe)
++        if not copy_audio and pyav_input is not None:
++            input_url, input_options = pyav_input
 +    label = segment_number if segment_number is not None else seg_info.index
 +    logger.info(
 +        "[hls_ts_segment] seg=%s mode=%s audio=%s tracks=all",
@@ -315,6 +408,9 @@
 +            virtual_start_ms,
 +            copy_video,
 +            copy_audio,
++            "mp4" if probe.mp4_index is not None else "matroska",
++            input_url,
++            input_options,
 +            audio_languages,
 +            language,
 +        )

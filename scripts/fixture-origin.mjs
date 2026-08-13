@@ -107,7 +107,7 @@ const server = createServer((request, response) => {
     return send(response, 503, "primary CDN unavailable");
   }
   const controlMatch =
-    /^\/(control-(?:h264-(?:aac\.(?:mp4|mkv)|eac3\.mkv)|hevc-opus\.mkv))$/.exec(
+    /^\/(control-(?:h264-(?:aac\.(?:mp4|mkv)|eac3\.mkv|flac\.mkv)|hevc-opus\.mkv))$/.exec(
       url.pathname,
     );
   const fileName =

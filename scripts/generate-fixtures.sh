@@ -86,8 +86,8 @@ generate_direct_episode() {
       "[0:v][1:a][2:v][3:a][4:v][5:a]concat=n=3:v=1:a=1[v][a]" \
     -map "[v]" -map "[a]" \
     -c:v libvpx-vp9 -deadline realtime -cpu-used 8 -b:v 400k \
-    -g 150 -keyint_min 150 \
-    -force_key_frames "expr:gte(t,n_forced*6)" \
+    -g 50 -keyint_min 50 \
+    -force_key_frames "expr:gte(t,n_forced*2)" \
     -c:a libopus -b:a 64k -ar 48000 \
     "${output_file}"
 }
@@ -120,16 +120,18 @@ generate_mediaflow_control() {
   local -a video_options=(
     -c:v "${video_codec}"
     -pix_fmt "${pixel_format}"
-    -g 150
-    -keyint_min 150
-    -force_key_frames "expr:gte(t,n_forced*6)"
+    -g 50
+    -keyint_min 50
+    -force_key_frames "expr:gte(t,n_forced*2)"
   )
   if [[ "${video_codec}" == "libx264" ]]; then
-    video_options+=( -preset ultrafast -sc_threshold 0 )
+    # Exercise reordered H.264 DTS/PTS at every remux boundary. Without
+    # B-frames, an output-side seek can drop a production GOP unnoticed.
+    video_options+=( -preset ultrafast -bf 3 -sc_threshold 0 )
   else
     video_options+=(
       -preset ultrafast
-      -x265-params "pools=1:frame-threads=1:keyint=150:min-keyint=150:scenecut=0"
+      -x265-params "pools=1:frame-threads=1:keyint=50:min-keyint=50:scenecut=0"
     )
   fi
 
@@ -151,4 +153,5 @@ generate_mediaflow_control() {
 generate_mediaflow_control control-h264-aac.mp4 libx264 aac yuv420p
 generate_mediaflow_control control-h264-aac.mkv libx264 aac yuv420p
 generate_mediaflow_control control-h264-eac3.mkv libx264 eac3 yuv420p
+generate_mediaflow_control control-h264-flac.mkv libx264 flac yuv420p
 generate_mediaflow_control control-hevc-opus.mkv libx265 libopus yuv420p10le
