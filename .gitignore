@@ -9,3 +9,4 @@ fixtures/hls/fmp4-episode*/
 fixtures/media/*.mkv
 fixtures/media/*.mp4
 !fixtures/media/.gitkeep
+.pnpm-store/
