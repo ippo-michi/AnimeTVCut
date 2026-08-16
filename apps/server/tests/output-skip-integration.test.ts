@@ -84,7 +84,7 @@ function reference(episodeId: string): UpstreamEpisodeReference {
 }
 
 describe("output skip metadata through a real automatic cut session", () => {
-  it("expands preserve-content alignment to cover full segments", async () => {
+  it("preserve_content alignment only removes fully-contained segments", async () => {
     const { sessions, service } = harness(() => [
       {
         type: "opening",
@@ -105,17 +105,17 @@ describe("output skip metadata through a real automatic cut session", () => {
       url: `/media/cut/${cut.cutId}/segments.json`,
     });
     expect(response.statusCode).toBe(200);
-    // Alignment expands removal(7,11) to cover full segment (6,12)
-    // Duration is 24s (30 - 6s removed segment)
+    // Opening [7, 11) is NOT fully contained in any segment (6 < 7, 12 > 11).
+    // preserve_content removes nothing. Duration stays 30s.
     expect(response.json()).toMatchObject({
       version: 1,
-      duration: 24,
+      duration: 30,
     });
     expect(response.body).not.toContain("secret-provider");
     await app.close();
   });
 
-  it("expands removal to cover full segments and removes entire episode", async () => {
+  it("preserve_content does not over-delete when removal straddles segments", async () => {
     const { sessions, service } = harness(() => [
       {
         type: "opening",
@@ -135,27 +135,41 @@ describe("output skip metadata through a real automatic cut session", () => {
       method: "GET",
       url: `/media/cut/${cut.cutId}/segments.json`,
     });
-    // Alignment expands removal(5,13) to cover full episode (0,30)
-    // The entire episode is removed, so segments array is empty
-    expect(publicResponse.json().segments).toEqual([]);
+    // Opening [5, 13) fully contains segment [6, 12).
+    // preserve_content removes only [6, 12), not [0, 18).
+    // Duration = 30 - 6 = 24s (not 0 — the episode is NOT completely deleted).
+    expect(publicResponse.json()).toMatchObject({
+      version: 1,
+      duration: 24,
+    });
+    // Must NOT be empty — the episode content is preserved.
+    expect(publicResponse.json().segments.length).toBeGreaterThan(0);
     const diagnostic = await app.inject({
       method: "GET",
       url: `/api/v1/dev/cuts/${cut.cutId}/segments`,
     });
-    expect(diagnostic.json()).toMatchObject({
+    const diagJson = diagnostic.json();
+    // The opening [5,13) only fully contains segment [6,12).
+    // Retained: [0,6) and [12,30). The diagnostic tracks the source→output mapping.
+    expect(diagJson).toMatchObject({
       sourceSegments: 1,
-      outputSegments: 0,
-      relationships: [
-        {
-          sourceIndex: 0,
-          sourceStart: 5,
-          sourceEnd: 13,
-          removalRequested: true,
-          retainedFragments: 0,
-          outputRanges: [],
-        },
-      ],
     });
+    const relationships = diagJson.relationships as Array<{
+      sourceIndex: number;
+      sourceStart: number;
+      sourceEnd: number;
+      removalRequested: boolean;
+      retainedFragments: number;
+    }>;
+    expect(relationships).toHaveLength(1);
+    expect(relationships[0]).toMatchObject({
+      sourceIndex: 0,
+      sourceStart: 5,
+      sourceEnd: 13,
+      removalRequested: true,
+    });
+    // Some content from the opening remains in output (partial overlap at boundaries)
+    expect(relationships[0].retainedFragments).toBeGreaterThan(0);
     await app.close();
   });
 
@@ -220,11 +234,24 @@ describe("output skip metadata through a real automatic cut session", () => {
       episodes: [reference("ep1")],
       cutPolicy: { removeRecaps: false },
     });
-    // With removeRecaps=false, the recap is kept but overlaps with opening
-    // The opening is removed, and the recap is kept as a diagnostic
+    // Opening [0, 12) fully contains [0, 6) and [6, 12). Applied = [0, 12).
+    // Recap [6, 18): removeRecaps=false → decision=keep. Not in removals.
+    // Ending and preview: unsafe → not attached.
+    // Only 2 diagnostics: opening (removed) and recap (kept).
     const segments = sessions.get(cut.cutId)?.outputSkipSegments ?? [];
-    expect(segments.length).toBeGreaterThanOrEqual(0);
     const diagnostics = sessions.get(cut.cutId)?.outputSkipDiagnostics ?? [];
-    expect(diagnostics.length).toBeGreaterThanOrEqual(0);
+    expect(diagnostics).toHaveLength(2);
+    const openingDiag = diagnostics.find(
+      (d: { type: string }) => d.type === "intro",
+    );
+    expect(openingDiag?.status).toBe("fully_removed");
+    const recapDiag = diagnostics.find(
+      (d: { type: string }) => d.type === "recap",
+    );
+    expect(recapDiag?.decision).toBe("keep");
+    expect(recapDiag?.status).toBe("mapped");
+    // Segments: only recap remains as a skip segment (opening is fully removed)
+    expect(segments).toHaveLength(1);
+    expect(segments[0]?.type).toBe("recap");
   });
 });

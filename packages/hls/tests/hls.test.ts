@@ -37,12 +37,13 @@ describe("HLS Phase 1 components", () => {
     );
   });
 
-  it("expands removal to cover full segment boundaries (preserve_content)", () => {
+  it("preserve_content only removes fully-contained segments", () => {
     const playlist = parseHlsVodPlaylist(
       playlistText,
       "fixture://episode1/playlist.m3u8",
     );
-    // Removal 7->11 is expanded to 6->12 to cover full segments
+    // Removal [7, 11) is NOT fully contained in any segment (6 < 7 and 12 > 11).
+    // No segments are removed.
     expect(
       alignRemovedRanges(playlist, [
         { episodeId: "ep1", start: 7, end: 11, type: "opening" },
@@ -52,6 +53,61 @@ describe("HLS Phase 1 components", () => {
         episodeId: "ep1",
         type: "opening",
         alignmentPolicy: "preserve_content",
+        status: "no_safe_segments",
+        reason: "no_complete_segments",
+        requestedStart: 7,
+        requestedEnd: 11,
+        appliedStart: null,
+        appliedEnd: null,
+        errorStart: null,
+        errorEnd: null,
+      },
+    ]);
+  });
+
+  it("preserve_content removes segments that fully contain the removal", () => {
+    const playlist = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode1/playlist.m3u8",
+    );
+    // Removal [6, 12) exactly matches segment [6, 12).
+    expect(
+      alignRemovedRanges(playlist, [
+        { episodeId: "ep1", start: 6, end: 12, type: "opening" },
+      ]),
+    ).toEqual([
+      {
+        episodeId: "ep1",
+        type: "opening",
+        alignmentPolicy: "preserve_content",
+        status: "applied",
+        requestedStart: 6,
+        requestedEnd: 12,
+        appliedStart: 6,
+        appliedEnd: 12,
+        errorStart: 0,
+        errorEnd: 0,
+      },
+    ]);
+  });
+
+  it("aggressive expands removal to cover all overlapping segments", () => {
+    const playlist = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode1/playlist.m3u8",
+    );
+    // Removal [7, 11) overlaps [6, 12). Aggressive expands to [6, 12).
+    expect(
+      alignRemovedRanges(
+        playlist,
+        [{ episodeId: "ep1", start: 7, end: 11, type: "opening" }],
+        { policy: "aggressive" },
+      ),
+    ).toEqual([
+      {
+        episodeId: "ep1",
+        type: "opening",
+        alignmentPolicy: "aggressive",
         status: "applied",
         requestedStart: 7,
         requestedEnd: 11,

@@ -103,9 +103,11 @@ describe("server foundation and source security", () => {
     });
   });
 
-  it("expands removal to cover full segments by default", async () => {
+  it("preserve_content only removes fully-contained segments", async () => {
     const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
     apps.push(app);
+    // Removal [7, 11) is NOT fully contained in any segment (6 < 7, 12 > 11).
+    // No segments removed. Duration stays 30s.
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/dev/cuts",
@@ -115,8 +117,33 @@ describe("server foundation and source security", () => {
       },
     });
     expect(response.statusCode).toBe(200);
-    // Alignment expands removal(7,11) to cover full segment (6,12)
-    // Retained: 0-6 and 12-30 = 24s
+    expect(response.json()).toMatchObject({
+      duration: 30,
+      pieces: [{ sourceStart: 0, sourceEnd: 30 }],
+      appliedCuts: [
+        {
+          alignmentPolicy: "preserve_content",
+          status: "no_safe_segments",
+          reason: "no_complete_segments",
+        },
+      ],
+    });
+  });
+
+  it("preserves content when removal aligns with segment boundaries", async () => {
+    const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
+    apps.push(app);
+    // Removal [6, 12) exactly matches segment [6, 12).
+    // Fully contained. Removed. Duration = 30 - 6 = 24s.
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
+        remove: [{ episodeId: "ep1", start: 6, end: 12, type: "opening" }],
+      },
+    });
+    expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       duration: 24,
       pieces: [
@@ -134,16 +161,33 @@ describe("server foundation and source security", () => {
     });
   });
 
-  it("accepts expansion-friendly removals even with strict alignment", async () => {
+  it("strict alignment rejects removals with no fully-contained segments", async () => {
     const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
     apps.push(app);
-    // removal(7,11) expands to (6,12) which is valid
+    // removal(7,11) has no fully-contained segments → no_safe_segments
+    // strictAlignment throws on no_safe_segments
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/dev/cuts",
       payload: {
         sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
         remove: [{ episodeId: "ep1", start: 7, end: 11, type: "opening" }],
+        strictAlignment: true,
+      },
+    });
+    expect(response.statusCode).toBe(400);
+  });
+
+  it("strict alignment accepts removals that align with segments", async () => {
+    const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
+    apps.push(app);
+    // removal(6,12) exactly matches segment [6,12) → fully contained → applied
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
+        remove: [{ episodeId: "ep1", start: 6, end: 12, type: "opening" }],
         strictAlignment: true,
       },
     });

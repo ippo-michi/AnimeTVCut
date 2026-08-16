@@ -32,6 +32,55 @@ function ceilBoundary(boundaries: readonly number[], value: number): number {
   return result;
 }
 
+/**
+ * Remove only segments fully contained within the removal range.
+ * This is the "preserve_content" strategy: it minimizes over-deletion
+ * of neighboring content by never consuming segments that only partially
+ * overlap the requested removal range.
+ *
+ * Trade-off: if the removal range does not align with segment boundaries,
+ * partial content at the boundaries may remain in the output.
+ */
+function removeFullyContainedSegments(
+  playlist: HlsVodPlaylist,
+  start: number,
+  end: number,
+): { appliedStart: number | null; appliedEnd: number | null } {
+  const segments = playlist.segments;
+  let appliedStart: number | null = null;
+  let appliedEnd: number | null = null;
+
+  for (const segment of segments) {
+    // Only remove segments fully contained within [start, end]
+    if (segment.start >= start - EPSILON && segment.end <= end + EPSILON) {
+      if (appliedStart === null || segment.start < appliedStart) {
+        appliedStart = segment.start;
+      }
+      if (appliedEnd === null || segment.end > appliedEnd) {
+        appliedEnd = segment.end;
+      }
+    }
+  }
+
+  return { appliedStart, appliedEnd };
+}
+
+/**
+ * Expand the removal to cover all segments that overlap the requested range.
+ * This is the "aggressive" strategy: it guarantees no media from [start, end]
+ * remains in the output, but may remove additional content beyond the
+ * requested range when segments do not align with the boundaries.
+ */
+function expandToOverlappingSegments(
+  boundaries: readonly number[],
+  start: number,
+  end: number,
+): { appliedStart: number; appliedEnd: number } {
+  const appliedStart = floorBoundary(boundaries, start);
+  const appliedEnd = ceilBoundary(boundaries, end);
+  return { appliedStart, appliedEnd };
+}
+
 export function alignRemovedRanges(
   playlist: HlsVodPlaylist,
   removals: readonly RemovedRange[],
@@ -63,21 +112,36 @@ export function alignRemovedRanges(
   }
 
   const applied = sorted.map((removal): AppliedCut => {
-    // For removals, we always want the applied range to COVER the requested range.
-    // floorBoundary for start: expand removal to include earlier segment
-    // ceilBoundary for end: expand removal to include later segment
-    // This ensures appliedStart <= requestedStart and appliedEnd >= requestedEnd
-    // Both policies expand removals; the difference is in edge case handling.
-    const appliedStart =
-      policy === "preserve_content"
-        ? floorBoundary(boundaries, removal.start)
-        : floorBoundary(boundaries, removal.start);
-    const appliedEnd =
-      policy === "preserve_content"
-        ? ceilBoundary(boundaries, removal.end)
-        : ceilBoundary(boundaries, removal.end);
+    let appliedStart: number | null;
+    let appliedEnd: number | null;
 
-    if (appliedStart >= appliedEnd - EPSILON) {
+    if (policy === "preserve_content") {
+      // Only remove segments fully contained within the removal range.
+      // Never consumes segments that only partially overlap.
+      const contained = removeFullyContainedSegments(
+        playlist,
+        removal.start,
+        removal.end,
+      );
+      appliedStart = contained.appliedStart;
+      appliedEnd = contained.appliedEnd;
+    } else {
+      // Aggressive: expand to cover all overlapping segments.
+      // Guarantees complete removal but may over-delete.
+      const expanded = expandToOverlappingSegments(
+        boundaries,
+        removal.start,
+        removal.end,
+      );
+      appliedStart = expanded.appliedStart;
+      appliedEnd = expanded.appliedEnd;
+    }
+
+    if (
+      appliedStart === null ||
+      appliedEnd === null ||
+      appliedStart >= appliedEnd - EPSILON
+    ) {
       if (options.strict === true) {
         throw new DomainValidationError(
           `No complete HLS segment can be safely removed for ${removal.episodeId} ${removal.start}-${removal.end}`,
