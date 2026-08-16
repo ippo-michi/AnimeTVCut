@@ -81,7 +81,7 @@ describe("AniSkip provider", () => {
     ]);
   });
 
-  it("validates timestamps against actual media duration via normalizedBoundedSegment", async () => {
+  it("keeps exact timestamps without scaling when episode length differs", async () => {
     const provider = new AniSkipProvider({
       cacheTtlMs: 0,
       fetchImplementation: jsonFetch({
@@ -96,10 +96,10 @@ describe("AniSkip provider", () => {
       }),
     });
     const result = await provider.getSegments(request);
-    // Episode length 40 differs from 30.008 by >20%, so timestamps are scaled: 6 * (30.008/40) ≈ 4.5
+    // Timestamps remain exact: 0→6, validated against actual duration=30.008
     expect(result.segments[0]).toMatchObject({
       start: 0,
-      end: expect.closeTo(4.5012, 0.001),
+      end: 6,
       automaticRemoval: true,
     });
   });
@@ -145,11 +145,11 @@ describe("AniSkip provider", () => {
       }),
     });
     const result = await provider.getSegments(request);
-    // With 30s tolerance, end=40 is within 30.008 + 30 = 60.008, so it's valid (clamped to duration)
+    // Tolerance is 0.5s: end=40 > 30.008 + 0.5 = 30.508 → outside_duration
     expect(result.segments.map((item) => item.unsafeReason)).toEqual([
       "outside_duration",
       "invalid_range",
-      undefined,
+      "outside_duration",
     ]);
     expect(result.warnings).toHaveLength(2);
   });

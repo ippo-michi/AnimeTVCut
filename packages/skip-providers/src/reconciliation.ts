@@ -56,12 +56,18 @@ export function reconcileSkipSegments(
     (segment): segment is SkipSegment & { end: number } =>
       segment.automaticRemoval && segment.end !== null,
   );
+  const boundedUnsafe = reports.filter(
+    (segment): segment is SkipSegment & { end: number } =>
+      !segment.automaticRemoval && segment.end !== null,
+  );
   const openEndedSegments = reports.filter((segment) => segment.end === null);
 
   const estimatedStarts = new Set<string>();
   const estimatedSegments: (SkipSegment & { end: number })[] = [];
   for (const segment of openEndedSegments) {
     if (ESTIMATABLE_TYPES.has(segment.type)) {
+      // Low-confidence open-ended segments stay unsafe.
+      if (segment.unsafeReason === "low_confidence") continue;
       const estimated = estimateBoundedSegment(
         segment as SkipSegment & { end: null },
         durationSeconds,
@@ -83,6 +89,8 @@ export function reconcileSkipSegments(
   }
 
   const safeWithCorroboration = boundedSafe.map((segment) => {
+    // Corroborating start only applies to endings.
+    if (segment.type !== "ending") return segment;
     const corroboratingStart = openEndedSegments
       .filter(
         (candidate) =>
@@ -146,7 +154,11 @@ export function reconcileSkipSegments(
     .map((segment) => ({ ...segment }));
 
   return {
-    segments: [...canonical, ...unsafe].sort((left, right) => {
+    segments: [
+      ...canonical,
+      ...boundedUnsafe.map((segment) => ({ ...segment })),
+      ...unsafe,
+    ].sort((left, right) => {
       if (left.start !== right.start) return left.start - right.start;
       return left.type.localeCompare(right.type);
     }),

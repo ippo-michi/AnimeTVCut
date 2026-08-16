@@ -171,22 +171,11 @@ export class AniSkipProvider implements SkipSegmentProvider {
       const sourceType =
         typeof entry.skipType === "string" ? entry.skipType : "";
       const type = mappedType(sourceType);
-      const reportedDuration = optionalFiniteNumber(entry.episodeLength);
-      let start = optionalFiniteNumber(entry.interval.startTime);
-      let end = optionalFiniteNumber(entry.interval.endTime);
+      const start = optionalFiniteNumber(entry.interval.startTime);
+      const end = optionalFiniteNumber(entry.interval.endTime);
       if (type === undefined || start === undefined || end === undefined) {
         warnings.push("AniSkip ignored a malformed or unknown interval.");
         continue;
-      }
-      // Scale timestamps when AniSkip episode length differs significantly
-      if (
-        reportedDuration !== undefined &&
-        reportedDuration > 0 &&
-        Math.abs(reportedDuration - durationSeconds) > durationSeconds * 0.2
-      ) {
-        const scale = durationSeconds / reportedDuration;
-        start = start * scale;
-        end = end * scale;
       }
       let unsafeReason: UnsafeSkipReason | undefined;
       if (sourceType === "mixed-op" || sourceType === "mixed-ed") {

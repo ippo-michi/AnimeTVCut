@@ -204,6 +204,14 @@ export class TheIntroDbProvider implements SkipSegmentProvider {
         if (rawEnd === null) {
           // Emit open-ended diagnostics for intro, credits, and preview.
           // Recap is also emitted as open-ended (remains unsafe).
+          let unsafeReason: UnsafeSkipReason | undefined = "open_ended";
+          if (
+            this.minimumConfidence !== undefined &&
+            confidence !== undefined &&
+            confidence < this.minimumConfidence
+          ) {
+            unsafeReason = "low_confidence";
+          }
           segments.push({
             type,
             start: start / 1000,
@@ -211,7 +219,7 @@ export class TheIntroDbProvider implements SkipSegmentProvider {
             provider: this.name,
             sourceType,
             automaticRemoval: false,
-            unsafeReason: "open_ended",
+            unsafeReason,
             ...(confidence === undefined ? {} : { confidence }),
             ...(submissionCount === undefined ? {} : { submissionCount }),
           });

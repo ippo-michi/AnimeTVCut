@@ -124,15 +124,12 @@ describe("TheIntroDB provider", () => {
       ...request,
       durationSeconds: 30,
     });
-    // With 30s tolerance, end=40 is within 30 + 30 = 60, so it's valid (clamped to duration)
-    // But minimumConfidence marks it as unsafe
+    // Tolerance is 0.5s: end=40 > 30 + 0.5 = 30.5 → outside_duration
     expect(result.segments.map((item) => item.unsafeReason)).toEqual([
       "low_confidence",
       "outside_duration",
-      undefined,
+      "outside_duration",
     ]);
-    // The clamped segment (start=29, end=30) is now automaticRemoval=true
-    // So we can't use every(!automaticRemoval) anymore
     expect(result.warnings).toHaveLength(1);
   });
 

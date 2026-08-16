@@ -4,7 +4,7 @@ import type {
   UnsafeSkipReason,
 } from "./models.js";
 
-export const DURATION_ROUNDING_TOLERANCE_SECONDS = 30;
+export const DURATION_ROUNDING_TOLERANCE_SECONDS = 0.5;
 
 export function normalizedBoundedSegment(input: {
   type: SkipSegmentType;
@@ -30,6 +30,10 @@ export function normalizedBoundedSegment(input: {
   }
   const normalizedEnd =
     unsafeReason === undefined && end > durationSeconds ? durationSeconds : end;
+  // After clamping, ensure start < end still holds.
+  if (unsafeReason === undefined && normalizedEnd <= start) {
+    unsafeReason = "invalid_range";
+  }
   return {
     type: input.type,
     start,

@@ -517,11 +517,21 @@ describe("regression tests A–L", () => {
         mockProvider("theintrodb", 20, async () => result("theintrodb", [])),
       ],
     );
-    const ending = reconciled.segments.find((s) => s.type === "ending");
-    expect(ending).toMatchObject({
+    const endings = reconciled.segments.filter((s) => s.type === "ending");
+    // Safe estimated ending is present
+    const safeEnding = endings.find((s) => s.automaticRemoval);
+    expect(safeEnding).toMatchObject({
       start: 1380,
       end: 1470,
       automaticRemoval: true,
+    });
+    // Bounded unsafe mixed-ed is retained as diagnostic
+    const unsafeEnding = endings.find((s) => !s.automaticRemoval);
+    expect(unsafeEnding).toMatchObject({
+      start: 1382,
+      end: 1478,
+      automaticRemoval: false,
+      unsafeReason: "mixed_content",
     });
   });
 
