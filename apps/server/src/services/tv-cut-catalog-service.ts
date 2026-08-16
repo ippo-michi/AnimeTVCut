@@ -620,12 +620,29 @@ export class TvCutCatalogService {
     if (scope.malAnimeId === undefined || scope.kitsuAnimeId === undefined)
       return undefined;
     const kitsu = /^kitsu:(\d+):(\d+)$/.exec(episode.id);
-    return kitsu?.[1] !== undefined &&
+    if (
+      kitsu?.[1] !== undefined &&
       kitsu[2] !== undefined &&
       Number(kitsu[1]) === scope.kitsuAnimeId &&
       Number(kitsu[2]) === episode.episode
-      ? scope.malAnimeId
-      : undefined;
+    ) {
+      return scope.malAnimeId;
+    }
+    // IMDb-backed propagation: ttXXXXXXX:season:episode
+    const validImdbSeries = /^tt\d{7,8}$/.test(scope.sourceSeriesId);
+    if (!validImdbSeries || scope.malAnimeId === undefined) return undefined;
+    const imdbEp = /^tt(\d{7,8}):(\d+):(\d+)$/.exec(episode.id);
+    if (
+      imdbEp?.[1] !== undefined &&
+      imdbEp[2] !== undefined &&
+      imdbEp[3] !== undefined &&
+      imdbEp[1] === scope.sourceSeriesId.slice(2) &&
+      Number(imdbEp[2]) === episode.season &&
+      Number(imdbEp[3]) === episode.episode
+    ) {
+      return scope.malAnimeId;
+    }
+    return undefined;
   }
 
   private sourceEpisodes(
