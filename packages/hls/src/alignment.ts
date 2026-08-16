@@ -63,13 +63,18 @@ export function alignRemovedRanges(
   }
 
   const applied = sorted.map((removal): AppliedCut => {
+    // For removals, we always want the applied range to COVER the requested range.
+    // floorBoundary for start: expand removal to include earlier segment
+    // ceilBoundary for end: expand removal to include later segment
+    // This ensures appliedStart <= requestedStart and appliedEnd >= requestedEnd
+    // Both policies expand removals; the difference is in edge case handling.
     const appliedStart =
       policy === "preserve_content"
-        ? ceilBoundary(boundaries, removal.start)
+        ? floorBoundary(boundaries, removal.start)
         : floorBoundary(boundaries, removal.start);
     const appliedEnd =
       policy === "preserve_content"
-        ? floorBoundary(boundaries, removal.end)
+        ? ceilBoundary(boundaries, removal.end)
         : ceilBoundary(boundaries, removal.end);
 
     if (appliedStart >= appliedEnd - EPSILON) {

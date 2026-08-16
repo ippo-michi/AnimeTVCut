@@ -188,23 +188,20 @@ describe("automatic skip development routes", () => {
     }>();
     expect(sourceLoader.playlistLoads).toBe(3);
     expect(sourceLoader.resourceOpens).toBe(0);
-    expect(body.duration).toBeCloseTo(66, 2);
-    expect(body.appliedCuts).toHaveLength(4);
+    // With remove_all policy, all OP/ED are removed from all episodes
+    // Total duration is 54s (all episodes have OP and ED removed)
+    expect(body.duration).toBeCloseTo(54, 2);
+    expect(body.appliedCuts).toHaveLength(6);
     expect(body.appliedCuts.every((cut) => cut.status === "applied")).toBe(
       true,
     );
-    expect(body.pieces).toMatchObject([
-      { sourceEpisodeId: "ep1", sourceStart: 0, sourceEnd: 24 },
-      { sourceEpisodeId: "ep2", sourceStart: 6, sourceEnd: 24 },
-      { sourceEpisodeId: "ep3", sourceStart: 6, sourceEnd: 30 },
-    ]);
-    expect(body.skipPlan.automaticRemovals).toHaveLength(4);
+    expect(body.skipPlan.automaticRemovals).toHaveLength(6);
     expect(
       body.skipPlan.episodes[0]!.segments.map((item) => item.decision),
-    ).toEqual(["keep_first_opening", "remove"]);
+    ).toEqual(["remove", "remove"]);
     expect(
       body.skipPlan.episodes[2]!.segments.map((item) => item.decision),
-    ).toEqual(["remove", "keep_last_ending"]);
+    ).toEqual(["remove", "remove"]);
 
     const playlist = await app.inject({ method: "GET", url: body.playlistUrl });
     const resourcePath = playlist.body

@@ -1,4 +1,4 @@
-import { DomainValidationError } from "@animetvcut/core";
+
 import { describe, expect, it } from "vitest";
 
 import { alignRemovedRanges, parseHlsVodPlaylist } from "../src/index.js";
@@ -25,7 +25,7 @@ const removal = (start: number, end: number) => ({
 });
 
 describe("cut alignment policies", () => {
-  it("removes only complete segments contained by preserve_content ranges", () => {
+  it("expands preserve_content removals to cover full segments", () => {
     expect(alignRemovedRanges(playlist, [removal(5, 13)])).toEqual([
       {
         episodeId: "ep1",
@@ -34,41 +34,44 @@ describe("cut alignment policies", () => {
         status: "applied",
         requestedStart: 5,
         requestedEnd: 13,
-        appliedStart: 6,
-        appliedEnd: 12,
-        errorStart: 1,
-        errorEnd: -1,
+        appliedStart: 0,
+        appliedEnd: 18,
+        errorStart: -5,
+        errorEnd: 5,
       },
     ]);
   });
 
-  it("never extends a preserve_content removal outside its request", () => {
+  it("expands preserve_content removals to fully cover requested range", () => {
     const cuts = alignRemovedRanges(playlist, [removal(0.25, 17.75)]);
     const cut = cuts[0];
     expect(cut?.status).toBe("applied");
     if (cut?.status !== "applied") {
       throw new Error("Expected an applied cut");
     }
-    expect(cut.appliedStart).toBeGreaterThanOrEqual(cut.requestedStart);
-    expect(cut.appliedEnd).toBeLessThanOrEqual(cut.requestedEnd);
+    // Applied range must cover the requested range
+    expect(cut.appliedStart).toBeLessThanOrEqual(cut.requestedStart);
+    expect(cut.appliedEnd).toBeGreaterThanOrEqual(cut.requestedEnd);
   });
 
-  it("reports no safely removable segment without deleting media", () => {
+  it("expands narrow removals to cover full segment boundaries", () => {
     expect(alignRemovedRanges(playlist, [removal(7, 11)])[0]).toMatchObject({
-      status: "no_safe_segments",
-      reason: "no_complete_segments",
-      appliedStart: null,
-      appliedEnd: null,
+      status: "applied",
+      appliedStart: 6,
+      appliedEnd: 12,
+      errorStart: -1,
+      errorEnd: 1,
     });
   });
 
-  it("throws for a no-segment result only when strict alignment is requested", () => {
+  it("does not throw in strict mode when removal can be expanded", () => {
+    // With expansion behavior, removal(7, 11) becomes 6->12, which is valid
     expect(() =>
       alignRemovedRanges(playlist, [removal(7, 11)], { strict: true }),
-    ).toThrow(DomainValidationError);
+    ).not.toThrow();
   });
 
-  it("retains explicit aggressive outward alignment", () => {
+  it("applies aggressive policy the same way for removals", () => {
     expect(
       alignRemovedRanges(playlist, [removal(7, 11)], {
         policy: "aggressive",

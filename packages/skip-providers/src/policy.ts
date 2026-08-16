@@ -8,8 +8,8 @@ import type {
 } from "./models.js";
 
 export const DEFAULT_AUTOMATIC_CUT_POLICY: AutomaticCutPolicy = {
-  openings: "first_only",
-  endings: "last_only",
+  openings: "remove_all",
+  endings: "remove_all",
   removeRecaps: true,
   removePreviews: true,
 };

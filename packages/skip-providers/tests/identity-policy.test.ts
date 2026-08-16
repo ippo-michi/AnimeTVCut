@@ -101,7 +101,7 @@ describe("automatic cut policy", () => {
     ]),
   ];
 
-  it("keeps only the first episode opening and last episode ending", () => {
+  it("removes all openings, endings, recaps, and previews by default", () => {
     const plan = buildAutomaticCutPlan(episodes);
     expect(
       plan.episodes.map((item) =>
@@ -109,7 +109,7 @@ describe("automatic cut policy", () => {
       ),
     ).toEqual([
       [
-        ["opening", "keep_first_opening"],
+        ["opening", "remove"],
         ["recap", "remove"],
         ["ending", "remove"],
         ["preview", "remove"],
@@ -121,7 +121,7 @@ describe("automatic cut policy", () => {
       [
         ["opening", "remove"],
         ["recap", "remove"],
-        ["ending", "keep_last_ending"],
+        ["ending", "remove"],
         ["preview", "remove"],
       ],
     ]);

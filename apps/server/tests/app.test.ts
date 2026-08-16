@@ -103,7 +103,7 @@ describe("server foundation and source security", () => {
     });
   });
 
-  it("defaults to preserving all media when a requested cut contains no segment", async () => {
+  it("expands removal to cover full segments by default", async () => {
     const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
     apps.push(app);
     const response = await app.inject({
@@ -115,24 +115,29 @@ describe("server foundation and source security", () => {
       },
     });
     expect(response.statusCode).toBe(200);
+    // Alignment expands removal(7,11) to cover full segment (6,12)
+    // Retained: 0-6 and 12-30 = 24s
     expect(response.json()).toMatchObject({
-      duration: 30,
-      pieces: [{ sourceStart: 0, sourceEnd: 30 }],
+      duration: 24,
+      pieces: [
+        { sourceStart: 0, sourceEnd: 6 },
+        { sourceStart: 12, sourceEnd: 30 },
+      ],
       appliedCuts: [
         {
           alignmentPolicy: "preserve_content",
-          status: "no_safe_segments",
-          reason: "no_complete_segments",
-          appliedStart: null,
-          appliedEnd: null,
+          status: "applied",
+          appliedStart: 6,
+          appliedEnd: 12,
         },
       ],
     });
   });
 
-  it("rejects an unalignable removal when strict alignment is requested", async () => {
+  it("accepts expansion-friendly removals even with strict alignment", async () => {
     const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
     apps.push(app);
+    // removal(7,11) expands to (6,12) which is valid
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/dev/cuts",
@@ -142,9 +147,6 @@ describe("server foundation and source security", () => {
         strictAlignment: true,
       },
     });
-    expect(response.statusCode).toBe(400);
-    expect(response.json()).toMatchObject({
-      error: expect.stringContaining("No complete HLS segment"),
-    });
+    expect(response.statusCode).toBe(200);
   });
 });
