@@ -62,7 +62,7 @@ export function reconcileSkipSegments(
   const estimatedSegments: (SkipSegment & { end: number })[] = [];
   for (const segment of openEndedSegments) {
     if (ESTIMATABLE_TYPES.has(segment.type)) {
-      const estimated = estimateBoundedSegment(segment, durationSeconds);
+      const estimated = estimateBoundedSegment(segment as SkipSegment & { end: null }, durationSeconds);
       if (estimated !== null) {
         const key = `${segment.provider}:${segment.type}:${segment.start}`;
         const alreadyExists = estimatedSegments.some(
