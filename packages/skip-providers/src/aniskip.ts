@@ -16,7 +16,6 @@ import {
 const DEFAULT_BASE_URL = "https://api.aniskip.com/v2";
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_CACHE_TTL_MS = 6 * 60 * 60_000;
-const DEFAULT_DURATION_MISMATCH_TOLERANCE_SECONDS = 5;
 const MAXIMUM_RESPONSE_BYTES = 512 * 1024;
 const REQUEST_TYPES = ["op", "ed", "mixed-op", "mixed-ed", "recap"] as const;
 
@@ -24,7 +23,6 @@ export interface AniSkipProviderOptions {
   baseUrl?: string | URL;
   requestTimeoutMs?: number;
   cacheTtlMs?: number;
-  durationMismatchToleranceSeconds?: number;
   fetchImplementation?: typeof fetch;
 }
 
@@ -62,7 +60,6 @@ export class AniSkipProvider implements SkipSegmentProvider {
   public readonly baseUrl: URL;
   private readonly timeoutMs: number;
   private readonly cacheTtlMs: number;
-  private readonly durationTolerance: number;
   private readonly fetchImplementation: typeof fetch;
   private readonly cache = new Map<string, CacheEntry>();
 
@@ -70,21 +67,12 @@ export class AniSkipProvider implements SkipSegmentProvider {
     this.baseUrl = validBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
     this.timeoutMs = options.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    this.durationTolerance =
-      options.durationMismatchToleranceSeconds ??
-      DEFAULT_DURATION_MISMATCH_TOLERANCE_SECONDS;
     this.fetchImplementation = options.fetchImplementation ?? fetch;
     if (!Number.isSafeInteger(this.timeoutMs) || this.timeoutMs < 1) {
       throw new Error("ANISKIP_REQUEST_TIMEOUT_MS must be a positive integer.");
     }
     if (!Number.isSafeInteger(this.cacheTtlMs) || this.cacheTtlMs < 0) {
       throw new Error("AniSkip cache TTL must be a non-negative integer.");
-    }
-    if (
-      !Number.isFinite(this.durationTolerance) ||
-      this.durationTolerance < 0
-    ) {
-      throw new Error("AniSkip duration tolerance must be non-negative.");
     }
   }
 
@@ -100,7 +88,7 @@ export class AniSkipProvider implements SkipSegmentProvider {
       this.baseUrl,
     );
     for (const type of REQUEST_TYPES) url.searchParams.append("types[]", type);
-    url.searchParams.set("episodeLength", String(request.durationSeconds));
+    url.searchParams.set("episodeLength", "0");
     return url;
   }
 
@@ -189,15 +177,9 @@ export class AniSkipProvider implements SkipSegmentProvider {
         warnings.push("AniSkip ignored a malformed or unknown interval.");
         continue;
       }
-      const reportedDuration = optionalFiniteNumber(entry.episodeLength);
       let unsafeReason: UnsafeSkipReason | undefined;
       if (sourceType === "mixed-op" || sourceType === "mixed-ed") {
         unsafeReason = "mixed_content";
-      } else if (
-        reportedDuration !== undefined &&
-        Math.abs(reportedDuration - durationSeconds) > this.durationTolerance
-      ) {
-        unsafeReason = "duration_mismatch";
       }
       segments.push(
         normalizedBoundedSegment({

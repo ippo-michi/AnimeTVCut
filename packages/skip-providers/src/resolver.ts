@@ -60,7 +60,11 @@ export class SkipSegmentResolver {
         }
       }),
     );
-    const reconciled = reconcileSkipSegments(results, this.providers);
+    const reconciled = reconcileSkipSegments(
+      results,
+      this.providers,
+      request.durationSeconds,
+    );
     return {
       episodeId: request.episodeId,
       identity: request.identity,

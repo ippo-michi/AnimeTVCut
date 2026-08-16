@@ -14,7 +14,7 @@ function jsonFetch(body: unknown, status = 200): typeof fetch {
 }
 
 describe("AniSkip provider", () => {
-  it("builds the v2 request with all conservative Phase 4 types", () => {
+  it("builds the v2 request with all conservative Phase 4 types and episodeLength=0", () => {
     const provider = new AniSkipProvider({ baseUrl: "https://ani.test/v2/" });
     const url = provider.buildLookupUrl(request);
     expect(url.origin + url.pathname).toBe(
@@ -27,7 +27,8 @@ describe("AniSkip provider", () => {
       "mixed-ed",
       "recap",
     ]);
-    expect(url.searchParams.get("episodeLength")).toBe("30.008");
+    // episodeLength=0 so AniSkip does not filter by its own duration store.
+    expect(url.searchParams.get("episodeLength")).toBe("0");
   });
 
   it("maps op, ed, and recap as safe automatic candidates", async () => {
@@ -80,10 +81,9 @@ describe("AniSkip provider", () => {
     ]);
   });
 
-  it("marks provider episode-length mismatch unsafe without scaling", async () => {
+  it("validates timestamps against actual media duration via normalizedBoundedSegment", async () => {
     const provider = new AniSkipProvider({
       cacheTtlMs: 0,
-      durationMismatchToleranceSeconds: 1,
       fetchImplementation: jsonFetch({
         found: true,
         results: [
@@ -95,11 +95,12 @@ describe("AniSkip provider", () => {
         ],
       }),
     });
-    expect((await provider.getSegments(request)).segments[0]).toMatchObject({
+    const result = await provider.getSegments(request);
+    // The interval 0-6 is valid for a 30s episode, so it should be safe.
+    expect(result.segments[0]).toMatchObject({
       start: 0,
       end: 6,
-      automaticRemoval: false,
-      unsafeReason: "duration_mismatch",
+      automaticRemoval: true,
     });
   });
 

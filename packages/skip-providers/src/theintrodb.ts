@@ -202,23 +202,19 @@ export class TheIntroDbProvider implements SkipSegmentProvider {
           continue;
         }
         if (rawEnd === null) {
-          if (sourceType === "credits" || sourceType === "preview") {
-            segments.push({
-              type,
-              start: start / 1000,
-              end: null,
-              provider: this.name,
-              sourceType,
-              automaticRemoval: false,
-              unsafeReason: "open_ended",
-              ...(confidence === undefined ? {} : { confidence }),
-              ...(submissionCount === undefined ? {} : { submissionCount }),
-            });
-          } else {
-            warnings.push(
-              `TheIntroDB ignored an open-ended ${sourceType} segment.`,
-            );
-          }
+          // Emit open-ended diagnostics for intro, credits, and preview.
+          // Recap is also emitted as open-ended (remains unsafe).
+          segments.push({
+            type,
+            start: start / 1000,
+            end: null,
+            provider: this.name,
+            sourceType,
+            automaticRemoval: false,
+            unsafeReason: "open_ended",
+            ...(confidence === undefined ? {} : { confidence }),
+            ...(submissionCount === undefined ? {} : { submissionCount }),
+          });
           continue;
         }
         const end = optionalFiniteNumber(rawEnd);
