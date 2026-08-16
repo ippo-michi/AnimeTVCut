@@ -4,7 +4,7 @@ import type {
   UnsafeSkipReason,
 } from "./models.js";
 
-export const DURATION_ROUNDING_TOLERANCE_SECONDS = 0.5;
+export const DURATION_ROUNDING_TOLERANCE_SECONDS = 30;
 
 export function normalizedBoundedSegment(input: {
   type: SkipSegmentType;

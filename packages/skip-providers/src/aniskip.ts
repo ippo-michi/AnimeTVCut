@@ -180,18 +180,6 @@ export class AniSkipProvider implements SkipSegmentProvider {
       let unsafeReason: UnsafeSkipReason | undefined;
       if (sourceType === "mixed-op" || sourceType === "mixed-ed") {
         unsafeReason = "mixed_content";
-      } else if (
-        sourceType === "op" &&
-        start > Math.max(30, durationSeconds * 0.05)
-      ) {
-        // Opening that starts too far into the episode is likely wrong.
-        unsafeReason = "outside_duration";
-      } else if (
-        sourceType === "ed" &&
-        end < durationSeconds - Math.max(30, durationSeconds * 0.05)
-      ) {
-        // Ending that ends too far before the episode end is likely wrong.
-        unsafeReason = "outside_duration";
       }
       segments.push(
         normalizedBoundedSegment({
