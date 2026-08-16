@@ -98,11 +98,9 @@ describe("full-skip end-to-end tests", () => {
         cutPolicy: { openings: "remove_all" },
       });
 
-      // Opening [0, 6) fully contains segment [0, 6). Removed.
-      // Duration = 30 - 6 = 24s.
+      // Opening [0, 6) → applied [0, 6) → duration = 24s.
       expect(cut.duration).toBe(24);
 
-      // Verify the opening is fully removed
       const diagnostics = sessions.get(cut.cutId)?.outputSkipDiagnostics ?? [];
       const openingDiag = diagnostics.find(
         (d: { type: string }) => d.type === "intro",
@@ -134,11 +132,10 @@ describe("full-skip end-to-end tests", () => {
         cutPolicy: { endings: "remove_all", removePreviews: true },
       });
 
-      // ED [24, 30) fully contains segment [24, 30). Preview [28, 30) is
-      // merged with ED. Duration = 30 - 6 = 24s.
+      // ED [24, 30) → applied [24, 30). Preview [28, 30) merged → applied [24, 30).
+      // Duration = 30 - 6 = 24s.
       expect(cut.duration).toBe(24);
 
-      // Both ED and preview should be fully removed
       const diagnostics = sessions.get(cut.cutId)?.outputSkipDiagnostics ?? [];
       const edDiag = diagnostics.find(
         (d: { type: string }) => d.type === "outro",
@@ -168,10 +165,6 @@ describe("full-skip end-to-end tests", () => {
         cutPolicy: { removePreviews: true },
       });
 
-      // Open-ended preview [27, null) is estimated. The estimated range
-      // overlaps with segment [24, 30) but doesn't fully contain it.
-      // preserve_content removes nothing for this case.
-      // The key assertion: the pipeline doesn't crash and produces a valid cut.
       expect(cut.duration).toBeGreaterThan(0);
     });
   });
@@ -195,37 +188,27 @@ describe("full-skip end-to-end tests", () => {
         },
       ]);
       const cut = await service.createAutomaticCut({
-        episodes: [
-          reference("ep1"),
-          reference("ep2"),
-          reference("ep3"),
-        ],
+        episodes: [reference("ep1"), reference("ep2"), reference("ep3")],
         cutPolicy: { openings: "remove_all", endings: "remove_all" },
       });
 
-      // Each episode: 30 - 6 (OP) - 6 (ED) = 18s
-      // Total: 18 * 3 = 54s
+      // Each episode: 30 - 6 (OP) - 6 (ED) = 18s. Total: 54s.
       expect(cut.duration).toBeCloseTo(54, 1);
 
-      // Verify first episode OP removed
       const firstEpApplied = cut.appliedCuts.filter(
         (c) => c.episodeId === "ep1" && c.type === "opening",
       );
       expect(firstEpApplied).toHaveLength(1);
       expect(firstEpApplied[0].status).toBe("applied");
 
-      // Verify last episode ED removed
       const lastEpApplied = cut.appliedCuts.filter(
         (c) => c.episodeId === "ep3" && c.type === "ending",
       );
       expect(lastEpApplied).toHaveLength(1);
       expect(lastEpApplied[0].status).toBe("applied");
 
-      // All episodes should have OP and ED removed
-      const allApplied = cut.appliedCuts.filter(
-        (c) => c.status === "applied",
-      );
-      expect(allApplied).toHaveLength(6); // 3 episodes × 2 (OP + ED)
+      const allApplied = cut.appliedCuts.filter((c) => c.status === "applied");
+      expect(allApplied).toHaveLength(6);
     });
   });
 });
@@ -246,20 +229,16 @@ describe("regression: over-cutting must not delete full episode", () => {
       cutPolicy: { openings: "remove_all" },
     });
 
-    // Episode duration is 30s. With the bug, it would be 0 (entire episode
-    // deleted). With the fix, only segment [6, 12) is removed → duration = 24s.
-    expect(cut.duration).toBeGreaterThan(20);
-    expect(cut.duration).toBeLessThan(30);
-
-    // Verify retained pieces are not empty
+    // Opening [5, 13) → applied [5, 13) → duration = 30 - 8 = 22s.
+    // NOT 0 (which would indicate entire episode deleted).
+    expect(cut.duration).toBe(22);
     expect(cut.pieces.length).toBeGreaterThan(0);
 
-    // The applied removal should only cover fully-contained segments
     const applied = cut.appliedCuts[0];
     expect(applied.status).toBe("applied");
-    // With preserve_content, only [6, 12) is removed
-    expect(applied.appliedStart).toBeGreaterThanOrEqual(6);
-    expect(applied.appliedEnd).toBeLessThanOrEqual(12);
+    // Applied range is exact
+    expect(applied.appliedStart).toBe(5);
+    expect(applied.appliedEnd).toBe(13);
   });
 
   it("preserves content immediately before and after requested skip", async () => {
@@ -277,15 +256,10 @@ describe("regression: over-cutting must not delete full episode", () => {
       cutPolicy: { openings: "remove_all" },
     });
 
-    // Retained content should include [0, 6) and [12, 30)
-    // (or at least some content before and after the removal)
     const sourceStarts = cut.pieces.map((p) => p.sourceStart);
     const sourceEnds = cut.pieces.map((p) => p.sourceEnd);
 
-    // Must have content starting at 0 (before the skip)
     expect(sourceStarts).toContain(0);
-
-    // Must have content ending at 30 (after the skip)
     expect(sourceEnds).toContain(30);
   });
 });

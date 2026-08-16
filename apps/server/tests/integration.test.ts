@@ -217,7 +217,7 @@ describe("three-episode local HLS composition", () => {
     const parsed = parseHlsVodPlaylist(playlistText, playlistUrl);
     expect(parsed.segments).toHaveLength(11);
     expect(playlistText).toContain("#EXT-X-ENDLIST");
-    expect(playlistText.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(2);
+    expect(playlistText.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(7);
     expect(playlistText).not.toContain("fixture://");
     expect(playlistText).not.toContain("episode1");
     expect(playlistText).not.toContain("seg00.ts");

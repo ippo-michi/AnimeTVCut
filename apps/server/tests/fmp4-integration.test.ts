@@ -104,7 +104,7 @@ describe("three-episode fMP4 HLS composition", () => {
     ];
     expect(parsed.segments).toHaveLength(11);
     expect(maps).toHaveLength(3);
-    expect(playlistText.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(2);
+    expect(playlistText.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(7);
     expect(playlistText).not.toContain("fixture://");
     expect(playlistText).not.toContain("init.mp4");
     expect(playlistText).not.toContain("seg00.m4s");

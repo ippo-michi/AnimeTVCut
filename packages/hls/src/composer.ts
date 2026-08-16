@@ -22,6 +22,9 @@ interface SelectedSegment {
   segment: HlsSegment;
   discontinuityBefore: boolean;
   outputStart: number;
+  /** Source time range this segment contributes to the output. */
+  retainedStart: number;
+  retainedEnd: number;
 }
 
 function mapKey(map: HlsMap): string {
@@ -49,37 +52,46 @@ export function composeHlsVod(
     if (playlist === undefined) {
       throw new Error(`Missing HLS source for ${piece.sourceEpisodeId}`);
     }
+
+    // Find all segments that overlap with this piece's retained range.
+    // Unlike the previous strict alignment, we now accept partial segments.
     const matching = playlist.segments.filter(
       (segment) =>
-        segment.start >= piece.sourceStart - EPSILON &&
-        segment.end <= piece.sourceEnd + EPSILON,
+        segment.start < piece.sourceEnd + EPSILON &&
+        segment.end > piece.sourceStart - EPSILON,
     );
-    const matchedDuration = matching.reduce(
-      (sum, segment) => sum + segment.duration,
-      0,
-    );
-    if (
-      Math.abs(matchedDuration - (piece.sourceEnd - piece.sourceStart)) >
-      EPSILON
-    ) {
+
+    if (matching.length === 0) {
       throw new Error(
-        `Timeline piece ${piece.id} is not aligned to complete HLS segments`,
+        `No HLS segments overlap with timeline piece ${piece.id} ` +
+          `[${piece.sourceStart}, ${piece.sourceEnd}]`,
       );
     }
 
-    for (const [index, segment] of matching.entries()) {
+    for (const segment of matching) {
+      // Calculate the retained portion of this segment.
+      const retainedStart = Math.max(segment.start, piece.sourceStart);
+      const retainedEnd = Math.min(segment.end, piece.sourceEnd);
+
+      if (retainedEnd <= retainedStart + EPSILON) {
+        continue;
+      }
+
       const sourceBoundary =
-        index === 0 &&
         previousPiece !== undefined &&
         (previousPiece.sourceEpisodeId !== piece.sourceEpisodeId ||
           Math.abs(previousPiece.sourceEnd - piece.sourceStart) > EPSILON);
+
       selected.push({
         sourceEpisodeId: piece.sourceEpisodeId,
         segment,
         discontinuityBefore: segment.discontinuityBefore || sourceBoundary,
         outputStart: outputCursor,
+        retainedStart,
+        retainedEnd,
       });
-      outputCursor += segment.duration;
+
+      outputCursor += retainedEnd - retainedStart;
     }
     previousPiece = piece;
   }
@@ -120,10 +132,13 @@ export function composeHlsVod(
     return id;
   };
 
-  const maxSegmentDuration = Math.max(
-    ...selected.map(({ segment }) => segment.duration),
+  // Calculate target duration from retained segment durations.
+  const maxRetainedDuration = Math.max(
+    ...selected.map(({ segment, retainedStart, retainedEnd }) =>
+      Math.min(segment.duration, retainedEnd - retainedStart),
+    ),
   );
-  const targetDuration = Math.ceil(maxSegmentDuration);
+  const targetDuration = Math.ceil(maxRetainedDuration);
   const allIndependent = sources.every(
     (source) => source.playlist.independentSegments,
   );
@@ -159,11 +174,12 @@ export function composeHlsVod(
       }
     }
     const segmentId = register(item.sourceEpisodeId, item.segment, "segment", {
-      sourceStart: item.segment.start,
+      sourceStart: item.retainedStart,
       outputStart: item.outputStart,
     });
+    const retainedDuration = item.retainedEnd - item.retainedStart;
     lines.push(
-      `#EXTINF:${formatDuration(item.segment.duration)},${item.segment.title}`,
+      `#EXTINF:${formatDuration(retainedDuration)},${item.segment.title}`,
       `/media/cut/${cutId}/segment/${segmentId}`,
     );
   }
@@ -172,7 +188,10 @@ export function composeHlsVod(
   return {
     text: lines.join("\n"),
     resources,
-    duration: selected.reduce((sum, item) => sum + item.segment.duration, 0),
+    duration: selected.reduce(
+      (sum, item) => sum + (item.retainedEnd - item.retainedStart),
+      0,
+    ),
     segmentCount: selected.length,
   };
 }
