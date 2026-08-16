@@ -96,10 +96,10 @@ describe("AniSkip provider", () => {
       }),
     });
     const result = await provider.getSegments(request);
-    // The interval 0-6 is valid for a 30s episode, so it should be safe.
+    // Episode length 40 differs from 30.008 by >20%, so timestamps are scaled: 6 * (30.008/40) ≈ 4.5
     expect(result.segments[0]).toMatchObject({
       start: 0,
-      end: 6,
+      end: expect.closeTo(4.5012, 0.001),
       automaticRemoval: true,
     });
   });
