@@ -148,16 +148,15 @@ describe("full-skip end-to-end tests", () => {
     });
   });
 
-  describe("CASE C — preview open-ended", () => {
-    it("handles open-ended preview at end of episode", async () => {
+  describe("CASE C — resolved preview to EOF", () => {
+    it("removes a resolved preview through the end of the episode", async () => {
       const { service } = harness(() => [
         {
           type: "preview",
           start: 27,
-          end: null,
+          end: 30,
           provider: "aniskip",
           automaticRemoval: true,
-          unsafeReason: "open_ended",
         },
       ]);
       const cut = await service.createAutomaticCut({
@@ -165,7 +164,8 @@ describe("full-skip end-to-end tests", () => {
         cutPolicy: { removePreviews: true },
       });
 
-      expect(cut.duration).toBeGreaterThan(0);
+      expect(cut.duration).toBe(27);
+      expect(cut.pieces.at(-1)?.sourceEnd).toBe(27);
     });
   });
 
@@ -181,7 +181,14 @@ describe("full-skip end-to-end tests", () => {
         },
         {
           type: "ending",
-          start: 24,
+          start: 22,
+          end: 27,
+          provider: "fixture",
+          automaticRemoval: true,
+        },
+        {
+          type: "preview",
+          start: 27,
           end: 30,
           provider: "fixture",
           automaticRemoval: true,
@@ -189,11 +196,15 @@ describe("full-skip end-to-end tests", () => {
       ]);
       const cut = await service.createAutomaticCut({
         episodes: [reference("ep1"), reference("ep2"), reference("ep3")],
-        cutPolicy: { openings: "remove_all", endings: "remove_all" },
+        cutPolicy: {
+          openings: "remove_all",
+          endings: "remove_all",
+          removePreviews: true,
+        },
       });
 
-      // Each episode: 30 - 6 (OP) - 6 (ED) = 18s. Total: 54s.
-      expect(cut.duration).toBeCloseTo(54, 1);
+      // Each episode retains [6,22): OP + ED + preview are gone.
+      expect(cut.duration).toBeCloseTo(48, 1);
 
       const firstEpApplied = cut.appliedCuts.filter(
         (c) => c.episodeId === "ep1" && c.type === "opening",
@@ -207,8 +218,13 @@ describe("full-skip end-to-end tests", () => {
       expect(lastEpApplied).toHaveLength(1);
       expect(lastEpApplied[0].status).toBe("applied");
 
-      const allApplied = cut.appliedCuts.filter((c) => c.status === "applied");
-      expect(allApplied).toHaveLength(6);
+      for (const episodeId of ["ep1", "ep2", "ep3"]) {
+        const retained = cut.pieces.filter(
+          (piece) => piece.sourceEpisodeId === episodeId,
+        );
+        expect(retained).toHaveLength(1);
+        expect(retained[0]).toMatchObject({ sourceStart: 6, sourceEnd: 22 });
+      }
     });
   });
 });

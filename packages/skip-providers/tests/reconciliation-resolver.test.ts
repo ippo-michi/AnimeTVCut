@@ -842,13 +842,6 @@ describe("additional regression tests A–Q", () => {
     getSegments,
   });
 
-  // ---- A: Real production IMDb -> MAL propagation ----
-  // Note: The full production path is tested in apps/server/tests/tv-cut-catalog.test.ts
-  // which exercises TvCutCatalogService.createPublicStream() with real episode IDs.
-  it("A: real production IMDb -> MAL propagation (covered in server tests)", () => {
-    expect(true).toBe(true);
-  });
-
   // ---- F: Provider priority reversed-input test ----
   it("F: provider priority reversed-input test", () => {
     const reconciled = reconcileSkipSegments(
@@ -1149,6 +1142,73 @@ describe("additional regression tests A–Q", () => {
       end: 1470,
       automaticRemoval: true,
     });
+  });
+
+  it("rejects an invalid corroborated ending start", () => {
+    const reconciled = reconcile(
+      [
+        result("theintrodb", [
+          {
+            type: "ending",
+            start: -5,
+            end: null,
+            provider: "theintrodb",
+            automaticRemoval: false,
+            unsafeReason: "open_ended",
+          },
+        ]),
+        result("aniskip", [bounded("ending", 5, 95, "aniskip")]),
+      ],
+      [
+        mockProvider("theintrodb", 20, async () => result("theintrodb", [])),
+        mockProvider("aniskip", 30, async () => result("aniskip", [])),
+      ],
+      100,
+    );
+    const safe = reconciled.segments.find(
+      (segment) => segment.provider === "aniskip" && segment.automaticRemoval,
+    );
+    expect(safe).toMatchObject({ start: 5, end: 95 });
+    expect(reconciled.warnings).not.toContain(
+      expect.stringMatching(/corroborating/),
+    );
+  });
+
+  it("retains a distinct diagnostic with the same provider type and start", () => {
+    const lowConfidence = {
+      type: "ending" as const,
+      start: 10,
+      end: null,
+      provider: "theintrodb",
+      automaticRemoval: false,
+      unsafeReason: "low_confidence" as const,
+    };
+    const reconciled = reconcile(
+      [
+        result("theintrodb", [
+          openEnded("ending", 10, "theintrodb"),
+          lowConfidence,
+        ]),
+      ],
+      [mockProvider("theintrodb", 20, async () => result("theintrodb", []))],
+      200,
+    );
+    expect(
+      reconciled.segments.some(
+        (segment) =>
+          segment.start === 10 &&
+          segment.end === 100 &&
+          segment.automaticRemoval,
+      ),
+    ).toBe(true);
+    expect(
+      reconciled.segments.some(
+        (segment) =>
+          segment.start === 10 &&
+          segment.end === null &&
+          segment.unsafeReason === "low_confidence",
+      ),
+    ).toBe(true);
   });
 
   // ---- Q: failed estimate retains original unsafe diagnostic ----

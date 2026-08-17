@@ -60,7 +60,6 @@ function estimateBoundedSegment(
   return null;
 }
 
-
 export function reconcileSkipSegments(
   results: readonly SkipProviderResult[],
   providers: readonly SkipSegmentProvider[],
@@ -82,7 +81,7 @@ export function reconcileSkipSegments(
   );
   const openEndedSegments = reports.filter((segment) => segment.end === null);
 
-  const estimatedStarts = new Set<string>();
+  const estimatedReports = new Set<SkipSegment>();
   const estimatedSegments: (SkipSegment & { end: number })[] = [];
   for (const segment of openEndedSegments) {
     if (ESTIMATABLE_TYPES.has(segment.type)) {
@@ -94,7 +93,6 @@ export function reconcileSkipSegments(
         durationSeconds,
       );
       if (estimated !== null) {
-        const key = `${segment.provider}:${segment.type}:${segment.start}`;
         const alreadyExists = estimatedSegments.some(
           (existing) =>
             existing.start === estimated.start &&
@@ -103,7 +101,7 @@ export function reconcileSkipSegments(
         );
         if (!alreadyExists) {
           estimatedSegments.push(estimated);
-          estimatedStarts.add(key);
+          estimatedReports.add(segment);
         }
       }
     }
@@ -137,10 +135,27 @@ export function reconcileSkipSegments(
       )
       .sort((left, right) => right.start - left.start)[0];
     if (corroboratingStart === undefined) return segment;
+    const corroborated = normalizedBoundedSegment({
+      type: segment.type,
+      start: corroboratingStart.start,
+      end: segment.end,
+      durationSeconds,
+      provider: segment.provider,
+      sourceType: segment.sourceType,
+      ...(segment.confidence === undefined
+        ? {}
+        : { confidence: segment.confidence }),
+      ...(segment.submissionCount === undefined
+        ? {}
+        : { submissionCount: segment.submissionCount }),
+    });
+    if (!corroborated.automaticRemoval || corroborated.end === null) {
+      return segment;
+    }
     warnings.push(
       `Used a corroborating ${corroboratingStart.provider} ${segment.type} start with the bounded ${segment.provider} ${segment.type} range.`,
     );
-    return { ...segment, start: corroboratingStart.start };
+    return { ...corroborated, end: corroborated.end };
   });
 
   // Sort estimated segments: priority first, then deterministic tie-breakers
@@ -192,13 +207,7 @@ export function reconcileSkipSegments(
   }
 
   const unsafe = openEndedSegments
-    .filter(
-      (segment) =>
-        !ESTIMATABLE_TYPES.has(segment.type) ||
-        !estimatedStarts.has(
-          `${segment.provider}:${segment.type}:${segment.start}`,
-        ),
-    )
+    .filter((segment) => !estimatedReports.has(segment))
     .map((segment) => ({ ...segment }));
 
   return {

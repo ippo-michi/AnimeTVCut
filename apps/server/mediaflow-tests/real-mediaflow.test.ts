@@ -14,6 +14,7 @@ const originStatsUrl =
   process.env.MEDIAFLOW_TEST_ORIGIN_STATS_URL ?? "http://127.0.0.1:18090";
 const password = "phase2-integration-password";
 const sourceToken = "animetvcut-test";
+const sourceRunId = `${process.pid}-${Date.now()}`;
 const app = createApp({
   mediaFlow: {
     baseUrl: mediaFlowUrl,
@@ -97,6 +98,11 @@ async function requestStats(): Promise<{
 }
 
 beforeAll(async () => {
+  const resetResponse = await fetch(`${originStatsUrl}/stats/reset`);
+  if (!resetResponse.ok) {
+    throw new Error(`Fixture-origin reset failed: ${resetResponse.status}`);
+  }
+
   await app.listen({ host: "127.0.0.1", port: 0 });
   const address = app.server.address();
   if (address === null || typeof address === "string") {
@@ -110,7 +116,7 @@ beforeAll(async () => {
       sources: [1, 2, 3].map((episode) => ({
         kind: "http_file",
         episodeId: `ep${episode}`,
-        url: `${originUrl}/redirect/episode${episode}.mkv`,
+        url: `${originUrl}/redirect/episode${episode}.mkv?run=${sourceRunId}`,
         headers: { "X-Test-Token": sourceToken },
       })),
       remove: [

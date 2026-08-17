@@ -28,7 +28,7 @@ diff --git a/mediaflow_proxy/remuxer/media_source.py b/mediaflow_proxy/remuxer/m
 +_http_resolution_locks: dict[str, asyncio.Lock] = {}
  
  # Extensions mapped to container format hints used by transcode_handler
-@@ -171,7 +177,20 @@ class HTTPMediaSource:
+@@ -171,7 +177,28 @@ class HTTPMediaSource:
      def __init__(self, url: str, headers: dict | None = None, file_size: int = 0) -> None:
 -        self._url = url
 -        self._resolved_url = url
@@ -36,11 +36,19 @@ diff --git a/mediaflow_proxy/remuxer/media_source.py b/mediaflow_proxy/remuxer/m
          self._headers = headers or {}
          self._file_size = file_size
          self._filename_hint = filename_hint_from_url(url)
++        resolution_ignored_headers = {
++            "connection",
++            "host",
++            "range",
++            "if-range",
++            "transfer-encoding",
++        }
 +        header_identity = "\0".join(
 +            f"{str(name).lower()}={str(value)}"
 +            for name, value in sorted(
 +                self._headers.items(), key=lambda item: str(item[0]).lower()
 +            )
++            if str(name).lower() not in resolution_ignored_headers
 +        )
 +        self._resolution_key = hashlib.sha256(
 +            f"{url}\0{header_identity}".encode()

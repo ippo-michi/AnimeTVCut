@@ -125,8 +125,8 @@ describe("HLS Phase 1 components", () => {
 
     expect(result.text).toContain("#EXT-X-PLAYLIST-TYPE:VOD");
     expect(result.text).toContain("#EXT-X-ENDLIST");
-    // With exact ranges, we may have more discontinuities at episode boundaries.
-    expect(result.text.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(2);
+    // One source-piece transition should produce exactly one discontinuity.
+    expect(result.text.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(1);
     expect(result.text).not.toContain("fixture://");
     expect(result.text).not.toContain("seg0.ts");
     expect(result.resources).toHaveLength(4);

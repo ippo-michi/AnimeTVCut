@@ -175,6 +175,7 @@ export class MediaFlowClient {
     if (this.config.outputContainer === "mpegts") {
       playlistUrl.searchParams.set("atc_container", "mpegts");
     }
+    playlistUrl.searchParams.set("atc_exact", "1");
     if (this.config.apiPassword !== undefined) {
       playlistUrl.searchParams.set("api_password", this.config.apiPassword);
     }
@@ -261,6 +262,31 @@ export class MediaFlowClient {
     signal?: AbortSignal,
   ): Promise<OpenedMediaResource> {
     const resourceUrl = new URL(resource.absoluteUri);
+    if (
+      resource.kind === "segment" &&
+      resource.sourceStart !== undefined &&
+      resource.sourceEnd !== undefined
+    ) {
+      if (
+        !Number.isFinite(resource.sourceStart) ||
+        !Number.isFinite(resource.sourceEnd) ||
+        resource.sourceStart < 0 ||
+        resource.sourceEnd <= resource.sourceStart
+      ) {
+        throw new MediaFlowInvalidResponseError(
+          "Composed media resource has an invalid source interval.",
+        );
+      }
+      resourceUrl.searchParams.set(
+        "start_ms",
+        String(Math.round(resource.sourceStart * 1_000)),
+      );
+      resourceUrl.searchParams.set(
+        "end_ms",
+        String(Math.round(resource.sourceEnd * 1_000)),
+      );
+      resourceUrl.searchParams.set("atc_exact", "1");
+    }
     if (
       resource.kind === "segment" &&
       resource.mediaFormat === "mpegts" &&

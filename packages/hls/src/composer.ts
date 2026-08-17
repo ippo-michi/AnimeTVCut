@@ -68,6 +68,12 @@ export function composeHlsVod(
       );
     }
 
+    const sourceBoundary =
+      previousPiece !== undefined &&
+      (previousPiece.sourceEpisodeId !== piece.sourceEpisodeId ||
+        Math.abs(previousPiece.sourceEnd - piece.sourceStart) > EPSILON);
+    let emittedSegmentForPiece = false;
+
     for (const segment of matching) {
       // Calculate the retained portion of this segment.
       const retainedStart = Math.max(segment.start, piece.sourceStart);
@@ -77,19 +83,17 @@ export function composeHlsVod(
         continue;
       }
 
-      const sourceBoundary =
-        previousPiece !== undefined &&
-        (previousPiece.sourceEpisodeId !== piece.sourceEpisodeId ||
-          Math.abs(previousPiece.sourceEnd - piece.sourceStart) > EPSILON);
-
       selected.push({
         sourceEpisodeId: piece.sourceEpisodeId,
         segment,
-        discontinuityBefore: segment.discontinuityBefore || sourceBoundary,
+        discontinuityBefore:
+          segment.discontinuityBefore ||
+          (sourceBoundary && !emittedSegmentForPiece),
         outputStart: outputCursor,
         retainedStart,
         retainedEnd,
       });
+      emittedSegmentForPiece = true;
 
       outputCursor += retainedEnd - retainedStart;
     }
@@ -107,7 +111,11 @@ export function composeHlsVod(
     sourceEpisodeId: string,
     resource: HlsResourceMetadata & { absoluteUri: string; byteRange?: string },
     kind: HlsResourceKind,
-    placement?: { sourceStart: number; outputStart: number },
+    placement?: {
+      sourceStart: number;
+      sourceEnd: number;
+      outputStart: number;
+    },
   ): string => {
     const key = `${sourceEpisodeId}|${kind}|${resource.absoluteUri}|${resource.byteRange ?? ""}|${placement?.outputStart ?? ""}`;
     const known = resourceIds.get(key);
@@ -175,6 +183,7 @@ export function composeHlsVod(
     }
     const segmentId = register(item.sourceEpisodeId, item.segment, "segment", {
       sourceStart: item.retainedStart,
+      sourceEnd: item.retainedEnd,
       outputStart: item.outputStart,
     });
     const retainedDuration = item.retainedEnd - item.retainedStart;
