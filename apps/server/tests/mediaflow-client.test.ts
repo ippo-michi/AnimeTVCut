@@ -76,6 +76,7 @@ describe("MediaFlow client", () => {
     );
     expect(url.searchParams.get("h_X-Test-Token")).toBe("animetvcut-test");
     expect(url.searchParams.has("skip")).toBe(false);
+    expect(url.searchParams.get("atc_exact")).toBe("1");
   });
 
   it("requests and validates the seekable MPEG-TS passthrough mode", async () => {
@@ -118,6 +119,36 @@ describe("MediaFlow client", () => {
     });
     expect(mock).not.toHaveBeenCalled();
     await lazy.open();
+    expect(mock).toHaveBeenCalledOnce();
+  });
+
+  it("requests the retained physical interval for a boundary segment", async () => {
+    const mock = fetchMock(async (input) => {
+      const url = new URL(input.toString());
+      expect(url.searchParams.get("start_ms")).toBe("7250");
+      expect(url.searchParams.get("end_ms")).toBe("11750");
+      expect(url.searchParams.get("atc_exact")).toBe("1");
+      expect(url.searchParams.get("atc_output_start_ms")).toBe("3000");
+      return new Response(new Uint8Array([1]));
+    });
+    const client = new MediaFlowClient(
+      { baseUrl: "http://mediaflow:8888", outputContainer: "mpegts" },
+      mock,
+    );
+    await client
+      .createLazyResource({
+        id: "r1.ts",
+        sourceEpisodeId: "ep1",
+        absoluteUri:
+          "http://mediaflow:8888/proxy/transcode/segment.ts?start_ms=6000&end_ms=12000",
+        kind: "segment",
+        mediaFormat: "mpegts",
+        contentType: "video/mp2t",
+        sourceStart: 7.25,
+        sourceEnd: 11.75,
+        outputStart: 3,
+      })
+      .open();
     expect(mock).toHaveBeenCalledOnce();
   });
 

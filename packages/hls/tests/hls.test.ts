@@ -37,12 +37,12 @@ describe("HLS Phase 1 components", () => {
     );
   });
 
-  it("expands removal to cover full segment boundaries (preserve_content)", () => {
+  it("produces exact alignment for preserve_content", () => {
     const playlist = parseHlsVodPlaylist(
       playlistText,
       "fixture://episode1/playlist.m3u8",
     );
-    // Removal 7->11 is expanded to 6->12 to cover full segments
+    // Removal [7, 11) → applied [7, 11) (exact).
     expect(
       alignRemovedRanges(playlist, [
         { episodeId: "ep1", start: 7, end: 11, type: "opening" },
@@ -55,10 +55,38 @@ describe("HLS Phase 1 components", () => {
         status: "applied",
         requestedStart: 7,
         requestedEnd: 11,
-        appliedStart: 6,
-        appliedEnd: 12,
-        errorStart: -1,
-        errorEnd: 1,
+        appliedStart: 7,
+        appliedEnd: 11,
+        errorStart: 0,
+        errorEnd: 0,
+      },
+    ]);
+  });
+
+  it("produces exact alignment for aggressive", () => {
+    const playlist = parseHlsVodPlaylist(
+      playlistText,
+      "fixture://episode1/playlist.m3u8",
+    );
+    // Both policies produce exact ranges now.
+    expect(
+      alignRemovedRanges(
+        playlist,
+        [{ episodeId: "ep1", start: 7, end: 11, type: "opening" }],
+        { policy: "aggressive" },
+      ),
+    ).toEqual([
+      {
+        episodeId: "ep1",
+        type: "opening",
+        alignmentPolicy: "aggressive",
+        status: "applied",
+        requestedStart: 7,
+        requestedEnd: 11,
+        appliedStart: 7,
+        appliedEnd: 11,
+        errorStart: 0,
+        errorEnd: 0,
       },
     ]);
   });
@@ -97,6 +125,7 @@ describe("HLS Phase 1 components", () => {
 
     expect(result.text).toContain("#EXT-X-PLAYLIST-TYPE:VOD");
     expect(result.text).toContain("#EXT-X-ENDLIST");
+    // One source-piece transition should produce exactly one discontinuity.
     expect(result.text.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(1);
     expect(result.text).not.toContain("fixture://");
     expect(result.text).not.toContain("seg0.ts");

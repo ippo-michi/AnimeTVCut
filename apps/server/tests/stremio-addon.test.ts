@@ -87,10 +87,10 @@ function metadataClient(
                 ]
               : [
                   {
-                    id: sourceId,
+                    id: sourceMeta.id,
                     type: "series",
-                    name: "Synthetic Six",
-                    poster: "https://images.test/poster.jpg",
+                    name: sourceMeta.name,
+                    poster: sourceMeta.poster,
                     unsafe: "must-not-pass",
                   },
                 ],
@@ -438,6 +438,48 @@ describe("public TV Cut stream authorization and caching", () => {
       "opaque:exact:episode:2",
       "opaque:exact:episode:3",
     ]);
+  });
+
+  it("propagates MAL through matching IMDb episodes without requiring Kitsu", async () => {
+    const createAutomaticCut = vi.fn(async () => ({
+      cutId: "active-imdb-cut",
+      playlistUrl: "/media/cut/active-imdb-cut/master.m3u8",
+    }));
+    const source = {
+      ...seriesMeta(),
+      id: "tt0315008",
+      name: "IMDb fixture",
+      _malId: "245",
+      videos: Array.from({ length: 3 }, (_, index) => ({
+        id: `tt0315008:1:${index + 1}`,
+        season: 1,
+        episode: index + 1,
+        released: "2025-01-01T00:00:00Z",
+      })),
+    } as ReturnType<typeof seriesMeta> & { _malId: string };
+    const service = new TvCutCatalogService(
+      metadataClient(undefined, source),
+      { createAutomaticCut } as unknown as UpstreamCutService,
+      {
+        isCutActive: () => true,
+        enableWatchProgress: vi.fn(),
+      } as unknown as CutService,
+      new URL("https://public.animetvcut.test/"),
+      DEFAULT_TV_CUT_GROUPING_CONFIG,
+      () => Date.parse("2026-01-01T00:00:00Z"),
+    );
+    await service.publicStream(createVirtualVideoId("tt0315008", 1, 1, 3));
+    const request = createAutomaticCut.mock.calls[0]?.[0] as
+      AutomaticUpstreamCutRequest | undefined;
+    expect(request?.episodes.map((episode) => episode.skipIdentity)).toEqual(
+      [1, 2, 3].map((episode) => ({
+        imdbId: "tt0315008",
+        imdbSeason: 1,
+        imdbEpisode: episode,
+        malAnimeId: 245,
+        malEpisode: episode,
+      })),
+    );
   });
 
   it("uses an exact metadata MAL/Kitsu pair without leaking it across seasons", async () => {

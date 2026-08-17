@@ -118,6 +118,46 @@ async function exerciseSource(
   return { segmentSizes: fragments.map((fragment) => fragment.length), probe };
 }
 
+async function probeVideoPacketSpan(
+  bytes: Buffer,
+  extension: ".mp4" | ".ts",
+): Promise<number> {
+  const directory = await mkdtemp(path.join(tmpdir(), "atc-exact-span-"));
+  temporaryDirectories.push(directory);
+  const mediaPath = path.join(directory, `exact${extension}`);
+  await writeFile(mediaPath, bytes);
+  const result = await execFileAsync(
+    "ffprobe",
+    [
+      "-v",
+      "error",
+      "-select_streams",
+      "v:0",
+      "-show_entries",
+      "packet=pts_time,duration_time",
+      "-of",
+      "json",
+      mediaPath,
+    ],
+    { timeout: 60_000 },
+  );
+  const body = JSON.parse(result.stdout) as {
+    packets: Array<{ pts_time?: string; duration_time?: string }>;
+  };
+  const packets = body.packets
+    .map((packet) => ({
+      start: Number(packet.pts_time),
+      duration: Number(packet.duration_time ?? 0),
+    }))
+    .filter((packet) => Number.isFinite(packet.start));
+  expect(packets.length).toBeGreaterThan(1);
+  const start = Math.min(...packets.map((packet) => packet.start));
+  const end = Math.max(
+    ...packets.map((packet) => packet.start + packet.duration),
+  );
+  return end - start;
+}
+
 afterAll(async () => {
   await Promise.all(
     temporaryDirectories.map((directory) =>
@@ -138,6 +178,67 @@ describe("direct MediaFlow seekable source normalization", () => {
       expect.arrayContaining(["video:h264", "audio:aac"]),
     );
     expect(result.probe.packets).toBeGreaterThan(10);
+  });
+
+  it("physically trims exact fMP4 boundary fragments", async () => {
+    const playlistUrl = transcodePlaylistUrl("control-h264-aac.mkv", true);
+    playlistUrl.searchParams.set("atc_exact", "1");
+    const playlistResponse = await fetch(playlistUrl);
+    expect(playlistResponse.status).toBe(200);
+    const parsed = parseHlsVodPlaylist(
+      await playlistResponse.text(),
+      playlistUrl.toString(),
+    );
+    const first = parsed.segments[0];
+    const map = first?.map;
+    expect(first).toBeDefined();
+    expect(map).toBeDefined();
+    if (first === undefined || map === undefined) {
+      throw new Error("Exact fMP4 test requires an init map and segment");
+    }
+    const start = first.start + 0.75;
+    const end = first.end - 0.75;
+    expect(end - start).toBeGreaterThan(1);
+    const segmentUrl = new URL(first.absoluteUri);
+    segmentUrl.searchParams.set("start_ms", String(Math.round(start * 1000)));
+    segmentUrl.searchParams.set("end_ms", String(Math.round(end * 1000)));
+    segmentUrl.searchParams.set("atc_exact", "1");
+    const [init, fragment] = await Promise.all([
+      fetchBytes(map.absoluteUri),
+      fetchBytes(segmentUrl.toString()),
+    ]);
+    const span = await probeVideoPacketSpan(
+      Buffer.concat([init, fragment]),
+      ".mp4",
+    );
+    expect(Math.abs(span - (end - start))).toBeLessThan(0.2);
+  });
+
+  it("physically trims exact MPEG-TS boundary fragments", async () => {
+    const playlistUrl = transcodePlaylistUrl("control-h264-aac.mkv", true);
+    playlistUrl.searchParams.set("atc_container", "mpegts");
+    playlistUrl.searchParams.set("atc_exact", "1");
+    const playlistResponse = await fetch(playlistUrl);
+    expect(playlistResponse.status).toBe(200);
+    const parsed = parseHlsVodPlaylist(
+      await playlistResponse.text(),
+      playlistUrl.toString(),
+    );
+    const first = parsed.segments[0];
+    expect(first).toBeDefined();
+    if (first === undefined)
+      throw new Error("Exact TS test requires a segment");
+    const start = first.start + 0.75;
+    const end = first.end - 0.75;
+    expect(end - start).toBeGreaterThan(1);
+    const segmentUrl = new URL(first.absoluteUri);
+    segmentUrl.searchParams.set("start_ms", String(Math.round(start * 1000)));
+    segmentUrl.searchParams.set("end_ms", String(Math.round(end * 1000)));
+    segmentUrl.searchParams.set("atc_output_start_ms", "0");
+    segmentUrl.searchParams.set("atc_exact", "1");
+    const fragment = await fetchBytes(segmentUrl.toString());
+    const span = await probeVideoPacketSpan(fragment, ".ts");
+    expect(Math.abs(span - (end - start))).toBeLessThan(0.25);
   });
 
   it("uses HTTP byte ranges with standards-compliant 206 responses", async () => {

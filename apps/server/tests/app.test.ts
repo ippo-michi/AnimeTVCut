@@ -103,9 +103,11 @@ describe("server foundation and source security", () => {
     });
   });
 
-  it("expands removal to cover full segments by default", async () => {
+  it("aligns removals to exact requested boundaries", async () => {
     const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
     apps.push(app);
+    // Removal [7, 11) → applied [7, 11) (exact).
+    // The composer handles partial segment trimming.
     const response = await app.inject({
       method: "POST",
       url: "/api/v1/dev/cuts",
@@ -115,8 +117,40 @@ describe("server foundation and source security", () => {
       },
     });
     expect(response.statusCode).toBe(200);
-    // Alignment expands removal(7,11) to cover full segment (6,12)
-    // Retained: 0-6 and 12-30 = 24s
+    const body = response.json() as {
+      duration: number;
+      pieces: Array<{ sourceStart: number; sourceEnd: number }>;
+      appliedCuts: Array<{
+        alignmentPolicy: string;
+        status: string;
+        appliedStart: number;
+        appliedEnd: number;
+      }>;
+    };
+    // Applied range is exact: [7, 11)
+    expect(body.appliedCuts[0]).toMatchObject({
+      alignmentPolicy: "preserve_content",
+      status: "applied",
+      appliedStart: 7,
+      appliedEnd: 11,
+    });
+    // Duration = 30 - 4 = 26s (removing [7, 11))
+    expect(body.duration).toBe(26);
+  });
+
+  it("preserves content when removal aligns with segment boundaries", async () => {
+    const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
+    apps.push(app);
+    // Removal [6, 12) → applied [6, 12) (exact).
+    const response = await app.inject({
+      method: "POST",
+      url: "/api/v1/dev/cuts",
+      payload: {
+        sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
+        remove: [{ episodeId: "ep1", start: 6, end: 12, type: "opening" }],
+      },
+    });
+    expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       duration: 24,
       pieces: [
@@ -132,21 +166,5 @@ describe("server foundation and source security", () => {
         },
       ],
     });
-  });
-
-  it("accepts expansion-friendly removals even with strict alignment", async () => {
-    const app = createApp({ fixtureRoot: path.resolve("fixtures/hls") });
-    apps.push(app);
-    // removal(7,11) expands to (6,12) which is valid
-    const response = await app.inject({
-      method: "POST",
-      url: "/api/v1/dev/cuts",
-      payload: {
-        sources: [{ episodeId: "ep1", playlistUrl: "fixture://episode1" }],
-        remove: [{ episodeId: "ep1", start: 7, end: 11, type: "opening" }],
-        strictAlignment: true,
-      },
-    });
-    expect(response.statusCode).toBe(200);
   });
 });

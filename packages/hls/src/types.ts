@@ -44,8 +44,9 @@ export interface ComposedResource {
   mediaFormat: HlsMediaFormat;
   contentType: string;
   byteRange?: string;
-  /** Source and virtual decode positions for timeline-aware fMP4 resources. */
+  /** Physical source interval and virtual placement for a composed segment. */
   sourceStart?: number;
+  sourceEnd?: number;
   outputStart?: number;
 }
 

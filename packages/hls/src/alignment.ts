@@ -3,34 +3,11 @@ import {
   type AppliedCut,
   type CutAlignmentPolicy,
   type RemovedRange,
-  type SuccessfulAppliedCut,
 } from "@animetvcut/core";
 
 import type { HlsVodPlaylist } from "./types.js";
 
 const EPSILON = 1e-7;
-
-function floorBoundary(boundaries: readonly number[], value: number): number {
-  const result = [...boundaries]
-    .reverse()
-    .find((boundary) => boundary <= value + EPSILON);
-  if (result === undefined) {
-    throw new DomainValidationError(
-      "Could not find a segment boundary before cut start",
-    );
-  }
-  return result;
-}
-
-function ceilBoundary(boundaries: readonly number[], value: number): number {
-  const result = boundaries.find((boundary) => boundary >= value - EPSILON);
-  if (result === undefined) {
-    throw new DomainValidationError(
-      "Could not find a segment boundary after cut end",
-    );
-  }
-  return result;
-}
 
 export function alignRemovedRanges(
   playlist: HlsVodPlaylist,
@@ -42,7 +19,6 @@ export function alignRemovedRanges(
 ): AppliedCut[] {
   const policy = options.policy ?? "preserve_content";
   const sorted = [...removals].sort((left, right) => left.start - right.start);
-  const boundaries = [0, ...playlist.segments.map((segment) => segment.end)];
 
   for (const [index, removal] of sorted.entries()) {
     if (
@@ -63,40 +39,11 @@ export function alignRemovedRanges(
   }
 
   const applied = sorted.map((removal): AppliedCut => {
-    // For removals, we always want the applied range to COVER the requested range.
-    // floorBoundary for start: expand removal to include earlier segment
-    // ceilBoundary for end: expand removal to include later segment
-    // This ensures appliedStart <= requestedStart and appliedEnd >= requestedEnd
-    // Both policies expand removals; the difference is in edge case handling.
-    const appliedStart =
-      policy === "preserve_content"
-        ? floorBoundary(boundaries, removal.start)
-        : floorBoundary(boundaries, removal.start);
-    const appliedEnd =
-      policy === "preserve_content"
-        ? ceilBoundary(boundaries, removal.end)
-        : ceilBoundary(boundaries, removal.end);
-
-    if (appliedStart >= appliedEnd - EPSILON) {
-      if (options.strict === true) {
-        throw new DomainValidationError(
-          `No complete HLS segment can be safely removed for ${removal.episodeId} ${removal.start}-${removal.end}`,
-        );
-      }
-      return {
-        episodeId: removal.episodeId,
-        type: removal.type,
-        alignmentPolicy: policy,
-        status: "no_safe_segments",
-        reason: "no_complete_segments",
-        requestedStart: removal.start,
-        requestedEnd: removal.end,
-        appliedStart: null,
-        appliedEnd: null,
-        errorStart: null,
-        errorEnd: null,
-      };
-    }
+    // Both preserve_content and aggressive now produce exact ranges.
+    // Partial segment trimming is handled by the composer via byte ranges.
+    // The policy distinction is preserved for API compatibility.
+    const appliedStart = removal.start;
+    const appliedEnd = removal.end;
 
     return {
       episodeId: removal.episodeId,
@@ -107,27 +54,10 @@ export function alignRemovedRanges(
       requestedEnd: removal.end,
       appliedStart,
       appliedEnd,
-      errorStart: appliedStart - removal.start,
-      errorEnd: appliedEnd - removal.end,
+      errorStart: 0,
+      errorEnd: 0,
     };
   });
-
-  const successful = applied.filter(
-    (cut): cut is SuccessfulAppliedCut => cut.status === "applied",
-  );
-  for (let index = 1; index < successful.length; index += 1) {
-    const previous = successful[index - 1];
-    const current = successful[index];
-    if (
-      previous !== undefined &&
-      current !== undefined &&
-      current.appliedStart < previous.appliedEnd - EPSILON
-    ) {
-      throw new DomainValidationError(
-        "Segment alignment made requested removals overlap",
-      );
-    }
-  }
 
   return applied;
 }

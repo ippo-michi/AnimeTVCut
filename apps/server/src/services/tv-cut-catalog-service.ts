@@ -617,10 +617,11 @@ export class TvCutCatalogService {
       const animeId = Number(directMal[1]);
       if (Number.isSafeInteger(animeId) && animeId > 0) return animeId;
     }
-    if (scope.malAnimeId === undefined || scope.kitsuAnimeId === undefined)
-      return undefined;
+    if (scope.malAnimeId === undefined) return undefined;
+
     const kitsu = /^kitsu:(\d+):(\d+)$/.exec(episode.id);
     if (
+      scope.kitsuAnimeId !== undefined &&
       kitsu?.[1] !== undefined &&
       kitsu[2] !== undefined &&
       Number(kitsu[1]) === scope.kitsuAnimeId &&
@@ -628,9 +629,22 @@ export class TvCutCatalogService {
     ) {
       return scope.malAnimeId;
     }
+
+    const normalSeasons = new Set(
+      scope.episodes
+        .filter((candidate) => candidate.season >= 1)
+        .map((candidate) => candidate.season),
+    );
+    const mappedSeason =
+      scope.season ??
+      (normalSeasons.size === 1 ? [...normalSeasons][0] : undefined);
+    if (mappedSeason === undefined || mappedSeason !== episode.season) {
+      return undefined;
+    }
+
     // IMDb-backed propagation: ttXXXXXXX:season:episode
     const validImdbSeries = /^tt\d{7,8}$/.test(scope.sourceSeriesId);
-    if (!validImdbSeries || scope.malAnimeId === undefined) return undefined;
+    if (!validImdbSeries) return undefined;
     const imdbEp = /^tt(\d{7,8}):(\d+):(\d+)$/.exec(episode.id);
     if (
       imdbEp?.[1] !== undefined &&

@@ -1,4 +1,3 @@
-
 import { describe, expect, it } from "vitest";
 
 import { alignRemovedRanges, parseHlsVodPlaylist } from "../src/index.js";
@@ -25,64 +24,94 @@ const removal = (start: number, end: number) => ({
 });
 
 describe("cut alignment policies", () => {
-  it("expands preserve_content removals to cover full segments", () => {
-    expect(alignRemovedRanges(playlist, [removal(5, 13)])).toEqual([
-      {
-        episodeId: "ep1",
-        type: "opening",
-        alignmentPolicy: "preserve_content",
+  describe("preserve_content", () => {
+    it("produces exact applied range matching the request", () => {
+      // Removal [5, 13) → applied [5, 13) (exact).
+      // Partial segment trimming is handled by the composer.
+      expect(alignRemovedRanges(playlist, [removal(5, 13)])).toEqual([
+        {
+          episodeId: "ep1",
+          type: "opening",
+          alignmentPolicy: "preserve_content",
+          status: "applied",
+          requestedStart: 5,
+          requestedEnd: 13,
+          appliedStart: 5,
+          appliedEnd: 13,
+          errorStart: 0,
+          errorEnd: 0,
+        },
+      ]);
+    });
+
+    it("produces exact applied range for boundary-aligned removal", () => {
+      expect(
+        alignRemovedRanges(playlist, [removal(6, 12)]).at(0),
+      ).toMatchObject({
         status: "applied",
-        requestedStart: 5,
-        requestedEnd: 13,
-        appliedStart: 0,
-        appliedEnd: 18,
-        errorStart: -5,
-        errorEnd: 5,
-      },
-    ]);
-  });
+        appliedStart: 6,
+        appliedEnd: 12,
+        errorStart: 0,
+        errorEnd: 0,
+      });
+    });
 
-  it("expands preserve_content removals to fully cover requested range", () => {
-    const cuts = alignRemovedRanges(playlist, [removal(0.25, 17.75)]);
-    const cut = cuts[0];
-    expect(cut?.status).toBe("applied");
-    if (cut?.status !== "applied") {
-      throw new Error("Expected an applied cut");
-    }
-    // Applied range must cover the requested range
-    expect(cut.appliedStart).toBeLessThanOrEqual(cut.requestedStart);
-    expect(cut.appliedEnd).toBeGreaterThanOrEqual(cut.requestedEnd);
-  });
-
-  it("expands narrow removals to cover full segment boundaries", () => {
-    expect(alignRemovedRanges(playlist, [removal(7, 11)])[0]).toMatchObject({
-      status: "applied",
-      appliedStart: 6,
-      appliedEnd: 12,
-      errorStart: -1,
-      errorEnd: 1,
+    it("produces exact applied range for narrow removal", () => {
+      expect(alignRemovedRanges(playlist, [removal(7, 11)])[0]).toMatchObject({
+        status: "applied",
+        appliedStart: 7,
+        appliedEnd: 11,
+        errorStart: 0,
+        errorEnd: 0,
+      });
     });
   });
 
-  it("does not throw in strict mode when removal can be expanded", () => {
-    // With expansion behavior, removal(7, 11) becomes 6->12, which is valid
-    expect(() =>
-      alignRemovedRanges(playlist, [removal(7, 11)], { strict: true }),
-    ).not.toThrow();
+  describe("aggressive", () => {
+    it("produces exact applied range (same as preserve_content)", () => {
+      // Both policies now produce exact ranges.
+      // The composer handles partial segment trimming.
+      expect(
+        alignRemovedRanges(playlist, [removal(5, 13)], {
+          policy: "aggressive",
+        }),
+      ).toEqual([
+        {
+          episodeId: "ep1",
+          type: "opening",
+          alignmentPolicy: "aggressive",
+          status: "applied",
+          requestedStart: 5,
+          requestedEnd: 13,
+          appliedStart: 5,
+          appliedEnd: 13,
+          errorStart: 0,
+          errorEnd: 0,
+        },
+      ]);
+    });
   });
 
-  it("applies aggressive policy the same way for removals", () => {
-    expect(
-      alignRemovedRanges(playlist, [removal(7, 11)], {
+  describe("policy equivalence", () => {
+    it("preserve_content and aggressive produce identical results", () => {
+      const preserve = alignRemovedRanges(playlist, [removal(5, 13)]);
+      const aggressive = alignRemovedRanges(playlist, [removal(5, 13)], {
         policy: "aggressive",
-      })[0],
-    ).toMatchObject({
-      alignmentPolicy: "aggressive",
-      status: "applied",
-      appliedStart: 6,
-      appliedEnd: 12,
-      errorStart: -1,
-      errorEnd: 1,
+      });
+
+      expect(preserve[0]?.status).toBe("applied");
+      expect(aggressive[0]?.status).toBe("applied");
+
+      if (
+        preserve[0]?.status !== "applied" ||
+        aggressive[0]?.status !== "applied"
+      ) {
+        throw new Error("Expected both to be applied");
+      }
+
+      // Both produce exact ranges
+      expect(preserve[0]!.appliedStart).toBe(aggressive[0]!.appliedStart);
+      expect(preserve[0]!.appliedEnd).toBe(aggressive[0]!.appliedEnd);
     });
   });
 });
