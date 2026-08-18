@@ -13,7 +13,6 @@ import {
 } from "../services/hls-source-loader.js";
 import { MediaFlowError } from "../services/mediaflow/errors.js";
 import type { SubtitleService } from "../services/subtitle-service.js";
-import type { CutWatchProgressTracker } from "../services/watch-progress.js";
 
 interface MediaParams {
   cutId: string;
@@ -121,7 +120,6 @@ export function mediaRoutes(
   sessions: CutSessionStore,
   subtitles?: SubtitleService,
   prefetchResourceCount = 0,
-  watchProgress?: CutWatchProgressTracker,
 ): FastifyPluginAsync {
   if (
     !Number.isSafeInteger(prefetchResourceCount) ||
@@ -175,17 +173,6 @@ export function mediaRoutes(
           const opened = await resource.open(range, controller.signal);
           sessions.touch(request.params.cutId);
           prefetchAfter(session, resource, prefetchResourceCount);
-          if (
-            watchProgress !== undefined &&
-            responseContainsWholeResource(
-              opened.statusCode,
-              opened.responseHeaders,
-            )
-          ) {
-            opened.stream.once("end", () => {
-              watchProgress.sourceEpisodeCompleted(session, resource);
-            });
-          }
           reply.code(opened.statusCode).type(resource.contentType);
           for (const [name, value] of Object.entries(opened.responseHeaders)) {
             const normalized = name.toLowerCase();
