@@ -24,6 +24,12 @@ import type {
   AutomaticUpstreamCutRequest,
   UpstreamCutService,
 } from "../src/services/upstream-cut-service.js";
+import { mediaRoutes } from "../src/routes/media.js";
+import { CutSessionStore } from "../src/services/cut-session-store.js";
+import {
+  CutWatchProgressTracker,
+  type EpisodeWatchProgressReporter,
+} from "../src/services/watch-progress.js";
 
 const sourceId = "opaque:fixture:series/α";
 const manifest = {
@@ -640,6 +646,38 @@ describe("public stream failure behavior", () => {
     });
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({ streams: [] });
+    await app.close();
+  });
+});
+
+describe("search does not invoke watch-progress reporter", () => {
+  it("catalog search never calls reportEpisodeWatched", async () => {
+    const reportEpisodeWatched = vi.fn<
+      Parameters<EpisodeWatchProgressReporter["reportEpisodeWatched"]>,
+      ReturnType<EpisodeWatchProgressReporter["reportEpisodeWatched"]>
+    >(async () => "triggered");
+    const reporter: EpisodeWatchProgressReporter = { reportEpisodeWatched };
+    const tracker = new CutWatchProgressTracker(reporter);
+
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes({
+        search: async () => [{ id: "test", type: "series", name: "Test" }],
+      } as unknown as TvCutCatalogService),
+    );
+    await app.register(
+      mediaRoutes(new CutSessionStore(), undefined, 0, tracker),
+    );
+
+    // Perform a catalog search
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+    expect(response.statusCode).toBe(200);
+
+    // Watch progress reporter must never be called during search
+    expect(reportEpisodeWatched).not.toHaveBeenCalled();
     await app.close();
   });
 });

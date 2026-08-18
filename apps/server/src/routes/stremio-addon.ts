@@ -171,6 +171,16 @@ export function publicStremioRoutes(
       request: FastifyRequest<{ Params: { extra: string } }>,
       reply: FastifyReply,
     ) => {
+      // Public catalog requests must never hang indefinitely. Apply a
+      // route-level timeout as a final safety boundary and propagate
+      // client disconnect so upstream work is cancelled promptly.
+      const abortController = new AbortController();
+      const routeTimeout = AbortSignal.timeout(30_000);
+      const combinedSignal = AbortSignal.any([
+        abortController.signal,
+        routeTimeout,
+      ]);
+      void request.raw.on("aborted", () => abortController.abort());
       try {
         disableClientCaching(reply);
         const extra = parseExtra(request.params.extra);
@@ -182,7 +192,7 @@ export function publicStremioRoutes(
         // deterministic TV/season/series variants also supports clients
         // which resume catalog pagination after a previous selection.
         if (!extra.skipValid) return { metas: [] };
-        const metas = await service.search(extra.search);
+        const metas = await service.search(extra.search, combinedSignal);
         return { metas: metas.slice(extra.skip) };
       } catch (error) {
         request.log.info(

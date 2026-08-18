@@ -134,13 +134,59 @@ export class MetadataStremioClient {
     const cached = this.manifestCache;
     if (cached !== undefined && cached.expiresAt > this.now())
       return cached.value;
-    if (this.manifestInFlight !== undefined) return this.manifestInFlight;
-    const promise = this.loadManifest(signal);
-    this.manifestInFlight = promise;
+    // Reuse or create the shared upstream fetch. Do NOT pass caller signal
+    // to loadManifest — the shared fetch uses only an internal timeout so
+    // that one caller's abort never cancels the upstream request for others.
+    let shared = this.manifestInFlight;
+    if (shared === undefined) {
+      shared = this.loadManifest();
+      this.manifestInFlight = shared;
+      // Attach cleanup to the shared promise so it only clears when the
+      // upstream request actually settles. Use a catch to prevent
+      // unhandled rejection warnings when the shared promise rejects but
+      // all callers have already detached (aborted).
+      void shared
+        .finally(() => {
+          if (this.manifestInFlight === shared) {
+            this.manifestInFlight = undefined;
+          }
+        })
+        .catch(() => {
+          // Suppress unhandled rejection if no caller is waiting.
+          // The rejection has already been observed by callers who
+          // raced against this promise.
+        });
+    }
+    // Every caller independently races its own signal against the shared
+    // promise. Caller cancellation stops waiting for that caller only.
+    const promise =
+      signal !== undefined
+        ? Promise.race([
+            shared,
+            new Promise<never>((_resolve, reject) => {
+              if (signal.aborted) {
+                reject(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new Error("The operation was aborted."),
+                );
+              } else {
+                const onAbort = () =>
+                  reject(
+                    signal.reason instanceof Error
+                      ? signal.reason
+                      : new Error("The operation was aborted."),
+                  );
+                signal.addEventListener("abort", onAbort, { once: true });
+              }
+            }),
+          ])
+        : shared;
     try {
       return await promise;
     } finally {
-      if (this.manifestInFlight === promise) this.manifestInFlight = undefined;
+      // Do NOT clear manifestInFlight here — it is cleared by the
+      // shared promise's own finally handler when it settles.
     }
   }
 
@@ -290,6 +336,7 @@ export class MetadataStremioClient {
     if (kind === "manifest") this.counters.manifestRequests += 1;
     else if (kind === "catalog") this.counters.catalogRequests += 1;
     else this.counters.metaRequests += 1;
+    const startedAt = Date.now();
     const signal =
       callerSignal === undefined
         ? AbortSignal.timeout(this.requestTimeoutMs)
@@ -306,6 +353,12 @@ export class MetadataStremioClient {
         headers: { accept: "application/json" },
       });
     } catch {
+      const elapsed = Date.now() - startedAt;
+      const classification =
+        callerSignal?.aborted === true ? "cancelled" : "timeout";
+      console.error(
+        `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=${classification}`,
+      );
       throw new MetadataStremioUnavailableError(
         callerSignal?.aborted === true
           ? "Metadata Stremio request was cancelled."
@@ -313,12 +366,20 @@ export class MetadataStremioClient {
       );
     }
     if (response.status >= 300 && response.status < 400) {
+      const elapsed = Date.now() - startedAt;
+      console.error(
+        `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=redirect status=${response.status}`,
+      );
       await response.body?.cancel();
       throw new MetadataStremioUnavailableError(
         `Metadata Stremio ${kind} returned an unexpected redirect.`,
       );
     }
     if (!response.ok) {
+      const elapsed = Date.now() - startedAt;
+      console.error(
+        `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=upstream_error status=${response.status}`,
+      );
       await response.body?.cancel();
       throw new MetadataStremioUnavailableError(
         `Metadata Stremio ${kind} failed with HTTP ${response.status}.`,
