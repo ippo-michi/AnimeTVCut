@@ -174,7 +174,7 @@ export function publicStremioRoutes(
       reply: FastifyReply,
     ) => {
       // Public catalog requests must never hang indefinitely. Apply a
-      // route-level timeout as a final safety boundary and propagate
+      // route-level timeout as a final hard deadline and propagate
       // client disconnect so upstream work is cancelled promptly.
       const abortController = new AbortController();
       const routeTimeout = AbortSignal.timeout(routeTimeoutMs);
@@ -199,7 +199,25 @@ export function publicStremioRoutes(
         // deterministic TV/season/series variants also supports clients
         // which resume catalog pagination after a previous selection.
         if (!extra.skipValid) return { metas: [] };
-        const metas = await service.search(extra.search, combinedSignal);
+        // Race the search against the route timeout as a hard deadline.
+        // If service.search() ignores cancellation, the timeout wins.
+        // When the timeout wins, abort the controller to propagate
+        // cancellation to downstream code.
+        const searchPromise = service.search(extra.search, combinedSignal);
+        const timeoutPromise = new Promise<never>((_resolve, reject) => {
+          routeTimeout.addEventListener(
+            "abort",
+            () => {
+              // Abort the controller to propagate cancellation downstream.
+              abortController.abort();
+              reject(
+                new Error("Public catalog request exceeded the route timeout."),
+              );
+            },
+            { once: true },
+          );
+        });
+        const metas = await Promise.race([searchPromise, timeoutPromise]);
         return { metas: metas.slice(extra.skip) };
       } catch (error) {
         request.log.info(

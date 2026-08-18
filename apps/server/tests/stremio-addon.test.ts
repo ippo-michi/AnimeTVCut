@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
+import net from "node:net";
 
 import { DEFAULT_TV_CUT_GROUPING_CONFIG } from "@animetvcut/core";
 import {
@@ -761,6 +762,103 @@ describe("public catalog route safety boundary", () => {
     // Route timeout fires, aborts the search, handler catches error
     expect(response.statusCode).toBe(503);
     expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    await app.close();
+  });
+});
+
+describe("public catalog route hard deadline and disconnect", () => {
+  it("route timeout is a hard deadline even when service.search ignores abort", async () => {
+    // service.search returns a promise that never resolves and never
+    // inspects the signal — simulates a buggy upstream that ignores
+    // cancellation entirely.
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async () =>
+            new Promise<readonly StremioMetaPreview[]>(() => {
+              // Never resolves, never rejects, never inspects signal
+            }),
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 50 },
+      ),
+    );
+
+    const start = Date.now();
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+    const elapsed = Date.now() - start;
+
+    // Must complete within the route timeout, not hang forever.
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    expect(elapsed).toBeLessThan(2000);
+    await app.close();
+  });
+
+  it("client disconnect aborts service.search signal via real socket", async () => {
+    let signalAborted = false;
+
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async (_query: string, signal?: AbortSignal) => {
+            // Wait for signal to abort — simulates a search that hangs
+            await new Promise<void>((resolve) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  signalAborted = true;
+                  resolve();
+                },
+                { once: true },
+              );
+            });
+            return [{ id: "test", type: "series", name: "Test" }];
+          },
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 10_000 },
+      ),
+    );
+
+    // Start the server on an ephemeral port so we can connect via
+    // Node HTTP and explicitly destroy the socket.
+    await app.listen({ port: 0 });
+    const addr = app.server.address()!;
+    const port = typeof addr === "string" ? 0 : addr.port;
+
+    // Use net.Socket to connect, send request, then destroy the socket
+    // to simulate client disconnect.
+    await new Promise<void>((resolve, reject) => {
+      const socket = net.connect({ port, host: "127.0.0.1" }, () => {
+        socket.write(
+          `GET /catalog/series/animetvcut-v2/search=test.json HTTP/1.1\r\n` +
+            "Host: 127.0.0.1\r\n" +
+            "Connection: close\r\n" +
+            "\r\n",
+        );
+      });
+
+      socket.on("error", reject);
+
+      // Wait a tiny bit for the request to arrive and start processing
+      setTimeout(() => {
+        // Destroy the socket — this simulates client disconnect and
+        // should trigger the "close" event on the response and the
+        // "aborted" event on the request.
+        socket.destroy();
+      }, 50);
+
+      socket.on("close", () => {
+        // Give the server a moment to observe the disconnect
+        setTimeout(resolve, 100);
+      });
+    });
+
+    expect(signalAborted).toBe(true);
     await app.close();
   });
 });
