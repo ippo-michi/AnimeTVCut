@@ -159,6 +159,9 @@ export class MetadataStremioClient {
     }
     // Every caller independently races its own signal against the shared
     // promise. Caller cancellation stops waiting for that caller only.
+    // When the shared promise settles, remove the caller's abort listener
+    // to avoid leaving it attached unnecessarily.
+    let abortHandler: (() => void) | undefined;
     const promise =
       signal !== undefined
         ? Promise.race([
@@ -171,13 +174,15 @@ export class MetadataStremioClient {
                     : new Error("The operation was aborted."),
                 );
               } else {
-                const onAbort = () =>
+                abortHandler = () =>
                   reject(
                     signal.reason instanceof Error
                       ? signal.reason
                       : new Error("The operation was aborted."),
                   );
-                signal.addEventListener("abort", onAbort, { once: true });
+                signal.addEventListener("abort", abortHandler, {
+                  once: true,
+                });
               }
             }),
           ])
@@ -185,8 +190,13 @@ export class MetadataStremioClient {
     try {
       return await promise;
     } finally {
-      // Do NOT clear manifestInFlight here — it is cleared by the
-      // shared promise's own finally handler when it settles.
+      // Remove the caller's abort listener when this wrapper settles,
+      // regardless of whether it was due to abort or the shared promise
+      // resolving/rejecting. This prevents leaving listeners attached
+      // on signals that outlive this call.
+      if (abortHandler !== undefined) {
+        signal?.removeEventListener("abort", abortHandler);
+      }
     }
   }
 

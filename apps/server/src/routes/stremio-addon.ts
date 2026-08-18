@@ -111,7 +111,9 @@ function infrastructureStatus(error: unknown): number {
 
 export function publicStremioRoutes(
   service: TvCutCatalogService,
+  options?: { routeTimeoutMs?: number },
 ): FastifyPluginAsync {
+  const routeTimeoutMs = options?.routeTimeoutMs ?? 30_000;
   return async (app) => {
     app.addHook("onSend", async (_request, reply, payload) => {
       void reply.header("access-control-allow-origin", "*");
@@ -175,12 +177,17 @@ export function publicStremioRoutes(
       // route-level timeout as a final safety boundary and propagate
       // client disconnect so upstream work is cancelled promptly.
       const abortController = new AbortController();
-      const routeTimeout = AbortSignal.timeout(30_000);
+      const routeTimeout = AbortSignal.timeout(routeTimeoutMs);
       const combinedSignal = AbortSignal.any([
         abortController.signal,
         routeTimeout,
       ]);
-      void request.raw.on("aborted", () => abortController.abort());
+      // Observe both request-side and response-side disconnect events.
+      // Use named one-shot handlers so they can be removed in finally.
+      const onRequestAborted = () => abortController.abort();
+      const onResponseFinished = () => abortController.abort();
+      request.raw.on("aborted", onRequestAborted);
+      reply.raw.on("close", onResponseFinished);
       try {
         disableClientCaching(reply);
         const extra = parseExtra(request.params.extra);
@@ -200,6 +207,11 @@ export function publicStremioRoutes(
           "Public catalog request rejected",
         );
         return reply.code(infrastructureStatus(error)).send({ metas: [] });
+      } finally {
+        // Remove observers to avoid leaking listeners on the request/
+        // response objects after the handler completes.
+        request.raw.removeListener("aborted", onRequestAborted);
+        reply.raw.removeListener("close", onResponseFinished);
       }
     };
 

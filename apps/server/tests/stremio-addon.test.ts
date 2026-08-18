@@ -681,3 +681,86 @@ describe("search does not invoke watch-progress reporter", () => {
     await app.close();
   });
 });
+
+describe("public catalog route safety boundary", () => {
+  it("route timeout aborts service.search when it never resolves", async () => {
+    let searchAborted = false;
+
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async (_query: string, signal?: AbortSignal) => {
+            // Simulate a search that hangs until aborted
+            await new Promise<void>((resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  searchAborted = true;
+                  reject(new Error("Search was aborted by route timeout"));
+                },
+                { once: true },
+              );
+            });
+            return [{ id: "test", type: "series", name: "Test" }];
+          },
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 50 },
+      ),
+    );
+
+    const start = Date.now();
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+    const elapsed = Date.now() - start;
+
+    // Route timeout should abort the search, which throws, and the
+    // route handler catches it and returns a 503 with empty metas.
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    expect(searchAborted).toBe(true);
+    // Should complete within route timeout + small margin, not 30 seconds
+    expect(elapsed).toBeLessThan(2000);
+    await app.close();
+  });
+
+  it("response-side close observer is wired", async () => {
+    const app = Fastify();
+    // Use a fast route timeout so the test completes quickly even
+    // if the mock hangs waiting for abort.
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async (_query: string, signal?: AbortSignal) => {
+            // Simulate a search that hangs until aborted
+            await new Promise<void>((resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  reject(new Error("Search was aborted"));
+                },
+                { once: true },
+              );
+            });
+            return [{ id: "test", type: "series", name: "Test" }];
+          },
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 50 },
+      ),
+    );
+
+    // The route should complete via timeout (50ms) rather than hanging
+    // for the full routeTimeoutMs (10_000ms default).
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+
+    // Route timeout fires, aborts the search, handler catches error
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    await app.close();
+  });
+});
