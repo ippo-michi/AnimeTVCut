@@ -55,8 +55,8 @@ services:
       ANISKIP_BASE_URL: ${ANISKIP_BASE_URL:-https://api.aniskip.com/v2}
       ANISKIP_REQUEST_TIMEOUT_MS: ${ANISKIP_REQUEST_TIMEOUT_MS:-10000}
       ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS: ${ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS:-5}
-    ports:
-      - "${ANIMETVCUT_PORT:-3000}:3000"
+    expose:
+      - "3000"
     depends_on:
       mediaflow:
         condition: service_healthy
