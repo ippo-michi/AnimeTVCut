@@ -22,6 +22,7 @@ import {
   parseSeriesCutVideoId,
   parseVirtualVideoId,
   type MetadataStremioClient,
+  type MetadataStremioStats,
   type SourceEpisodeMeta,
   type SourceSeriesMeta,
   type StremioMetaPreview,
@@ -123,6 +124,14 @@ export class TvCutCatalogService {
 
   public get configured(): boolean {
     return this.metadataClient !== undefined;
+  }
+
+  public get metadataStats(): Readonly<MetadataStremioStats> | undefined {
+    return this.metadataClient?.stats;
+  }
+
+  public get metadataSearchCatalogId(): string | undefined {
+    return this.metadataClient?.searchCatalogId;
   }
 
   public cutSession(cutId: string) {
