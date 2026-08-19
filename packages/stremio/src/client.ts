@@ -347,13 +347,13 @@ export class MetadataStremioClient {
     else if (kind === "catalog") this.counters.catalogRequests += 1;
     else this.counters.metaRequests += 1;
     const startedAt = Date.now();
+    // Keep explicit references to the timeout signal so we can classify
+    // failures correctly in the catch path.
+    const timeoutSignal = AbortSignal.timeout(this.requestTimeoutMs);
     const signal =
       callerSignal === undefined
-        ? AbortSignal.timeout(this.requestTimeoutMs)
-        : AbortSignal.any([
-            callerSignal,
-            AbortSignal.timeout(this.requestTimeoutMs),
-          ]);
+        ? timeoutSignal
+        : AbortSignal.any([callerSignal, timeoutSignal]);
     let response: Response;
     try {
       response = await this.fetchImplementation(url, {
@@ -364,8 +364,7 @@ export class MetadataStremioClient {
       });
     } catch {
       const elapsed = Date.now() - startedAt;
-      const classification =
-        callerSignal?.aborted === true ? "cancelled" : "timeout";
+      const classification = classifyFetchFailure(callerSignal, timeoutSignal);
       console.error(
         `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=${classification}`,
       );
@@ -397,4 +396,17 @@ export class MetadataStremioClient {
     }
     return response;
   }
+}
+
+/**
+ * Classify a fetch rejection based on which signal caused cancellation.
+ * Pure helper for deterministic unit testing.
+ */
+export function classifyFetchFailure(
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal,
+): "cancelled" | "timeout" | "network_error" {
+  if (callerSignal?.aborted === true) return "cancelled";
+  if (timeoutSignal.aborted) return "timeout";
+  return "network_error";
 }

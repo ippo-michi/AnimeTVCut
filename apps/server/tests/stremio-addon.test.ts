@@ -800,65 +800,78 @@ describe("public catalog route hard deadline and disconnect", () => {
 
   it("client disconnect aborts service.search signal via real socket", async () => {
     let signalAborted = false;
-
-    const app = Fastify();
-    await app.register(
-      publicStremioRoutes(
-        {
-          search: async (_query: string, signal?: AbortSignal) => {
-            // Wait for signal to abort — simulates a search that hangs
-            await new Promise<void>((resolve) => {
-              signal?.addEventListener(
-                "abort",
-                () => {
-                  signalAborted = true;
-                  resolve();
-                },
-                { once: true },
-              );
-            });
-            return [{ id: "test", type: "series", name: "Test" }];
-          },
-        } as unknown as TvCutCatalogService,
-        { routeTimeoutMs: 10_000 },
-      ),
+    // Deferred promise that resolves when the server's AbortSignal fires.
+    // This replaces arbitrary sleeps with explicit synchronization.
+    let resolveSignalReceived!: () => void;
+    const signalReceived = new Promise<void>(
+      (resolve) => (resolveSignalReceived = resolve),
     );
 
-    // Start the server on an ephemeral port so we can connect via
-    // Node HTTP and explicitly destroy the socket.
-    await app.listen({ port: 0 });
-    const addr = app.server.address()!;
-    const port = typeof addr === "string" ? 0 : addr.port;
+    const app = Fastify();
+    let socketRef: net.Socket | undefined;
 
-    // Use net.Socket to connect, send request, then destroy the socket
-    // to simulate client disconnect.
-    await new Promise<void>((resolve, reject) => {
-      const socket = net.connect({ port, host: "127.0.0.1" }, () => {
-        socket.write(
-          `GET /catalog/series/animetvcut-v2/search=test.json HTTP/1.1\r\n` +
-            "Host: 127.0.0.1\r\n" +
-            "Connection: close\r\n" +
-            "\r\n",
-        );
+    try {
+      // Register routes BEFORE listening (Fastify requires this order).
+      await app.register(
+        publicStremioRoutes(
+          {
+            search: async (_query: string, signal?: AbortSignal) => {
+              // Wait for signal to abort — simulates a search that hangs.
+              await new Promise<void>((resolve) => {
+                signal?.addEventListener(
+                  "abort",
+                  () => {
+                    signalAborted = true;
+                    resolveSignalReceived();
+                    resolve();
+                  },
+                  { once: true },
+                );
+              });
+              return [{ id: "test", type: "series", name: "Test" }];
+            },
+          } as unknown as TvCutCatalogService,
+          { routeTimeoutMs: 10_000 },
+        ),
+      );
+
+      // Start the server on loopback with an ephemeral port.
+      await app.listen({ port: 0, host: "127.0.0.1" });
+      const addr = app.server.address()!;
+      const port = typeof addr === "string" ? 0 : addr.port;
+
+      // Connect via net.Socket, send request, then destroy the socket
+      // to simulate client disconnect.
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.connect({ port, host: "127.0.0.1" }, () => {
+          socketRef = socket;
+          socket.write(
+            `GET /catalog/series/animetvcut-v2/search=test.json HTTP/1.1\r\n` +
+              "Host: 127.0.0.1\r\n" +
+              "Connection: close\r\n" +
+              "\r\n",
+          );
+        });
+
+        socket.on("error", reject);
+
+        // Wait for the server to detect the abort (i.e., the signal fired)
+        // then destroy the socket. This proves the full chain:
+        // HTTP request reaches handler -> signal received -> socket destroyed
+        // -> server detects disconnect -> signal aborted.
+        void signalReceived.then(() => {
+          socket.destroy();
+        });
+
+        socket.on("close", () => {
+          resolve();
+        });
       });
 
-      socket.on("error", reject);
-
-      // Wait a tiny bit for the request to arrive and start processing
-      setTimeout(() => {
-        // Destroy the socket — this simulates client disconnect and
-        // should trigger the "close" event on the response and the
-        // "aborted" event on the request.
-        socket.destroy();
-      }, 50);
-
-      socket.on("close", () => {
-        // Give the server a moment to observe the disconnect
-        setTimeout(resolve, 100);
-      });
-    });
-
-    expect(signalAborted).toBe(true);
-    await app.close();
+      expect(signalAborted).toBe(true);
+    } finally {
+      socketRef?.destroy();
+      await app.close();
+    }
   });
 });
