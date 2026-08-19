@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import { groupTvCutEpisodes } from "@animetvcut/core";
 import {
@@ -8,6 +8,9 @@ import {
   parseVirtualMetaId,
   parseVirtualVideoId,
 } from "@animetvcut/stremio";
+
+import { createApp } from "../src/app.js";
+import type { EpisodeWatchProgressReporter } from "../src/services/watch-progress.js";
 
 interface LiveTarget {
   name: string;
@@ -82,5 +85,51 @@ describe.skipIf(targets.length === 0)(
         }
       });
     }
+  },
+);
+
+describe.skipIf(process.env.AIOMETADATA_TEST_MANIFEST_URL === undefined)(
+  "optional live public catalog route",
+  () => {
+    it("serves a valid search catalog through /v2 with metadata counters", async () => {
+      const client = new MetadataStremioClient({
+        manifestUrl: process.env.AIOMETADATA_TEST_MANIFEST_URL ?? "",
+        requestTimeoutMs: 30_000,
+        manifestCacheTtlMs: 0,
+        catalogCacheTtlMs: 0,
+        metaCacheTtlMs: 0,
+      });
+      const reportEpisodeWatched = vi.fn<
+        Parameters<EpisodeWatchProgressReporter["reportEpisodeWatched"]>,
+        ReturnType<EpisodeWatchProgressReporter["reportEpisodeWatched"]>
+      >(async () => "triggered");
+      const reporter: EpisodeWatchProgressReporter = { reportEpisodeWatched };
+      const app = createApp({
+        metadataClient: client,
+        publicBaseUrl: new URL("https://public.animetvcut.test"),
+        watchProgressReporter: reporter,
+      });
+      try {
+        const query = process.env.AIOMETADATA_TEST_SEARCH ?? "One Piece";
+        const response = await app.inject({
+          method: "GET",
+          url: `/v2/catalog/series/animetvcut-v2/search=${encodeURIComponent(query)}.json`,
+        });
+        expect(response.statusCode).toBe(200);
+        expect(response.headers["access-control-allow-origin"]).toBe("*");
+        const metas = response.json().metas as { id: string }[];
+        expect(Array.isArray(metas)).toBe(true);
+        expect(metas.length).toBeGreaterThan(0);
+        expect(
+          metas.every((meta) => /^atc:(tv|season|series):/.test(meta.id)),
+        ).toBe(true);
+        const stats = client.stats;
+        expect(stats.manifestRequests).toBeGreaterThanOrEqual(1);
+        expect(stats.catalogRequests).toBeGreaterThanOrEqual(1);
+        expect(reportEpisodeWatched).not.toHaveBeenCalled();
+      } finally {
+        await app.close();
+      }
+    });
   },
 );

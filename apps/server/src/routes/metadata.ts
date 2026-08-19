@@ -12,7 +12,13 @@ export function metadataRoutes(
   return async (app) => {
     app.get("/api/v1/dev/metadata/health", async () => {
       if (client === undefined) {
-        return { configured: false, reachable: false, manifestValid: false };
+        return {
+          configured: false,
+          reachable: false,
+          manifestValid: false,
+          origin: undefined,
+          catalogId: undefined,
+        };
       }
       return client.checkHealth();
     });

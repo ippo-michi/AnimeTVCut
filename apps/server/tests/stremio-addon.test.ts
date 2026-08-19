@@ -87,20 +87,15 @@ function metadataClient(
         onCatalogUrl?.(url);
         return new Response(
           JSON.stringify({
-            metas: url.pathname.includes("skip=3")
-              ? [
-                  { id: "unrelated-a", type: "series", name: "Unrelated A" },
-                  { id: "unrelated-b", type: "series", name: "Unrelated B" },
-                ]
-              : [
-                  {
-                    id: sourceMeta.id,
-                    type: "series",
-                    name: sourceMeta.name,
-                    poster: sourceMeta.poster,
-                    unsafe: "must-not-pass",
-                  },
-                ],
+            metas: [
+              {
+                id: sourceMeta.id,
+                type: "series",
+                name: sourceMeta.name,
+                poster: sourceMeta.poster,
+                unsafe: "must-not-pass",
+              },
+            ],
           }),
         );
       }
@@ -146,7 +141,7 @@ describe("public Stremio addon", () => {
     expect(health.headers["access-control-allow-origin"]).toBeUndefined();
   });
 
-  it("publishes a clean v2 identity with explicit output pagination", async () => {
+  it("publishes a clean v2 identity with a search-only catalog", async () => {
     const app = createApp({ metadataClient: metadataClient() });
     apps.push(app);
 
@@ -164,7 +159,7 @@ describe("public Stremio addon", () => {
         {
           id: "animetvcut-v2",
           type: "series",
-          extra: [{ name: "search", isRequired: true }, { name: "skip" }],
+          extra: [{ name: "search", isRequired: true }],
         },
       ],
     });
@@ -192,7 +187,7 @@ describe("public Stremio addon", () => {
     expect(prefixedCatalog.json().metas).toHaveLength(3);
   });
 
-  it("paginates expanded results without forwarding skip upstream", async () => {
+  it("answers a legacy skip > 0 with an empty catalog and no upstream request", async () => {
     const catalogRequests: URL[] = [];
     const app = createApp({
       metadataClient: metadataClient((url) => catalogRequests.push(url)),
@@ -204,13 +199,26 @@ describe("public Stremio addon", () => {
       url: "/catalog/series/animetvcut/search=Frieren&skip=1.json",
     });
     expect(response.statusCode).toBe(200);
-    expect(
-      response.json().metas.map((meta: { name: string }) => meta.name),
-    ).toEqual(["Synthetic Six — Season Cut", "Synthetic Six — Complete Cut"]);
-    expect(catalogRequests).toHaveLength(1);
-    expect(catalogRequests[0]!.pathname).not.toContain("skip=1");
-    expect(response.body).not.toMatch(/Unrelated A|Unrelated B/);
+    expect(response.json()).toEqual({ metas: [] });
+    expect(catalogRequests).toEqual([]);
     expect(response.headers["cache-control"]).toBe("no-store, max-age=0");
+  });
+
+  it("never forwards a skip parameter upstream on page zero", async () => {
+    const catalogRequests: URL[] = [];
+    const app = createApp({
+      metadataClient: metadataClient((url) => catalogRequests.push(url)),
+    });
+    apps.push(app);
+
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=Frieren&skip=0.json",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(catalogRequests).toHaveLength(1);
+    expect(catalogRequests[0]!.pathname).not.toContain("skip");
+    expect(response.json().metas).toHaveLength(3);
   });
 
   it("returns the same search results after a prior selection", async () => {
@@ -241,6 +249,41 @@ describe("public Stremio addon", () => {
       expect(catalogRequests).toEqual([]);
     },
   );
+
+  it("returns 200 with empty metas when the metadata backend fails", async () => {
+    const failingClient = new MetadataStremioClient(
+      {
+        manifestUrl: "https://metadata.test/manifest.json",
+        requestTimeoutMs: 2_000,
+      },
+      async () => {
+        throw new TypeError("fetch failed");
+      },
+    );
+    const app = createApp({ metadataClient: failingClient });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=Frieren.json",
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ metas: [] });
+  });
+
+  it("exposes only virtual atc cut ids in successful search results", async () => {
+    const app = createApp({ metadataClient: metadataClient() });
+    apps.push(app);
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=Frieren.json",
+    });
+    expect(response.statusCode).toBe(200);
+    const metas = response.json().metas as { id: string }[];
+    expect(metas).toHaveLength(3);
+    expect(
+      metas.every((meta) => /^atc:(tv|season|series):/.test(meta.id)),
+    ).toBe(true);
+  });
 
   it("transforms safe catalog previews and emits finalized virtual groups", async () => {
     const app = createApp({
@@ -718,8 +761,8 @@ describe("public catalog route safety boundary", () => {
     const elapsed = Date.now() - start;
 
     // Route timeout should abort the search, which throws, and the
-    // route handler catches it and returns a 503 with empty metas.
-    expect(response.statusCode).toBe(503);
+    // route handler catches it and returns 200 with empty metas.
+    expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ metas: [] });
     expect(searchAborted).toBe(true);
     // Should complete within route timeout + small margin, not 30 seconds
@@ -760,7 +803,7 @@ describe("public catalog route safety boundary", () => {
     });
 
     // Route timeout fires, aborts the search, handler catches error
-    expect(response.statusCode).toBe(503);
+    expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ metas: [] });
     await app.close();
   });
@@ -792,7 +835,7 @@ describe("public catalog route hard deadline and disconnect", () => {
     const elapsed = Date.now() - start;
 
     // Must complete within the route timeout, not hang forever.
-    expect(response.statusCode).toBe(503);
+    expect(response.statusCode).toBe(200);
     expect(JSON.parse(response.body)).toEqual({ metas: [] });
     expect(elapsed).toBeLessThan(2000);
     await app.close();

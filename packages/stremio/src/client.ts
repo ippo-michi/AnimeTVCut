@@ -124,6 +124,10 @@ export class MetadataStremioClient {
     return safeManifestOrigin(this.manifestUrl);
   }
 
+  public get searchCatalogId(): string | undefined {
+    return this.input.searchCatalogId;
+  }
+
   public get stats(): Readonly<MetadataStremioStats> {
     return { ...this.counters };
   }
