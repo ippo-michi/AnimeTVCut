@@ -800,11 +800,16 @@ describe("public catalog route hard deadline and disconnect", () => {
 
   it("client disconnect aborts service.search signal via real socket", async () => {
     let signalAborted = false;
-    // Deferred promise that resolves when the server's AbortSignal fires.
-    // This replaces arbitrary sleeps with explicit synchronization.
-    let resolveSignalReceived!: () => void;
-    const signalReceived = new Promise<void>(
-      (resolve) => (resolveSignalReceived = resolve),
+    // Two separate deferred promises for explicit synchronization:
+    // - searchStarted: resolved when service.search() starts (request received)
+    // - signalAborted: resolved when the AbortSignal fires (server detects disconnect)
+    let resolveSearchStarted!: () => void;
+    const searchStarted = new Promise<void>(
+      (resolve) => (resolveSearchStarted = resolve),
+    );
+    let resolveSignalAborted!: () => void;
+    const signalAbortedPromise = new Promise<void>(
+      (resolve) => (resolveSignalAborted = resolve),
     );
 
     const app = Fastify();
@@ -816,13 +821,16 @@ describe("public catalog route hard deadline and disconnect", () => {
         publicStremioRoutes(
           {
             search: async (_query: string, signal?: AbortSignal) => {
+              // Signal that the handler has started so the test knows it's
+              // safe to destroy the socket.
+              resolveSearchStarted();
               // Wait for signal to abort — simulates a search that hangs.
               await new Promise<void>((resolve) => {
                 signal?.addEventListener(
                   "abort",
                   () => {
                     signalAborted = true;
-                    resolveSignalReceived();
+                    resolveSignalAborted();
                     resolve();
                   },
                   { once: true },
@@ -855,11 +863,11 @@ describe("public catalog route hard deadline and disconnect", () => {
 
         socket.on("error", reject);
 
-        // Wait for the server to detect the abort (i.e., the signal fired)
-        // then destroy the socket. This proves the full chain:
-        // HTTP request reaches handler -> signal received -> socket destroyed
-        // -> server detects disconnect -> signal aborted.
-        void signalReceived.then(() => {
+        // Wait for the handler to start, then destroy the socket.
+        // This proves the full chain:
+        // HTTP request reaches handler -> handler starts -> socket destroyed
+        // -> server detects disconnect -> AbortSignal fires.
+        void searchStarted.then(() => {
           socket.destroy();
         });
 
@@ -867,6 +875,9 @@ describe("public catalog route hard deadline and disconnect", () => {
           resolve();
         });
       });
+
+      // Wait for the server to detect the disconnect via the AbortSignal.
+      await signalAbortedPromise;
 
       expect(signalAborted).toBe(true);
     } finally {
