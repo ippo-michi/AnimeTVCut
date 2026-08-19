@@ -28,6 +28,11 @@ const LEGACY_CATALOG_ID = "animetvcut";
 const REPAIRED_CATALOG_ID = "animetvcut-v2";
 const REPAIRED_BASE_PATH = "/v2";
 
+// Stremio catalogs paginate with an explicit `skip` extra. One page is a
+// bounded slice of the expanded TV/season/series result space rather than
+// the remainder of the full result set.
+export const PUBLIC_CATALOG_PAGE_SIZE = 100;
+
 function disableClientCaching(reply: FastifyReply): void {
   void reply.header("cache-control", "no-store, max-age=0");
   void reply.header("pragma", "no-cache");
@@ -169,75 +174,128 @@ export function publicStremioRoutes(
       disableClientCaching(reply);
       return { metas: [] };
     };
-    const searchCatalog = async (
-      request: FastifyRequest<{ Params: { extra: string } }>,
-      reply: FastifyReply,
-    ) => {
-      // Public catalog requests must never hang indefinitely. Apply a
-      // route-level timeout as a final hard deadline and propagate
-      // client disconnect so upstream work is cancelled promptly.
-      const abortController = new AbortController();
-      const routeTimeout = AbortSignal.timeout(routeTimeoutMs);
-      const combinedSignal = AbortSignal.any([
-        abortController.signal,
-        routeTimeout,
-      ]);
-      // Observe both request-side and response-side disconnect events.
-      // Use named one-shot handlers so they can be removed in finally.
-      const onRequestAborted = () => abortController.abort();
-      const onResponseFinished = () => abortController.abort();
-      request.raw.on("aborted", onRequestAborted);
-      reply.raw.on("close", onResponseFinished);
-      try {
-        disableClientCaching(reply);
+    const searchCatalog =
+      (catalogId: string) =>
+      async (
+        request: FastifyRequest<{ Params: { extra: string } }>,
+        reply: FastifyReply,
+      ) => {
+        // Public catalog requests must never hang indefinitely. Apply a
+        // route-level timeout as a final hard deadline and propagate
+        // client disconnect so upstream work is cancelled promptly.
+        const abortController = new AbortController();
+        const routeTimeout = AbortSignal.timeout(routeTimeoutMs);
+        const combinedSignal = AbortSignal.any([
+          abortController.signal,
+          routeTimeout,
+        ]);
+        // Observe both request-side and response-side disconnect events.
+        // Use named one-shot handlers so they can be removed in finally.
+        const onRequestAborted = () => abortController.abort();
+        const onResponseFinished = () => abortController.abort();
+        request.raw.on("aborted", onRequestAborted);
+        reply.raw.on("close", onResponseFinished);
+        const startedAt = Date.now();
         const extra = parseExtra(request.params.extra);
-        if (extra.search === undefined || extra.search.trim().length === 0) {
-          return { metas: [] };
-        }
-        // `skip` is in this addon's expanded output space. Forwarding it to
-        // the metadata addon skips unrelated source shows; slicing the
-        // deterministic TV/season/series variants also supports clients
-        // which resume catalog pagination after a previous selection.
-        if (!extra.skipValid) return { metas: [] };
-        // Race the search against the route timeout as a hard deadline.
-        // If service.search() ignores cancellation, the timeout wins.
-        // When the timeout wins, abort the controller to propagate
-        // cancellation to downstream code.
-        const searchPromise = service.search(extra.search, combinedSignal);
-        const timeoutPromise = new Promise<never>((_resolve, reject) => {
-          routeTimeout.addEventListener(
-            "abort",
-            () => {
-              // Abort the controller to propagate cancellation downstream.
-              abortController.abort();
-              reject(
-                new Error("Public catalog request exceeded the route timeout."),
-              );
+        // Diagnostic entry covering both the success and failure paths. Never
+        // log credentials, authentication query parameters, cookies, or the
+        // private metadata URL.
+        const finishLog = (
+          resultCount: number,
+          outcome:
+            "success" | "empty" | "metadata_error" | "timeout" | "cancelled",
+        ) =>
+          request.log.info(
+            {
+              catalogId,
+              skip: extra.skip,
+              elapsedMs: Date.now() - startedAt,
+              resultCount,
+              outcome,
             },
-            { once: true },
+            "Public catalog search finished",
           );
-        });
-        const metas = await Promise.race([searchPromise, timeoutPromise]);
-        return { metas: metas.slice(extra.skip) };
-      } catch (error) {
-        request.log.info(
-          { errorName: error instanceof Error ? error.name : "UnknownError" },
-          "Public catalog request rejected",
-        );
-        return reply.code(infrastructureStatus(error)).send({ metas: [] });
-      } finally {
-        // Remove observers to avoid leaking listeners on the request/
-        // response objects after the handler completes.
-        request.raw.removeListener("aborted", onRequestAborted);
-        reply.raw.removeListener("close", onResponseFinished);
-      }
-    };
+        try {
+          disableClientCaching(reply);
+          request.log.info(
+            { catalogId, skip: extra.skip },
+            "Public catalog search started",
+          );
+          if (extra.search === undefined || extra.search.trim().length === 0) {
+            finishLog(0, "empty");
+            return { metas: [] };
+          }
+          // `skip` is in this addon's expanded output space. Forwarding it to
+          // the metadata addon skips unrelated source shows; slicing the
+          // deterministic TV/season/series variants also supports clients
+          // which resume catalog pagination after a previous selection.
+          if (!extra.skipValid) {
+            finishLog(0, "empty");
+            return { metas: [] };
+          }
+          // Race the search against the route timeout as a hard deadline.
+          // If service.search() ignores cancellation, the timeout wins.
+          // When the timeout wins, abort the controller to propagate
+          // cancellation to downstream code.
+          const searchPromise = service.search(extra.search, combinedSignal);
+          const timeoutPromise = new Promise<never>((_resolve, reject) => {
+            routeTimeout.addEventListener(
+              "abort",
+              () => {
+                // Abort the controller to propagate cancellation downstream.
+                abortController.abort();
+                reject(
+                  new Error(
+                    "Public catalog request exceeded the route timeout.",
+                  ),
+                );
+              },
+              { once: true },
+            );
+          });
+          const metas = await Promise.race([searchPromise, timeoutPromise]);
+          const page = metas.slice(
+            extra.skip,
+            extra.skip + PUBLIC_CATALOG_PAGE_SIZE,
+          );
+          finishLog(page.length, page.length === 0 ? "empty" : "success");
+          return { metas: page };
+        } catch (error) {
+          // A failing metadata backend must never surface as an HTTP error to
+          // Stremio's public catalog resource. Convert backend/search failures
+          // into a valid empty catalog response while still recording the
+          // classification and elapsed time internally.
+          const outcome: "metadata_error" | "timeout" | "cancelled" =
+            routeTimeout.aborted
+              ? "timeout"
+              : abortController.signal.aborted
+                ? "cancelled"
+                : "metadata_error";
+          request.log.warn(
+            {
+              catalogId,
+              skip: extra.skip,
+              elapsedMs: Date.now() - startedAt,
+              resultCount: 0,
+              outcome,
+              errorName: error instanceof Error ? error.name : "UnknownError",
+            },
+            "Public catalog search finished",
+          );
+          return { metas: [] };
+        } finally {
+          // Remove observers to avoid leaking listeners on the request/
+          // response objects after the handler completes.
+          request.raw.removeListener("aborted", onRequestAborted);
+          reply.raw.removeListener("close", onResponseFinished);
+        }
+      };
 
     for (const catalogId of [LEGACY_CATALOG_ID, REPAIRED_CATALOG_ID]) {
       app.get(`/catalog/series/${catalogId}.json`, emptyCatalog);
       app.get<{ Params: { extra: string } }>(
         `/catalog/series/${catalogId}/:extra.json`,
-        searchCatalog,
+        searchCatalog(catalogId),
       );
     }
     app.get(
@@ -246,7 +304,7 @@ export function publicStremioRoutes(
     );
     app.get<{ Params: { extra: string } }>(
       `${REPAIRED_BASE_PATH}/catalog/series/${REPAIRED_CATALOG_ID}/:extra.json`,
-      searchCatalog,
+      searchCatalog(REPAIRED_CATALOG_ID),
     );
 
     const metaHandler = async (
