@@ -35,6 +35,16 @@ import {
 } from "./metadata-config.js";
 import type { UpstreamCutService } from "./upstream-cut-service.js";
 
+// Some Stremio clients (Stremio Kai) resolve a catalog meta item to IMDb
+// before rendering it. AIOMetadata search items carry an IMDb-shaped id but
+// leave imdb_id null, so expose the IMDb anchor explicitly on the virtual
+// items when the source id is an IMDb id.
+function imdbIdOf(meta: Pick<StremioMetaPreview, "id" | "imdb_id">) {
+  const explicit = meta.imdb_id;
+  if (explicit !== undefined && /^tt\d+$/.test(explicit)) return explicit;
+  return /^tt\d+$/.test(meta.id) ? meta.id : undefined;
+}
+
 interface CachedStream {
   expiresAt: number;
   cutId: string;
@@ -153,6 +163,7 @@ export class TvCutCatalogService {
         ...meta,
         id: createLongFormVirtualMetaId(mode, meta.id),
         name: `${meta.name} — ${MODE_NAMES[mode]}`,
+        ...(imdbIdOf(meta) === undefined ? {} : { imdb_id: imdbIdOf(meta) }),
       })),
     );
   }
@@ -300,6 +311,7 @@ export class TvCutCatalogService {
       ...(source.imdbRating === undefined
         ? {}
         : { imdbRating: source.imdbRating }),
+      ...(imdbIdOf(source) === undefined ? {} : { imdb_id: imdbIdOf(source) }),
       ...(source.genres === undefined ? {} : { genres: source.genres }),
       ...(source.runtimeSeconds === undefined
         ? {}

@@ -30,6 +30,7 @@ export interface StremioMetaPreview {
   description?: string;
   releaseInfo?: string;
   imdbRating?: string;
+  imdb_id?: string;
   genres?: readonly string[];
 }
 

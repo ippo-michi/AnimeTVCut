@@ -33,6 +33,12 @@ import {
 } from "../src/services/watch-progress.js";
 
 const sourceId = "opaque:fixture:series/α";
+const frierenSourceId = "tt22248376";
+const frierenMetaIds = [
+  "atc:tv:dHQyMjI0ODM3Ng",
+  "atc:season:dHQyMjI0ODM3Ng",
+  "atc:series:dHQyMjI0ODM3Ng",
+] as const;
 const manifest = {
   id: "fixture.metadata",
   name: "Fixture AIOMetadata",
@@ -445,6 +451,130 @@ describe("public Stremio addon", () => {
     expect(catalog.json().metas).toEqual([
       expect.objectContaining({ name: "Synthetic Six — TV Cut" }),
     ]);
+  });
+});
+
+describe("search sequence regression: Frieren, other query, Frieren again", () => {
+  const apps: ReturnType<typeof createApp>[] = [];
+
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map(async (app) => app.close()));
+  });
+
+  function frierenMeta() {
+    return {
+      id: frierenSourceId,
+      type: "series",
+      name: "Frieren: Beyond Journey's End",
+      runtime: "24 min",
+      poster: "https://images.test/poster.jpg",
+      videos: Array.from({ length: 28 }, (_, index) => ({
+        id: `tt22248376:1:${index + 1}`,
+        season: 1,
+        episode: index + 1,
+        title: `Episode ${index + 1}`,
+        released: "2025-01-01T00:00:00Z",
+      })),
+    };
+  }
+
+  it("settles catalog -> meta follow-ups -> other query -> same query -> meta again", async () => {
+    const client = metadataClient(undefined, frierenMeta());
+    const app = createApp({
+      metadataClient: client,
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+    });
+    apps.push(app);
+
+    const catalog = (query: string) =>
+      app.inject({
+        method: "GET",
+        url: `/v2/catalog/series/animetvcut-v2/search=${encodeURIComponent(query)}.json`,
+      });
+    const meta = (id: string) =>
+      app.inject({
+        method: "GET",
+        url: `/v2/meta/series/${id}.json`,
+      });
+
+    const first = await catalog("Frieren");
+    expect(first.statusCode).toBe(200);
+    const firstMetas = first.json().metas as {
+      id: string;
+      name: string;
+      imdb_id?: string;
+    }[];
+    expect(firstMetas.map((item) => item.id)).toEqual([...frierenMetaIds]);
+    // Clients like Stremio Kai resolve catalog items through IMDb; the
+    // virtual id is opaque, so the IMDb anchor must be explicit.
+    for (const item of firstMetas) {
+      expect(item.imdb_id).toBe(frierenSourceId);
+    }
+    const statsAfterFirstCatalog = client.stats;
+    expect(statsAfterFirstCatalog).toEqual({
+      manifestRequests: 1,
+      catalogRequests: 1,
+      metaRequests: 0,
+    });
+
+    for (const id of frierenMetaIds) {
+      const response = await meta(id);
+      expect(response.statusCode).toBe(200);
+      expect(response.json().meta.videos.length).toBeGreaterThan(0);
+      expect(response.json().meta.imdb_id).toBe(frierenSourceId);
+    }
+    expect(client.stats).toEqual({
+      manifestRequests: 1,
+      catalogRequests: 1,
+      metaRequests: 1,
+    });
+
+    const other = await catalog("One Piece");
+    expect(other.statusCode).toBe(200);
+    expect(client.stats).toEqual({
+      manifestRequests: 1,
+      catalogRequests: 2,
+      metaRequests: 1,
+    });
+
+    const second = await catalog("Frieren");
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual(first.json());
+    // Second identical query is served entirely from the catalog cache.
+    expect(client.stats).toEqual({
+      manifestRequests: 1,
+      catalogRequests: 2,
+      metaRequests: 1,
+    });
+
+    for (const id of frierenMetaIds) {
+      const response = await meta(id);
+      expect(response.statusCode).toBe(200);
+      expect(response.json().meta.videos.length).toBeGreaterThan(0);
+      expect(response.json().meta.imdb_id).toBe(frierenSourceId);
+    }
+    // All follow-up meta requests are served from the meta cache.
+    expect(client.stats).toEqual({
+      manifestRequests: 1,
+      catalogRequests: 2,
+      metaRequests: 1,
+    });
+  });
+
+  it("does not emit imdb_id for non-IMDb source ids", async () => {
+    const app = createApp({
+      metadataClient: metadataClient(),
+      now: () => Date.parse("2026-01-01T00:00:00Z"),
+    });
+    apps.push(app);
+    const catalog = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut/search=Synthetic.json",
+    });
+    expect(catalog.statusCode).toBe(200);
+    for (const item of catalog.json().metas as { imdb_id?: string }[]) {
+      expect(item.imdb_id).toBeUndefined();
+    }
   });
 });
 

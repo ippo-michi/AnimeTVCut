@@ -135,6 +135,7 @@ function parsePreview(value: unknown): StremioMetaPreview {
   const description = take("description");
   const releaseInfo = take("releaseInfo", 256);
   const imdbRating = take("imdbRating", 64);
+  const imdb_id = take("imdb_id", 64);
   const genres =
     Array.isArray(value.genres) && value.genres.length <= 64
       ? value.genres
@@ -152,6 +153,7 @@ function parsePreview(value: unknown): StremioMetaPreview {
     ...(description === undefined ? {} : { description }),
     ...(releaseInfo === undefined ? {} : { releaseInfo }),
     ...(imdbRating === undefined ? {} : { imdbRating }),
+    ...(imdb_id === undefined ? {} : { imdb_id }),
     ...(genres === undefined ? {} : { genres }),
   };
 }
