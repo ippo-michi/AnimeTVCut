@@ -134,13 +134,69 @@ export class MetadataStremioClient {
     const cached = this.manifestCache;
     if (cached !== undefined && cached.expiresAt > this.now())
       return cached.value;
-    if (this.manifestInFlight !== undefined) return this.manifestInFlight;
-    const promise = this.loadManifest(signal);
-    this.manifestInFlight = promise;
+    // Reuse or create the shared upstream fetch. Do NOT pass caller signal
+    // to loadManifest — the shared fetch uses only an internal timeout so
+    // that one caller's abort never cancels the upstream request for others.
+    let shared = this.manifestInFlight;
+    if (shared === undefined) {
+      shared = this.loadManifest();
+      this.manifestInFlight = shared;
+      // Attach cleanup to the shared promise so it only clears when the
+      // upstream request actually settles. Use a catch to prevent
+      // unhandled rejection warnings when the shared promise rejects but
+      // all callers have already detached (aborted).
+      void shared
+        .finally(() => {
+          if (this.manifestInFlight === shared) {
+            this.manifestInFlight = undefined;
+          }
+        })
+        .catch(() => {
+          // Suppress unhandled rejection if no caller is waiting.
+          // The rejection has already been observed by callers who
+          // raced against this promise.
+        });
+    }
+    // Every caller independently races its own signal against the shared
+    // promise. Caller cancellation stops waiting for that caller only.
+    // When the shared promise settles, remove the caller's abort listener
+    // to avoid leaving it attached unnecessarily.
+    let abortHandler: (() => void) | undefined;
+    const promise =
+      signal !== undefined
+        ? Promise.race([
+            shared,
+            new Promise<never>((_resolve, reject) => {
+              if (signal.aborted) {
+                reject(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new Error("The operation was aborted."),
+                );
+              } else {
+                abortHandler = () =>
+                  reject(
+                    signal.reason instanceof Error
+                      ? signal.reason
+                      : new Error("The operation was aborted."),
+                  );
+                signal.addEventListener("abort", abortHandler, {
+                  once: true,
+                });
+              }
+            }),
+          ])
+        : shared;
     try {
       return await promise;
     } finally {
-      if (this.manifestInFlight === promise) this.manifestInFlight = undefined;
+      // Remove the caller's abort listener when this wrapper settles,
+      // regardless of whether it was due to abort or the shared promise
+      // resolving/rejecting. This prevents leaving listeners attached
+      // on signals that outlive this call.
+      if (abortHandler !== undefined) {
+        signal?.removeEventListener("abort", abortHandler);
+      }
     }
   }
 
@@ -290,13 +346,14 @@ export class MetadataStremioClient {
     if (kind === "manifest") this.counters.manifestRequests += 1;
     else if (kind === "catalog") this.counters.catalogRequests += 1;
     else this.counters.metaRequests += 1;
+    const startedAt = Date.now();
+    // Keep explicit references to the timeout signal so we can classify
+    // failures correctly in the catch path.
+    const timeoutSignal = AbortSignal.timeout(this.requestTimeoutMs);
     const signal =
       callerSignal === undefined
-        ? AbortSignal.timeout(this.requestTimeoutMs)
-        : AbortSignal.any([
-            callerSignal,
-            AbortSignal.timeout(this.requestTimeoutMs),
-          ]);
+        ? timeoutSignal
+        : AbortSignal.any([callerSignal, timeoutSignal]);
     let response: Response;
     try {
       response = await this.fetchImplementation(url, {
@@ -306,6 +363,11 @@ export class MetadataStremioClient {
         headers: { accept: "application/json" },
       });
     } catch {
+      const elapsed = Date.now() - startedAt;
+      const classification = classifyFetchFailure(callerSignal, timeoutSignal);
+      console.error(
+        `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=${classification}`,
+      );
       throw new MetadataStremioUnavailableError(
         callerSignal?.aborted === true
           ? "Metadata Stremio request was cancelled."
@@ -313,12 +375,20 @@ export class MetadataStremioClient {
       );
     }
     if (response.status >= 300 && response.status < 400) {
+      const elapsed = Date.now() - startedAt;
+      console.error(
+        `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=redirect status=${response.status}`,
+      );
       await response.body?.cancel();
       throw new MetadataStremioUnavailableError(
         `Metadata Stremio ${kind} returned an unexpected redirect.`,
       );
     }
     if (!response.ok) {
+      const elapsed = Date.now() - startedAt;
+      console.error(
+        `[stremio] ${kind} request failed origin=${this.safeOrigin} elapsed=${elapsed}ms classification=upstream_error status=${response.status}`,
+      );
       await response.body?.cancel();
       throw new MetadataStremioUnavailableError(
         `Metadata Stremio ${kind} failed with HTTP ${response.status}.`,
@@ -326,4 +396,17 @@ export class MetadataStremioClient {
     }
     return response;
   }
+}
+
+/**
+ * Classify a fetch rejection based on which signal caused cancellation.
+ * Pure helper for deterministic unit testing.
+ */
+export function classifyFetchFailure(
+  callerSignal: AbortSignal | undefined,
+  timeoutSignal: AbortSignal,
+): "cancelled" | "timeout" | "network_error" {
+  if (callerSignal?.aborted === true) return "cancelled";
+  if (timeoutSignal.aborted) return "timeout";
+  return "network_error";
 }

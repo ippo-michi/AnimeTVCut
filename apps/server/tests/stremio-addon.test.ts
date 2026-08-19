@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import Fastify from "fastify";
+import net from "node:net";
 
 import { DEFAULT_TV_CUT_GROUPING_CONFIG } from "@animetvcut/core";
 import {
@@ -24,6 +25,12 @@ import type {
   AutomaticUpstreamCutRequest,
   UpstreamCutService,
 } from "../src/services/upstream-cut-service.js";
+import { mediaRoutes } from "../src/routes/media.js";
+import { CutSessionStore } from "../src/services/cut-session-store.js";
+import {
+  CutWatchProgressTracker,
+  type EpisodeWatchProgressReporter,
+} from "../src/services/watch-progress.js";
 
 const sourceId = "opaque:fixture:series/α";
 const manifest = {
@@ -641,5 +648,241 @@ describe("public stream failure behavior", () => {
     expect(response.statusCode).toBe(503);
     expect(response.json()).toEqual({ streams: [] });
     await app.close();
+  });
+});
+
+describe("search does not invoke watch-progress reporter", () => {
+  it("catalog search never calls reportEpisodeWatched", async () => {
+    const reportEpisodeWatched = vi.fn<
+      Parameters<EpisodeWatchProgressReporter["reportEpisodeWatched"]>,
+      ReturnType<EpisodeWatchProgressReporter["reportEpisodeWatched"]>
+    >(async () => "triggered");
+    const reporter: EpisodeWatchProgressReporter = { reportEpisodeWatched };
+    const tracker = new CutWatchProgressTracker(reporter);
+
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes({
+        search: async () => [{ id: "test", type: "series", name: "Test" }],
+      } as unknown as TvCutCatalogService),
+    );
+    await app.register(
+      mediaRoutes(new CutSessionStore(), undefined, 0, tracker),
+    );
+
+    // Perform a catalog search
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+    expect(response.statusCode).toBe(200);
+
+    // Watch progress reporter must never be called during search
+    expect(reportEpisodeWatched).not.toHaveBeenCalled();
+    await app.close();
+  });
+});
+
+describe("public catalog route safety boundary", () => {
+  it("route timeout aborts service.search when it never resolves", async () => {
+    let searchAborted = false;
+
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async (_query: string, signal?: AbortSignal) => {
+            // Simulate a search that hangs until aborted
+            await new Promise<void>((resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  searchAborted = true;
+                  reject(new Error("Search was aborted by route timeout"));
+                },
+                { once: true },
+              );
+            });
+            return [{ id: "test", type: "series", name: "Test" }];
+          },
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 50 },
+      ),
+    );
+
+    const start = Date.now();
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+    const elapsed = Date.now() - start;
+
+    // Route timeout should abort the search, which throws, and the
+    // route handler catches it and returns a 503 with empty metas.
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    expect(searchAborted).toBe(true);
+    // Should complete within route timeout + small margin, not 30 seconds
+    expect(elapsed).toBeLessThan(2000);
+    await app.close();
+  });
+
+  it("response-side close observer is wired", async () => {
+    const app = Fastify();
+    // Use a fast route timeout so the test completes quickly even
+    // if the mock hangs waiting for abort.
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async (_query: string, signal?: AbortSignal) => {
+            // Simulate a search that hangs until aborted
+            await new Promise<void>((resolve, reject) => {
+              signal?.addEventListener(
+                "abort",
+                () => {
+                  reject(new Error("Search was aborted"));
+                },
+                { once: true },
+              );
+            });
+            return [{ id: "test", type: "series", name: "Test" }];
+          },
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 50 },
+      ),
+    );
+
+    // The route should complete via timeout (50ms) rather than hanging
+    // for the full routeTimeoutMs (10_000ms default).
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+
+    // Route timeout fires, aborts the search, handler catches error
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    await app.close();
+  });
+});
+
+describe("public catalog route hard deadline and disconnect", () => {
+  it("route timeout is a hard deadline even when service.search ignores abort", async () => {
+    // service.search returns a promise that never resolves and never
+    // inspects the signal — simulates a buggy upstream that ignores
+    // cancellation entirely.
+    const app = Fastify();
+    await app.register(
+      publicStremioRoutes(
+        {
+          search: async () =>
+            new Promise<readonly StremioMetaPreview[]>(() => {
+              // Never resolves, never rejects, never inspects signal
+            }),
+        } as unknown as TvCutCatalogService,
+        { routeTimeoutMs: 50 },
+      ),
+    );
+
+    const start = Date.now();
+    const response = await app.inject({
+      method: "GET",
+      url: "/catalog/series/animetvcut-v2/search=test.json",
+    });
+    const elapsed = Date.now() - start;
+
+    // Must complete within the route timeout, not hang forever.
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(response.body)).toEqual({ metas: [] });
+    expect(elapsed).toBeLessThan(2000);
+    await app.close();
+  });
+
+  it("client disconnect aborts service.search signal via real socket", async () => {
+    let signalAborted = false;
+    // Two separate deferred promises for explicit synchronization:
+    // - searchStarted: resolved when service.search() starts (request received)
+    // - signalAborted: resolved when the AbortSignal fires (server detects disconnect)
+    let resolveSearchStarted!: () => void;
+    const searchStarted = new Promise<void>(
+      (resolve) => (resolveSearchStarted = resolve),
+    );
+    let resolveSignalAborted!: () => void;
+    const signalAbortedPromise = new Promise<void>(
+      (resolve) => (resolveSignalAborted = resolve),
+    );
+
+    const app = Fastify();
+    let socketRef: net.Socket | undefined;
+
+    try {
+      // Register routes BEFORE listening (Fastify requires this order).
+      await app.register(
+        publicStremioRoutes(
+          {
+            search: async (_query: string, signal?: AbortSignal) => {
+              // Signal that the handler has started so the test knows it's
+              // safe to destroy the socket.
+              resolveSearchStarted();
+              // Wait for signal to abort — simulates a search that hangs.
+              await new Promise<void>((resolve) => {
+                signal?.addEventListener(
+                  "abort",
+                  () => {
+                    signalAborted = true;
+                    resolveSignalAborted();
+                    resolve();
+                  },
+                  { once: true },
+                );
+              });
+              return [{ id: "test", type: "series", name: "Test" }];
+            },
+          } as unknown as TvCutCatalogService,
+          { routeTimeoutMs: 10_000 },
+        ),
+      );
+
+      // Start the server on loopback with an ephemeral port.
+      await app.listen({ port: 0, host: "127.0.0.1" });
+      const addr = app.server.address()!;
+      const port = typeof addr === "string" ? 0 : addr.port;
+
+      // Connect via net.Socket, send request, then destroy the socket
+      // to simulate client disconnect.
+      await new Promise<void>((resolve, reject) => {
+        const socket = net.connect({ port, host: "127.0.0.1" }, () => {
+          socketRef = socket;
+          socket.write(
+            `GET /catalog/series/animetvcut-v2/search=test.json HTTP/1.1\r\n` +
+              "Host: 127.0.0.1\r\n" +
+              "Connection: close\r\n" +
+              "\r\n",
+          );
+        });
+
+        socket.on("error", reject);
+
+        // Wait for the handler to start, then destroy the socket.
+        // This proves the full chain:
+        // HTTP request reaches handler -> handler starts -> socket destroyed
+        // -> server detects disconnect -> AbortSignal fires.
+        void searchStarted.then(() => {
+          socket.destroy();
+        });
+
+        socket.on("close", () => {
+          resolve();
+        });
+      });
+
+      // Wait for the server to detect the disconnect via the AbortSignal.
+      await signalAbortedPromise;
+
+      expect(signalAborted).toBe(true);
+    } finally {
+      socketRef?.destroy();
+      await app.close();
+    }
   });
 });
