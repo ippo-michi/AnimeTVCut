@@ -160,7 +160,11 @@ describe.skipIf(process.env.AIOMETADATA_TEST_MANIFEST_URL === undefined)(
 
         const first = await catalog("Frieren");
         expect(first.statusCode).toBe(200);
-        const firstMetas = first.json().metas as { id: string; name: string }[];
+        const firstMetas = first.json().metas as {
+          id: string;
+          name: string;
+          imdb_id?: string;
+        }[];
         expect(firstMetas.length).toBeGreaterThan(0);
         const frierenIds = firstMetas.map((item) => item.id).sort();
         // The known Frieren catalog entry must produce the exact virtual ids.
@@ -169,6 +173,11 @@ describe.skipIf(process.env.AIOMETADATA_TEST_MANIFEST_URL === undefined)(
           "atc:series:dHQyMjI0ODM3Ng",
           "atc:tv:dHQyMjI0ODM3Ng",
         ]);
+        // Stremio Kai resolves catalog items through IMDb; the opaque
+        // virtual id must be accompanied by the explicit IMDb anchor.
+        for (const item of firstMetas) {
+          expect(item.imdb_id).toBe("tt22248376");
+        }
         const statsAfterFirstCatalog = client.stats;
         expect(statsAfterFirstCatalog.manifestRequests).toBe(1);
         expect(statsAfterFirstCatalog.catalogRequests).toBe(1);
