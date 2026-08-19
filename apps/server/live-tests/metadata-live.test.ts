@@ -131,5 +131,84 @@ describe.skipIf(process.env.AIOMETADATA_TEST_MANIFEST_URL === undefined)(
         await app.close();
       }
     });
+
+    it("settles the Frieren -> other query -> Frieren sequence with meta follow-ups", async () => {
+      // Production-like caching: second identical query and meta follow-ups
+      // must be served from the client-side caches.
+      const client = new MetadataStremioClient({
+        manifestUrl: process.env.AIOMETADATA_TEST_MANIFEST_URL ?? "",
+        requestTimeoutMs: 30_000,
+      });
+      const app = createApp({
+        metadataClient: client,
+        publicBaseUrl: new URL("https://public.animetvcut.test"),
+        watchProgressReporter: {
+          reportEpisodeWatched: async () => "triggered",
+        },
+      });
+      try {
+        const catalog = (query: string) =>
+          app.inject({
+            method: "GET",
+            url: `/v2/catalog/series/animetvcut-v2/search=${encodeURIComponent(query)}.json`,
+          });
+        const meta = (id: string) =>
+          app.inject({
+            method: "GET",
+            url: `/v2/meta/series/${id}.json`,
+          });
+
+        const first = await catalog("Frieren");
+        expect(first.statusCode).toBe(200);
+        const firstMetas = first.json().metas as { id: string; name: string }[];
+        expect(firstMetas.length).toBeGreaterThan(0);
+        const frierenIds = firstMetas.map((item) => item.id).sort();
+        // The known Frieren catalog entry must produce the exact virtual ids.
+        expect(frierenIds).toEqual([
+          "atc:season:dHQyMjI0ODM3Ng",
+          "atc:series:dHQyMjI0ODM3Ng",
+          "atc:tv:dHQyMjI0ODM3Ng",
+        ]);
+        const statsAfterFirstCatalog = client.stats;
+        expect(statsAfterFirstCatalog.manifestRequests).toBe(1);
+        expect(statsAfterFirstCatalog.catalogRequests).toBe(1);
+
+        for (const id of firstMetas.map((item) => item.id)) {
+          const response = await meta(id);
+          expect(response.statusCode).toBe(200);
+          expect(response.json().meta.videos.length).toBeGreaterThan(0);
+        }
+        // Only the first meta fetch touches the metadata addon; the other
+        // two cut modes share the same source series.
+        expect(client.stats.metaRequests).toBe(1);
+
+        const other = await catalog("One Piece");
+        expect(other.statusCode).toBe(200);
+        expect(client.stats.catalogRequests).toBe(2);
+
+        const second = await catalog("Frieren");
+        expect(second.statusCode).toBe(200);
+        expect(second.json()).toEqual(first.json());
+        // Second identical query is a cache hit; no new upstream requests.
+        expect(client.stats).toEqual({
+          manifestRequests: 1,
+          catalogRequests: 2,
+          metaRequests: 1,
+        });
+
+        for (const id of firstMetas.map((item) => item.id)) {
+          const response = await meta(id);
+          expect(response.statusCode).toBe(200);
+          expect(response.json().meta.videos.length).toBeGreaterThan(0);
+        }
+        expect(client.stats).toEqual({
+          manifestRequests: 1,
+          catalogRequests: 2,
+          metaRequests: 1,
+        });
+      } finally {
+        await app.close();
+      }
+    });
   },
 );
