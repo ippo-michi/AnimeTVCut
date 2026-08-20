@@ -84,13 +84,20 @@ export interface SanitizedSeasonFamily {
 
 class ImplausibleNormalizedDurationError extends Error {
   public constructor(
-    public readonly episodeId: string,
-    public readonly durationSeconds: number,
+    public readonly invalidEpisodes: readonly {
+      episodeId: string;
+      durationSeconds: number;
+    }[],
   ) {
+    const first = invalidEpisodes[0]!;
     super(
-      `Normalized episode ${episodeId} has an implausible duration of ${durationSeconds.toFixed(1)} seconds.`,
+      `Normalized episode ${first.episodeId} has an implausible duration of ${first.durationSeconds.toFixed(1)} seconds.`,
     );
     this.name = "ImplausibleNormalizedDurationError";
+  }
+
+  public get episodeIds(): readonly string[] {
+    return this.invalidEpisodes.map(({ episodeId }) => episodeId);
   }
 }
 
@@ -431,19 +438,13 @@ export class UpstreamCutService {
       expectedSeconds <= 0
     )
       return;
-    const invalid = prepared.find(
-      ({ playlist }) =>
-        !isStructurallyPlausibleEpisodeDuration(
-          playlist.duration,
-          expectedSeconds,
-        ),
+    const invalid = prepared.flatMap(({ source, playlist }) =>
+      isStructurallyPlausibleEpisodeDuration(playlist.duration, expectedSeconds)
+        ? []
+        : [{ episodeId: source.episodeId, durationSeconds: playlist.duration }],
     );
-    if (invalid !== undefined) {
-      throw new ImplausibleNormalizedDurationError(
-        invalid.source.episodeId,
-        invalid.playlist.duration,
-      );
-    }
+    if (invalid.length > 0)
+      throw new ImplausibleNormalizedDurationError(invalid);
   }
 
   private isRetryableSourceFailure(error: unknown): boolean {
@@ -462,16 +463,16 @@ export class UpstreamCutService {
     episodes: readonly CandidateFamilySelection["episodes"][number][],
     error: unknown,
   ): void {
-    const failedEpisodeId =
+    const failedEpisodeIds =
       error instanceof PreparedSourceError
-        ? error.episodeId
+        ? new Set([error.episodeId])
         : error instanceof ImplausibleNormalizedDurationError
-          ? error.episodeId
+          ? new Set(error.episodeIds)
           : undefined;
     for (const episode of episodes) {
       if (
-        failedEpisodeId !== undefined &&
-        episode.episodeId !== failedEpisodeId
+        failedEpisodeIds !== undefined &&
+        !failedEpisodeIds.has(episode.episodeId)
       )
         continue;
       excludedCandidates.add(`${episode.episodeId}:${episode.upstreamRank}`);
