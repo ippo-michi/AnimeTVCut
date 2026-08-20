@@ -16,6 +16,7 @@ import type {
   DevCutResponse,
   PreparedInputSource,
 } from "./cut-service.js";
+import { PreparedSourceError } from "./cut-service.js";
 import {
   MediaFlowInvalidResponseError,
   MediaFlowSourceError,
@@ -81,7 +82,17 @@ export interface SanitizedSeasonFamily {
   episodeCount: number;
 }
 
-class ImplausibleNormalizedDurationError extends Error {}
+class ImplausibleNormalizedDurationError extends Error {
+  public constructor(
+    public readonly episodeId: string,
+    public readonly durationSeconds: number,
+  ) {
+    super(
+      `Normalized episode ${episodeId} has an implausible duration of ${durationSeconds.toFixed(1)} seconds.`,
+    );
+    this.name = "ImplausibleNormalizedDurationError";
+  }
+}
 
 export function isStructurallyPlausibleEpisodeDuration(
   durationSeconds: number,
@@ -177,11 +188,11 @@ export class UpstreamCutService {
         }
         if (!this.isRetryableSourceFailure(error)) throw error;
         lastError = error;
-        for (const episode of selection.episodes) {
-          excludedCandidates.add(
-            `${episode.episodeId}:${episode.upstreamRank}`,
-          );
-        }
+        this.excludeFailedCandidates(
+          excludedCandidates,
+          selection.episodes,
+          error,
+        );
       }
     }
     throw lastError;
@@ -278,11 +289,11 @@ export class UpstreamCutService {
         if (request.signal?.aborted === true) throw error;
         if (!this.isRetryableSourceFailure(error)) throw error;
         lastError = error;
-        for (const episode of combined.episodes) {
-          excludedCandidates.add(
-            `${episode.episodeId}:${episode.upstreamRank}`,
-          );
-        }
+        this.excludeFailedCandidates(
+          excludedCandidates,
+          combined.episodes,
+          error,
+        );
       }
     }
     throw lastError instanceof Error
@@ -429,17 +440,41 @@ export class UpstreamCutService {
     );
     if (invalid !== undefined) {
       throw new ImplausibleNormalizedDurationError(
-        "Normalized episode duration is structurally implausible; refusing a broken cut.",
+        invalid.source.episodeId,
+        invalid.playlist.duration,
       );
     }
   }
 
   private isRetryableSourceFailure(error: unknown): boolean {
+    if (error instanceof PreparedSourceError)
+      return this.isRetryableSourceFailure(error.cause);
     return (
       error instanceof ImplausibleNormalizedDurationError ||
       error instanceof MediaFlowUnavailableError ||
       error instanceof MediaFlowInvalidResponseError ||
       error instanceof MediaFlowSourceError
     );
+  }
+
+  private excludeFailedCandidates(
+    excludedCandidates: Set<string>,
+    episodes: readonly CandidateFamilySelection["episodes"][number][],
+    error: unknown,
+  ): void {
+    const failedEpisodeId =
+      error instanceof PreparedSourceError
+        ? error.episodeId
+        : error instanceof ImplausibleNormalizedDurationError
+          ? error.episodeId
+          : undefined;
+    for (const episode of episodes) {
+      if (
+        failedEpisodeId !== undefined &&
+        episode.episodeId !== failedEpisodeId
+      )
+        continue;
+      excludedCandidates.add(`${episode.episodeId}:${episode.upstreamRank}`);
+    }
   }
 }

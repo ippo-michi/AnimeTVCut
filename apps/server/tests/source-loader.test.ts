@@ -120,4 +120,46 @@ describe("HlsSourceLoader fixture implementation", () => {
     );
     expect(loadPlaylist).toHaveBeenCalledTimes(sources.length);
   });
+
+  it("reports the episode that failed while settling other workers", async () => {
+    const loadPlaylist = vi.fn(async (source: MediaInputSource) => {
+      if (source.episodeId === "episode-1") {
+        throw new Error("expired source");
+      }
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      return {
+        sourceUrl: `fixture://${source.episodeId}`,
+        targetDuration: 1,
+        mediaSequence: 0,
+        duration: 1,
+        independentSegments: true,
+        segments: [],
+      } as HlsVodPlaylist;
+    });
+    const loader = {
+      loadPlaylist,
+      createResource: vi.fn(),
+    } as unknown as HlsSourceLoader;
+    const service = new CutService(loader, new CutSessionStore());
+    const sources = [
+      {
+        kind: "fixture_hls" as const,
+        episodeId: "episode-1",
+        playlistUrl: "fixture://episode-1",
+      },
+      {
+        kind: "fixture_hls" as const,
+        episodeId: "episode-2",
+        playlistUrl: "fixture://episode-2",
+      },
+    ];
+
+    await expect(
+      service.prepareSources(sources, { concurrency: 2 }),
+    ).rejects.toMatchObject({
+      episodeId: "episode-1",
+      name: "PreparedSourceError",
+    });
+    expect(loadPlaylist).toHaveBeenCalledTimes(2);
+  });
 });

@@ -10,6 +10,7 @@ import {
   MediaFlowSourceError,
   MediaFlowUnavailableError,
 } from "../services/mediaflow/errors.js";
+import { PreparedSourceError } from "../services/cut-service.js";
 import {
   NoConsistentStreamFamilyError,
   NoUsableStreamsError,
@@ -155,6 +156,8 @@ function parseExtra(extra: string): {
 }
 
 function isResolvableStreamFailure(error: unknown): boolean {
+  if (error instanceof PreparedSourceError)
+    return isResolvableStreamFailure(error.cause);
   return (
     error instanceof InvalidVirtualStremioIdError ||
     error instanceof NoUsableStreamsError ||
@@ -168,6 +171,8 @@ function isResolvableStreamFailure(error: unknown): boolean {
 }
 
 function infrastructureStatus(error: unknown): number {
+  if (error instanceof PreparedSourceError)
+    return infrastructureStatus(error.cause);
   if (
     error instanceof MetadataStremioUnavailableError ||
     error instanceof MediaFlowUnavailableError

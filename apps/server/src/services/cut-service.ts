@@ -62,6 +62,20 @@ export interface PrepareSourcesOptions {
   signal?: AbortSignal;
 }
 
+export class PreparedSourceError extends Error {
+  public constructor(
+    public readonly episodeId: string,
+    public readonly cause: unknown,
+  ) {
+    super(
+      cause instanceof Error
+        ? cause.message
+        : `Failed to prepare source ${episodeId}.`,
+    );
+    this.name = "PreparedSourceError";
+  }
+}
+
 function abortError(signal: AbortSignal): Error {
   return signal.reason instanceof Error
     ? signal.reason
@@ -148,16 +162,31 @@ export class CutService {
         const source = sources[index];
         if (source === undefined) return;
         if (options.signal?.aborted === true) throw abortError(options.signal);
-        prepared[index] = {
-          source,
-          playlist: await this.sourceLoader.loadPlaylist(
+        try {
+          prepared[index] = {
             source,
-            options.signal,
-          ),
-        };
+            playlist: await this.sourceLoader.loadPlaylist(
+              source,
+              options.signal,
+            ),
+          };
+        } catch (error) {
+          if (options.signal?.aborted) throw error;
+          throw new PreparedSourceError(source.episodeId, error);
+        }
       }
     });
-    await Promise.all(workers);
+    const errors: unknown[] = [];
+    await Promise.all(
+      workers.map(async (worker) => {
+        try {
+          await worker;
+        } catch (error) {
+          errors.push(error);
+        }
+      }),
+    );
+    if (errors.length > 0) throw errors[0];
     return prepared;
   }
 

@@ -1,7 +1,10 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
 
-import type { CutService } from "../services/cut-service.js";
+import {
+  PreparedSourceError,
+  type CutService,
+} from "../services/cut-service.js";
 import {
   MediaFlowAuthenticationError,
   MediaFlowError,
@@ -91,11 +94,13 @@ export function cutRoutes(cutService: CutService): FastifyPluginAsync {
           { errorName: error instanceof Error ? error.name : "UnknownError" },
           "Cut request rejected",
         );
+        const rootError =
+          error instanceof PreparedSourceError ? error.cause : error;
         const statusCode =
-          error instanceof MediaFlowUnavailableError
+          rootError instanceof MediaFlowUnavailableError
             ? 503
-            : error instanceof MediaFlowAuthenticationError ||
-                error instanceof MediaFlowError
+            : rootError instanceof MediaFlowAuthenticationError ||
+                rootError instanceof MediaFlowError
               ? 502
               : 400;
         return reply.code(statusCode).send({
