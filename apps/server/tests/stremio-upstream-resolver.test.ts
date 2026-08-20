@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { StremioEpisodeSourceResolver } from "../src/services/stremio-upstream/resolver.js";
+import { StremioUpstreamUnavailableError } from "../src/services/stremio-upstream/errors.js";
 import type {
   StremioStreamCandidate,
   UpstreamEpisodeReference,
@@ -115,5 +116,24 @@ describe("Stremio episode source resolver", () => {
     expect(selection.familyKey).toBe("family-a");
     expect(clearStreamCache).toHaveBeenCalledOnce();
     expect(getStreams).toHaveBeenCalledTimes(4);
+  });
+
+  it("retries transient upstream-unavailable stream responses", async () => {
+    let attempts = 0;
+    const getStreams = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1)
+        throw new StremioUpstreamUnavailableError("temporary 404");
+      return [usableCandidate(1)];
+    });
+    const resolver = new StremioEpisodeSourceResolver(
+      { getStreams, clearStreamCache: vi.fn() } as never,
+      { noUrlRetryAttempts: 1, retryDelayMs: 0 },
+    );
+
+    await expect(resolver.resolve([reference(1)])).resolves.toMatchObject({
+      familyKey: "family-a",
+    });
+    expect(getStreams).toHaveBeenCalledTimes(2);
   });
 });

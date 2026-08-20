@@ -9,6 +9,7 @@ import type {
 import {
   NoConsistentStreamFamilyError,
   NoUsableStreamsError,
+  StremioUpstreamUnavailableError,
 } from "./errors.js";
 
 // Long cuts resolve every episode in a season before a single stream can be
@@ -61,7 +62,8 @@ function delayWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
 function isRetryableFamilyError(error: unknown): boolean {
   return (
     error instanceof NoConsistentStreamFamilyError ||
-    error instanceof NoUsableStreamsError
+    error instanceof NoUsableStreamsError ||
+    error instanceof StremioUpstreamUnavailableError
   );
 }
 
@@ -205,10 +207,25 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
     signal?: AbortSignal,
   ) {
     for (let attempt = 0; ; attempt += 1) {
-      const candidates = await this.withRequestSlot(
-        () => this.client.getStreams(reference, signal),
-        signal,
-      );
+      let candidates: Awaited<ReturnType<StremioUpstreamClient["getStreams"]>>;
+      try {
+        candidates = await this.withRequestSlot(
+          () => this.client.getStreams(reference, signal),
+          signal,
+        );
+      } catch (error) {
+        if (
+          !(error instanceof StremioUpstreamUnavailableError) ||
+          signal?.aborted === true ||
+          attempt >= this.noUrlRetryAttempts
+        )
+          throw error;
+        await delayWithAbort(
+          this.retryDelayMs * 2 ** Math.min(attempt, 3),
+          signal,
+        );
+        continue;
+      }
       if (
         candidates.some((candidate) => candidate.kind === "url") ||
         attempt >= this.noUrlRetryAttempts
