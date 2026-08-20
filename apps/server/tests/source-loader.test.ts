@@ -1,11 +1,16 @@
 import path from "node:path";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+
+import type { HlsVodPlaylist } from "@animetvcut/hls";
 
 import { FixtureSourceLoader } from "../src/services/fixture-source.js";
 import { CutService } from "../src/services/cut-service.js";
 import { CutSessionStore } from "../src/services/cut-session-store.js";
-import type { HlsSourceLoader } from "../src/services/hls-source-loader.js";
+import type {
+  HlsSourceLoader,
+  MediaInputSource,
+} from "../src/services/hls-source-loader.js";
 
 describe("HlsSourceLoader fixture implementation", () => {
   it("loads playlists and resolves typed resources through the transport seam", async () => {
@@ -70,5 +75,49 @@ describe("HlsSourceLoader fixture implementation", () => {
         maxManifestBytes: 32,
       }),
     ).toThrow(/manifest size limit/);
+  });
+
+  it("prepares season sources with bounded concurrency and forwards cancellation", async () => {
+    const controller = new AbortController();
+    let active = 0;
+    let maxActive = 0;
+    const loadPlaylist = vi.fn(
+      async (source: MediaInputSource, signal?: AbortSignal) => {
+        expect(signal).toBe(controller.signal);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise((resolve) => setTimeout(resolve, 10));
+        active -= 1;
+        return {
+          sourceUrl: `fixture://${source.episodeId}`,
+          targetDuration: 1,
+          mediaSequence: 0,
+          duration: 1,
+          independentSegments: true,
+          segments: [],
+        } as HlsVodPlaylist;
+      },
+    );
+    const loader = {
+      loadPlaylist,
+      createResource: vi.fn(),
+    } as unknown as HlsSourceLoader;
+    const service = new CutService(loader, new CutSessionStore());
+    const sources = Array.from({ length: 5 }, (_, index) => ({
+      kind: "fixture_hls" as const,
+      episodeId: `episode-${index + 1}`,
+      playlistUrl: `fixture://episode-${index + 1}`,
+    }));
+
+    const prepared = await service.prepareSources(sources, {
+      concurrency: 2,
+      signal: controller.signal,
+    });
+
+    expect(maxActive).toBe(2);
+    expect(prepared.map(({ source }) => source.episodeId)).toEqual(
+      sources.map(({ episodeId }) => episodeId),
+    );
+    expect(loadPlaylist).toHaveBeenCalledTimes(sources.length);
   });
 });

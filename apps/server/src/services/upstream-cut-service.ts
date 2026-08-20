@@ -41,6 +41,7 @@ export interface UpstreamCutRequest {
   allowMixedSources?: boolean;
   alignmentPolicy?: CutAlignmentPolicy;
   strictAlignment?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface UpstreamCutResponse extends DevCutResponse {
@@ -59,6 +60,8 @@ export interface AutomaticUpstreamCutRequest {
   maxMediaSegments?: number;
   maxManifestBytes?: number;
   expectedEpisodeDurationSeconds?: number;
+  sourcePrepareConcurrency?: number;
+  signal?: AbortSignal;
 }
 
 export interface LongAutomaticUpstreamCutRequest extends Omit<
@@ -122,6 +125,7 @@ export class UpstreamCutService {
       throw new StremioUpstreamNotConfiguredError();
     const selection = await this.resolver.resolve(request.episodes, {
       allowMixedSources: request.allowMixedSources ?? false,
+      signal: request.signal,
     });
     const cut = await this.cutService.createCut({
       sources: selection.episodes.map((episode) => episode.mediaSource),
@@ -161,10 +165,16 @@ export class UpstreamCutService {
       const selection = await this.resolver.resolve(request.episodes, {
         allowMixedSources: request.allowMixedSources ?? false,
         excludedCandidates,
+        signal: request.signal,
       });
       try {
         return await this.createAutomaticCutFromSelection(request, selection);
       } catch (error) {
+        if (request.signal?.aborted === true) {
+          throw request.signal.reason instanceof Error
+            ? request.signal.reason
+            : new Error("The operation was aborted.");
+        }
         if (!this.isRetryableSourceFailure(error)) throw error;
         lastError = error;
         for (const episode of selection.episodes) {
@@ -205,6 +215,7 @@ export class UpstreamCutService {
             const selection = await this.resolver!.resolve(season.episodes, {
               allowMixedSources: false,
               excludedCandidates,
+              signal: request.signal,
             });
             if (selection.familyMethod === "mixed")
               throw new Error("Long Cut season selection must be strict.");
@@ -264,6 +275,7 @@ export class UpstreamCutService {
           })),
         };
       } catch (error) {
+        if (request.signal?.aborted === true) throw error;
         if (!this.isRetryableSourceFailure(error)) throw error;
         lastError = error;
         for (const episode of combined.episodes) {
@@ -273,7 +285,9 @@ export class UpstreamCutService {
         }
       }
     }
-    throw lastError ?? new Error("Long Cut source preparation failed.");
+    throw lastError instanceof Error
+      ? lastError
+      : new Error("Long Cut source preparation failed.");
   }
 
   private async createAutomaticCutFromSelection(
@@ -285,6 +299,12 @@ export class UpstreamCutService {
     }
     const prepared = await this.cutService.prepareSources(
       selection.episodes.map((episode) => episode.mediaSource),
+      {
+        ...(request.sourcePrepareConcurrency === undefined
+          ? {}
+          : { concurrency: request.sourcePrepareConcurrency }),
+        signal: request.signal,
+      },
     );
     this.validatePreparedDurations(
       prepared,
@@ -298,6 +318,7 @@ export class UpstreamCutService {
         reference,
         durationSeconds: this.preparedDuration(preparedByEpisode, reference),
       })),
+      request.signal,
     );
     const policy: AutomaticCutPolicy = {
       ...DEFAULT_AUTOMATIC_CUT_POLICY,
@@ -358,6 +379,7 @@ export class UpstreamCutService {
     const subtitleTracks = await this.subtitleService?.discover(
       cut.cutId,
       selection,
+      request.signal,
     );
     return {
       ...cut,

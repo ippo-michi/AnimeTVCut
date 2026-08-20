@@ -470,12 +470,35 @@ export function publicStremioRoutes(
       reply: FastifyReply,
     ) => {
       const id = request.params.id;
+      const abortController = new AbortController();
+      const routeTimeout = AbortSignal.timeout(routeTimeoutMs);
+      const combinedSignal = AbortSignal.any([
+        abortController.signal,
+        routeTimeout,
+      ]);
+      const onRequestAborted = () => abortController.abort();
+      const onResponseClosed = () => {
+        if (!reply.raw.writableEnded) abortController.abort();
+      };
+      request.raw.on("aborted", onRequestAborted);
+      reply.raw.on("close", onResponseClosed);
       const diagnostics = requestDiagnostics(request);
       diagnostics.resourceType = "meta";
       diagnostics.virtualIdPrefix = virtualIdPrefix(id);
       const statsBefore = service.metadataStats;
       try {
-        const result = await service.publicMeta(id);
+        const resultPromise = service.publicMeta(id, combinedSignal);
+        const timeoutPromise = new Promise<never>((_resolve, reject) => {
+          routeTimeout.addEventListener(
+            "abort",
+            () => {
+              abortController.abort();
+              reject(new Error("Public metadata request timed out."));
+            },
+            { once: true },
+          );
+        });
+        const result = await Promise.race([resultPromise, timeoutPromise]);
         const videos = result.meta.videos;
         diagnostics.itemCount = Array.isArray(videos) ? videos.length : 0;
         const deltas = metadataStatDeltas(statsBefore, service.metadataStats);
@@ -510,6 +533,9 @@ export function publicStremioRoutes(
               : infrastructureStatus(error),
           )
           .send({ meta: null });
+      } finally {
+        request.raw.removeListener("aborted", onRequestAborted);
+        reply.raw.removeListener("close", onResponseClosed);
       }
     };
     app.get<{ Params: { id: string } }>("/meta/series/:id.json", metaHandler);
@@ -527,8 +553,21 @@ export function publicStremioRoutes(
       diagnostics.resourceType = "stream";
       diagnostics.virtualIdPrefix = virtualIdPrefix(id);
       const statsBefore = service.metadataStats;
+      const abortController = new AbortController();
+      const onRequestAborted = () => abortController.abort();
+      const onResponseClosed = () => {
+        // A successfully written JSON response also closes the socket. Only
+        // cancel work when the client disappeared before the response ended.
+        if (!reply.raw.writableEnded) abortController.abort();
+      };
+      request.raw.on("aborted", onRequestAborted);
+      reply.raw.on("close", onResponseClosed);
       try {
-        const result = await service.publicStream(id);
+        // Long Cut creation can legitimately take longer than the catalog
+        // deadline. Let the upstream work continue until the client actually
+        // disconnects, but do propagate that disconnect so stale Kai retries
+        // cannot leave an in-flight build blocking the next request.
+        const result = await service.publicStream(id, abortController.signal);
         diagnostics.itemCount = result.streams.length;
         const deltas = metadataStatDeltas(statsBefore, service.metadataStats);
         request.log.info(
@@ -557,6 +596,9 @@ export function publicStremioRoutes(
         );
         if (isResolvableStreamFailure(error)) return { streams: [] };
         return reply.code(infrastructureStatus(error)).send({ streams: [] });
+      } finally {
+        request.raw.removeListener("aborted", onRequestAborted);
+        reply.raw.removeListener("close", onResponseClosed);
       }
     };
     app.get<{ Params: { id: string } }>(

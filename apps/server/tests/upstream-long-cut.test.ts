@@ -151,11 +151,15 @@ describe("long-cut upstream orchestration", () => {
     const result = await service.createLongAutomaticCut({
       seasons,
       seasonConcurrency: 2,
+      sourcePrepareConcurrency: 3,
     });
     expect(maxActive).toBe(2);
     expect(resolveEpisodes).toHaveBeenCalledTimes(4);
     expect(prepareSources).toHaveBeenCalledTimes(1);
     expect(prepareSources.mock.calls[0]?.[0]).toHaveLength(4);
+    expect(prepareSources.mock.calls[0]?.[1]).toMatchObject({
+      concurrency: 3,
+    });
     expect(result.families.map((item) => item.season)).toEqual([1, 2, 3, 4]);
   });
 

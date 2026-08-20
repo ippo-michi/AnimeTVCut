@@ -13,9 +13,12 @@ import { MediaFlowSourceError } from "./errors.js";
 export class MediaFlowSourceLoader implements HlsSourceLoader {
   public constructor(public readonly client: MediaFlowClient) {}
 
-  public loadPlaylist(source: MediaInputSource): Promise<HlsVodPlaylist> {
+  public loadPlaylist(
+    source: MediaInputSource,
+    signal?: AbortSignal,
+  ): Promise<HlsVodPlaylist> {
     this.assertHttpMedia(source);
-    return this.client.loadTranscodePlaylist(source);
+    return this.client.loadTranscodePlaylist(source, signal);
   }
 
   public createResource(resolved: HlsResolvedResource): LazyMediaResource {

@@ -5,6 +5,7 @@ import net from "node:net";
 import { DEFAULT_TV_CUT_GROUPING_CONFIG } from "@animetvcut/core";
 import {
   MetadataStremioClient,
+  createSeasonCutVideoId,
   createVirtualMetaId,
   createVirtualVideoId,
 } from "@animetvcut/stremio";
@@ -23,6 +24,7 @@ import {
 } from "../src/services/stremio-upstream/errors.js";
 import type {
   AutomaticUpstreamCutRequest,
+  LongAutomaticUpstreamCutRequest,
   UpstreamCutService,
 } from "../src/services/upstream-cut-service.js";
 import { mediaRoutes } from "../src/routes/media.js";
@@ -618,6 +620,57 @@ describe("public TV Cut stream authorization and caching", () => {
       "opaque:exact:episode:2",
       "opaque:exact:episode:3",
     ]);
+  });
+
+  it("builds a Season Cut from every episode in the finalized season", async () => {
+    const createLongAutomaticCut = vi.fn(async () => ({
+      cutId: "season-pack",
+      playlistUrl: "/media/cut/season-pack/master.m3u8",
+      families: [{ season: 1, method: "binge_group", episodeCount: 6 }],
+    }));
+    const enableWatchProgress = vi.fn();
+    const service = new TvCutCatalogService(
+      metadataClient(),
+      { createLongAutomaticCut } as unknown as UpstreamCutService,
+      {
+        isCutActive: () => true,
+        enableWatchProgress,
+        session: () => undefined,
+      } as unknown as CutService,
+      new URL("https://public.animetvcut.test/"),
+      DEFAULT_TV_CUT_GROUPING_CONFIG,
+      () => Date.parse("2026-01-01T00:00:00Z"),
+    );
+
+    const response = await service.publicStream(
+      createSeasonCutVideoId(sourceId, 1, 1, 6),
+    );
+    const request = createLongAutomaticCut.mock.calls[0]?.[0] as
+      LongAutomaticUpstreamCutRequest | undefined;
+
+    expect(response.streams[0]?.url).toBe(
+      "https://public.animetvcut.test/media/cut/season-pack/master.m3u8",
+    );
+    expect(request?.seasons).toHaveLength(1);
+    expect(request?.seasons[0]?.episodes).toHaveLength(6);
+    expect(
+      request?.seasons[0]?.episodes.map((episode) => episode.videoId),
+    ).toEqual(
+      Array.from(
+        { length: 6 },
+        (_, index) => `opaque:exact:episode:${index + 1}`,
+      ),
+    );
+    expect(request?.sourcePrepareConcurrency).toBe(
+      DEFAULT_LONG_CUT_CONFIGURATION.sourcePrepareConcurrency,
+    );
+    expect(enableWatchProgress).toHaveBeenCalledWith(
+      "season-pack",
+      Array.from(
+        { length: 6 },
+        (_, index) => `opaque:exact:episode:${index + 1}`,
+      ),
+    );
   });
 
   it("propagates MAL through matching IMDb episodes without requiring Kitsu", async () => {

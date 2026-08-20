@@ -7,7 +7,11 @@ import type {
   UpstreamEpisodeReference,
 } from "./types.js";
 
-const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 2;
+// Long cuts resolve every episode in a season before a single stream can be
+// returned. Two upstream requests made a normal 25-episode season take many
+// minutes against AIOStreams; keep the work bounded but use the available
+// concurrency so the pack is usable in normal Stremio request lifetimes.
+const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 8;
 const DEFAULT_NO_URL_RETRY_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 250;
 
@@ -36,13 +40,12 @@ function delayWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
   if (delayMs <= 0) return Promise.resolve();
   if (signal?.aborted === true) return Promise.reject(abortError(signal));
   return new Promise<void>((resolve, reject) => {
-    let timer: ReturnType<typeof setTimeout>;
     const onAbort = () => {
       clearTimeout(timer);
       signal?.removeEventListener("abort", onAbort);
       reject(abortError(signal!));
     };
-    timer = setTimeout(() => {
+    const timer = setTimeout(() => {
       signal?.removeEventListener("abort", onAbort);
       resolve();
     }, delayMs);

@@ -114,6 +114,33 @@ function formatLongDuration(durationSeconds: number): string {
   return `${hours}h ${String(minutes).padStart(2, "0")}m`;
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("The operation was aborted.");
+}
+
+async function awaitWithSignal<T>(
+  shared: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal === undefined) return shared;
+  if (signal.aborted) throw abortError(signal);
+  let onAbort: (() => void) | undefined;
+  const result = Promise.race([
+    shared,
+    new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(abortError(signal));
+      signal.addEventListener("abort", onAbort, { once: true });
+    }),
+  ]);
+  try {
+    return await result;
+  } finally {
+    if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
+  }
+}
+
 export class TvCutCatalogService {
   private readonly streamCache = new Map<string, CachedStream>();
   private readonly streamInFlight = new Map<
@@ -380,7 +407,7 @@ export class TvCutCatalogService {
     )
       return cached.response;
     const inFlight = this.streamInFlight.get(virtualVideoId);
-    if (inFlight !== undefined) return inFlight;
+    if (inFlight !== undefined) return awaitWithSignal(inFlight, signal);
     const creating = this.createPublicStream(virtualVideoId, signal);
     this.streamInFlight.set(virtualVideoId, creating);
     try {
@@ -438,6 +465,7 @@ export class TvCutCatalogService {
             chapterEpisodes,
             expectedEpisodeDurationSeconds:
               scope.estimatedDurationSeconds / scope.episodes.length,
+            signal,
           })
         : await this.upstreamCutService.createLongAutomaticCut({
             seasons: [
@@ -452,8 +480,10 @@ export class TvCutCatalogService {
             chapterEpisodes,
             maxMediaSegments: this.longCuts.maxMediaSegments,
             maxManifestBytes: this.longCuts.maxManifestBytes,
+            sourcePrepareConcurrency: this.longCuts.sourcePrepareConcurrency,
             expectedEpisodeDurationSeconds:
               scope.estimatedDurationSeconds / scope.episodes.length,
+            signal,
           });
     this.cutService.enableWatchProgress(
       cut.cutId,

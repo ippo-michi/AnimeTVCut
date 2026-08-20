@@ -57,6 +57,17 @@ export interface ChapterEpisodeInput {
   title?: string;
 }
 
+export interface PrepareSourcesOptions {
+  concurrency?: number;
+  signal?: AbortSignal;
+}
+
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("The operation was aborted.");
+}
+
 export class CutService {
   public constructor(
     private readonly sourceLoader: HlsSourceLoader,
@@ -114,19 +125,39 @@ export class CutService {
 
   public async prepareSources(
     sources: readonly MediaInputSource[],
+    options: PrepareSourcesOptions = {},
   ): Promise<PreparedInputSource[]> {
     const episodeIds = new Set<string>();
-    const prepared: PreparedInputSource[] = [];
     for (const source of sources) {
       if (episodeIds.has(source.episodeId)) {
         throw new Error(`Duplicate episode ID: ${source.episodeId}`);
       }
       episodeIds.add(source.episodeId);
-      prepared.push({
-        source,
-        playlist: await this.sourceLoader.loadPlaylist(source),
-      });
     }
+
+    if (sources.length === 0) return [];
+    const concurrency = Math.min(
+      sources.length,
+      Math.max(1, options.concurrency ?? 1),
+    );
+    const prepared = new Array<PreparedInputSource>(sources.length);
+    let nextIndex = 0;
+    const workers = Array.from({ length: concurrency }, async () => {
+      while (true) {
+        const index = nextIndex++;
+        const source = sources[index];
+        if (source === undefined) return;
+        if (options.signal?.aborted === true) throw abortError(options.signal);
+        prepared[index] = {
+          source,
+          playlist: await this.sourceLoader.loadPlaylist(
+            source,
+            options.signal,
+          ),
+        };
+      }
+    });
+    await Promise.all(workers);
     return prepared;
   }
 

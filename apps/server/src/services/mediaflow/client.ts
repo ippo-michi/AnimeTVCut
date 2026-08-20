@@ -188,9 +188,10 @@ export class MediaFlowClient {
 
   public async loadTranscodePlaylist(
     source: HttpMediaSource,
+    signal?: AbortSignal,
   ): Promise<HlsVodPlaylist> {
     const playlistUrl = this.buildTranscodePlaylistUrl(source);
-    const response = await this.request(playlistUrl, "playlist");
+    const response = await this.request(playlistUrl, "playlist", { signal });
     if (!response.ok) {
       await response.body?.cancel();
       this.throwForStatus(response.status);

@@ -22,6 +22,7 @@ export interface LongCutConfiguration {
   maxMediaSegments: number;
   maxManifestBytes: number;
   seasonPrepareConcurrency: number;
+  sourcePrepareConcurrency: number;
 }
 
 export const DEFAULT_LONG_CUT_CONFIGURATION: LongCutConfiguration = {
@@ -32,6 +33,7 @@ export const DEFAULT_LONG_CUT_CONFIGURATION: LongCutConfiguration = {
   maxMediaSegments: 20_000,
   maxManifestBytes: 5_242_880,
   seasonPrepareConcurrency: 2,
+  sourcePrepareConcurrency: 8,
 };
 
 function parsePositiveInteger(
@@ -226,6 +228,11 @@ export function metadataConfigurationFromEnv(
         env.LONG_CUT_SEASON_PREPARE_CONCURRENCY,
         2,
         "LONG_CUT_SEASON_PREPARE_CONCURRENCY",
+      ),
+      sourcePrepareConcurrency: parsePositiveInteger(
+        env.LONG_CUT_SOURCE_PREPARE_CONCURRENCY,
+        8,
+        "LONG_CUT_SOURCE_PREPARE_CONCURRENCY",
       ),
     },
     aiometadataWatchTracking: parseBoolean(

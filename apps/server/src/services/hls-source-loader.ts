@@ -50,7 +50,10 @@ export interface LazyMediaResource {
 }
 
 export interface HlsSourceLoader {
-  loadPlaylist(source: MediaInputSource): Promise<HlsVodPlaylist>;
+  loadPlaylist(
+    source: MediaInputSource,
+    signal?: AbortSignal,
+  ): Promise<HlsVodPlaylist>;
   createResource(resource: HlsResolvedResource): LazyMediaResource;
 }
 

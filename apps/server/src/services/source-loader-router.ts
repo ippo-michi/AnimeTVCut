@@ -13,8 +13,11 @@ export class SourceLoaderRouter implements HlsSourceLoader {
     private readonly mediaFlowLoader?: HlsSourceLoader,
   ) {}
 
-  public loadPlaylist(source: MediaInputSource): Promise<HlsVodPlaylist> {
-    return this.loaderFor(source).loadPlaylist(source);
+  public loadPlaylist(
+    source: MediaInputSource,
+    signal?: AbortSignal,
+  ): Promise<HlsVodPlaylist> {
+    return this.loaderFor(source).loadPlaylist(source, signal);
   }
 
   public createResource(resolved: HlsResolvedResource): LazyMediaResource {
