@@ -120,6 +120,10 @@ export class StremioUpstreamClient {
     };
   }
 
+  public clearStreamCache(): void {
+    this.streamCache.clear();
+  }
+
   public get safeOrigin(): string {
     return manifestOrigin(this.config.manifestUrl);
   }

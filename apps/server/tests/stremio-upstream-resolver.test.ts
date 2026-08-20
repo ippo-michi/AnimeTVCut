@@ -86,4 +86,34 @@ describe("Stremio episode source resolver", () => {
 
     expect(maximumActive).toBe(2);
   });
+
+  it("refreshes cached candidates after a transient family mismatch", async () => {
+    let refreshes = 0;
+    const clearStreamCache = vi.fn(() => {
+      refreshes += 1;
+    });
+    const getStreams = vi.fn(async (episode: UpstreamEpisodeReference) => {
+      const index = Number(episode.episodeId.replace("episode-", ""));
+      return [
+        {
+          ...usableCandidate(index),
+          bingeGroup: refreshes === 0 ? `family-${index}` : "family-a",
+        },
+      ];
+    });
+    const resolver = new StremioEpisodeSourceResolver(
+      { getStreams, clearStreamCache } as never,
+      {
+        maxConcurrentEpisodeRequests: 2,
+        noUrlRetryAttempts: 0,
+        retryDelayMs: 0,
+      },
+    );
+
+    const selection = await resolver.resolve([reference(1), reference(2)]);
+
+    expect(selection.familyKey).toBe("family-a");
+    expect(clearStreamCache).toHaveBeenCalledOnce();
+    expect(getStreams).toHaveBeenCalledTimes(4);
+  });
 });

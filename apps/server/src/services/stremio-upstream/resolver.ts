@@ -6,6 +6,10 @@ import type {
   EpisodeSourceResolver,
   UpstreamEpisodeReference,
 } from "./types.js";
+import {
+  NoConsistentStreamFamilyError,
+  NoUsableStreamsError,
+} from "./errors.js";
 
 // Long cuts resolve every episode in a season before a single stream can be
 // returned. Two upstream requests made a normal 25-episode season take many
@@ -14,6 +18,7 @@ import type {
 const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 8;
 const DEFAULT_NO_URL_RETRY_ATTEMPTS = 4;
 const DEFAULT_RETRY_DELAY_MS = 500;
+const DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS = 1;
 
 interface StremioEpisodeSourceResolverOptions {
   maxConcurrentEpisodeRequests?: number;
@@ -88,34 +93,57 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
       excludedCandidates?: ReadonlySet<string>;
     } = {},
   ): Promise<CandidateFamilySelection> {
-    const sets = new Array<EpisodeCandidateSet>(episodes.length);
-    let nextIndex = 0;
-    const workerCount = Math.min(
-      this.maxConcurrentEpisodeRequests,
-      episodes.length,
-    );
-    await Promise.all(
-      Array.from({ length: workerCount }, async () => {
-        while (true) {
-          const index = nextIndex++;
-          const reference = episodes[index];
-          if (reference === undefined) return;
-          sets[index] = {
-            reference,
-            candidates: await this.getStreamsWithRetry(
+    for (
+      let familyAttempt = 0;
+      familyAttempt <= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS;
+      familyAttempt += 1
+    ) {
+      const sets = new Array<EpisodeCandidateSet>(episodes.length);
+      let nextIndex = 0;
+      const workerCount = Math.min(
+        this.maxConcurrentEpisodeRequests,
+        episodes.length,
+      );
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (true) {
+            const index = nextIndex++;
+            const reference = episodes[index];
+            if (reference === undefined) return;
+            sets[index] = {
               reference,
-              options.signal,
-            ),
-          };
-        }
-      }),
-    );
-    return selectCandidateFamily(sets, {
-      allowMixedSources: options.allowMixedSources ?? false,
-      preferMediaFlowCompatible: true,
-      excludedFamilies: options.excludedFamilies,
-      excludedCandidates: options.excludedCandidates,
-    });
+              candidates: await this.getStreamsWithRetry(
+                reference,
+                options.signal,
+              ),
+            };
+          }
+        }),
+      );
+      try {
+        return selectCandidateFamily(sets, {
+          allowMixedSources: options.allowMixedSources ?? false,
+          preferMediaFlowCompatible: true,
+          excludedFamilies: options.excludedFamilies,
+          excludedCandidates: options.excludedCandidates,
+        });
+      } catch (error) {
+        const retryable =
+          error instanceof NoConsistentStreamFamilyError ||
+          error instanceof NoUsableStreamsError;
+        if (
+          !retryable ||
+          familyAttempt >= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS
+        )
+          throw error;
+        this.client.clearStreamCache();
+        await delayWithAbort(
+          this.retryDelayMs * 2 ** Math.min(familyAttempt, 3),
+          options.signal,
+        );
+      }
+    }
+    throw new Error("Stream family resolution exhausted.");
   }
 
   private async getStreamsWithRetry(
