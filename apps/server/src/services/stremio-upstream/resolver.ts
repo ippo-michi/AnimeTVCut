@@ -100,24 +100,33 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
       excludedCandidates?: ReadonlySet<string>;
     } = {},
   ): Promise<CandidateFamilySelection> {
+    const sets = new Array<EpisodeCandidateSet | undefined>(episodes.length);
+    let indexesToFetch = new Set(
+      Array.from({ length: episodes.length }, (_, index) => index),
+    );
     for (
       let familyAttempt = 0;
       familyAttempt <= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS;
       familyAttempt += 1
     ) {
-      const sets = new Array<EpisodeCandidateSet>(episodes.length);
+      const indexes = [...indexesToFetch];
       let nextIndex = 0;
       const workerCount = Math.min(
         this.maxConcurrentEpisodeRequests,
-        episodes.length,
+        indexes.length,
       );
-      try {
-        await Promise.all(
-          Array.from({ length: workerCount }, async () => {
-            while (true) {
-              const index = nextIndex++;
-              const reference = episodes[index];
-              if (reference === undefined) return;
+      let firstError: unknown;
+      let hasError = false;
+      const failedIndexes = new Set<number>();
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          while (true) {
+            const position = nextIndex++;
+            const index = indexes[position];
+            if (index === undefined) return;
+            const reference = episodes[index];
+            if (reference === undefined) return;
+            try {
               sets[index] = {
                 reference,
                 candidates: await this.getStreamsWithRetry(
@@ -125,24 +134,39 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
                   options.signal,
                 ),
               };
+            } catch (error) {
+              hasError = true;
+              failedIndexes.add(index);
+              if (firstError === undefined) firstError = error;
             }
-          }),
-        );
-      } catch (error) {
+          }
+        }),
+      );
+      if (hasError) {
         if (
-          !isRetryableFamilyError(error) ||
+          !isRetryableFamilyError(firstError) ||
           familyAttempt >= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS
         )
-          throw error;
+          throw firstError instanceof Error
+            ? firstError
+            : new Error("Upstream stream resolution failed.");
         this.client.clearStreamCache();
+        indexesToFetch = failedIndexes;
         await delayWithAbort(
           this.retryDelayMs * 2 ** Math.min(familyAttempt, 3),
           options.signal,
         );
         continue;
       }
+      const readySets = sets.map((set) => {
+        if (set === undefined)
+          throw new Error(
+            "Upstream stream resolution returned an incomplete set.",
+          );
+        return set;
+      });
       try {
-        return selectCandidateFamily(sets, {
+        return selectCandidateFamily(readySets, {
           allowMixedSources: options.allowMixedSources ?? false,
           preferMediaFlowCompatible: true,
           excludedFamilies: options.excludedFamilies,
@@ -155,6 +179,18 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
         )
           throw error;
         this.client.clearStreamCache();
+        indexesToFetch =
+          error instanceof NoUsableStreamsError
+            ? new Set(
+                readySets.flatMap((set, index) =>
+                  set.reference.episodeId === error.diagnostics.episodeId
+                    ? [index]
+                    : [],
+                ),
+              )
+            : new Set(
+                Array.from({ length: episodes.length }, (_, index) => index),
+              );
         await delayWithAbort(
           this.retryDelayMs * 2 ** Math.min(familyAttempt, 3),
           options.signal,
