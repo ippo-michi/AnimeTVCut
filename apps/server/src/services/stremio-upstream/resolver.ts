@@ -15,8 +15,8 @@ import {
 // returned. Two upstream requests made a normal 25-episode season take many
 // minutes against AIOStreams; keep the work bounded but use the available
 // concurrency so the pack is usable in normal Stremio request lifetimes.
-const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 8;
-const DEFAULT_NO_URL_RETRY_ATTEMPTS = 4;
+const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 12;
+const DEFAULT_NO_URL_RETRY_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 500;
 const DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS = 1;
 
@@ -56,6 +56,13 @@ function delayWithAbort(delayMs: number, signal?: AbortSignal): Promise<void> {
     }, delayMs);
     signal?.addEventListener("abort", onAbort, { once: true });
   });
+}
+
+function isRetryableFamilyError(error: unknown): boolean {
+  return (
+    error instanceof NoConsistentStreamFamilyError ||
+    error instanceof NoUsableStreamsError
+  );
 }
 
 export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
@@ -104,22 +111,36 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
         this.maxConcurrentEpisodeRequests,
         episodes.length,
       );
-      await Promise.all(
-        Array.from({ length: workerCount }, async () => {
-          while (true) {
-            const index = nextIndex++;
-            const reference = episodes[index];
-            if (reference === undefined) return;
-            sets[index] = {
-              reference,
-              candidates: await this.getStreamsWithRetry(
+      try {
+        await Promise.all(
+          Array.from({ length: workerCount }, async () => {
+            while (true) {
+              const index = nextIndex++;
+              const reference = episodes[index];
+              if (reference === undefined) return;
+              sets[index] = {
                 reference,
-                options.signal,
-              ),
-            };
-          }
-        }),
-      );
+                candidates: await this.getStreamsWithRetry(
+                  reference,
+                  options.signal,
+                ),
+              };
+            }
+          }),
+        );
+      } catch (error) {
+        if (
+          !isRetryableFamilyError(error) ||
+          familyAttempt >= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS
+        )
+          throw error;
+        this.client.clearStreamCache();
+        await delayWithAbort(
+          this.retryDelayMs * 2 ** Math.min(familyAttempt, 3),
+          options.signal,
+        );
+        continue;
+      }
       try {
         return selectCandidateFamily(sets, {
           allowMixedSources: options.allowMixedSources ?? false,
@@ -128,11 +149,8 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
           excludedCandidates: options.excludedCandidates,
         });
       } catch (error) {
-        const retryable =
-          error instanceof NoConsistentStreamFamilyError ||
-          error instanceof NoUsableStreamsError;
         if (
-          !retryable ||
+          !isRetryableFamilyError(error) ||
           familyAttempt >= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS
         )
           throw error;
