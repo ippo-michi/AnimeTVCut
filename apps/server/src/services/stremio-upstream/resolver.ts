@@ -13,10 +13,9 @@ import {
 } from "./errors.js";
 
 // Long cuts resolve every episode in a season before a single stream can be
-// returned. Two upstream requests made a normal 25-episode season take many
-// minutes against AIOStreams; keep the work bounded but use the available
-// concurrency so the pack is usable in normal Stremio request lifetimes.
-const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 12;
+// returned. AIOStreams can return empty 200 responses when too many episode
+// resources are requested at once, so keep this deliberately conservative.
+const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 2;
 const DEFAULT_NO_URL_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 2_000;
 const DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS = 1;
