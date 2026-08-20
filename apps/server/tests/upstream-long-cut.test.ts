@@ -6,6 +6,7 @@ import type {
   PreparedInputSource,
 } from "../src/services/cut-service.js";
 import type { MediaInputSource } from "../src/services/hls-source-loader.js";
+import { MediaFlowSourceError } from "../src/services/mediaflow/errors.js";
 import type {
   EpisodeSkipLookupRequest,
   SkipService,
@@ -50,6 +51,20 @@ function selection(episodeId: string): CandidateFamilySelection {
       unsupported: 0,
     },
     warnings: [],
+  };
+}
+
+function rankedSelection(
+  episodeId: string,
+  rank: number,
+): CandidateFamilySelection {
+  const base = selection(episodeId);
+  return {
+    ...base,
+    episodes: base.episodes.map((episode) => ({
+      ...episode,
+      upstreamRank: rank,
+    })),
   };
 }
 
@@ -142,5 +157,81 @@ describe("long-cut upstream orchestration", () => {
     expect(prepareSources).toHaveBeenCalledTimes(1);
     expect(prepareSources.mock.calls[0]?.[0]).toHaveLength(4);
     expect(result.families.map((item) => item.season)).toEqual([1, 2, 3, 4]);
+  });
+
+  it("retries long cuts with alternate candidates after a MediaFlow source failure", async () => {
+    const resolveEpisodes = vi.fn(
+      async (
+        episodes: readonly UpstreamEpisodeReference[],
+        options?: { excludedCandidates?: ReadonlySet<string> },
+      ): Promise<CandidateFamilySelection> =>
+        rankedSelection(
+          episodes[0]!.episodeId,
+          options?.excludedCandidates?.has(`${episodes[0]!.episodeId}:0`)
+            ? 1
+            : 0,
+        ),
+    );
+    const resolver: EpisodeSourceResolver = { resolve: resolveEpisodes };
+    let prepareAttempts = 0;
+    const prepareSources = vi.fn(
+      async (
+        sources: readonly MediaInputSource[],
+      ): Promise<PreparedInputSource[]> => {
+        prepareAttempts += 1;
+        if (prepareAttempts === 1) {
+          throw new MediaFlowSourceError("candidate expired");
+        }
+        return sources.map((source) => ({
+          source,
+          playlist: {
+            sourceUrl: `fixture://${source.episodeId}`,
+            targetDuration: 1,
+            mediaSequence: 0,
+            duration: 1,
+            independentSegments: true,
+            segments: [],
+          },
+        }));
+      },
+    );
+    const cutService = {
+      prepareSources,
+      attachOutputSkipSegments: vi.fn(),
+      createCutFromPreparedSources: vi.fn(() => ({
+        cutId: "cut",
+        duration: 1,
+        playlistUrl: "/media/cut/cut/master.m3u8",
+        pieces: [],
+        appliedCuts: [],
+      })),
+    } as unknown as CutService;
+    const skipService = {
+      resolve: vi.fn(async (requests: readonly EpisodeSkipLookupRequest[]) =>
+        requests.map((request) => ({
+          episodeId: request.reference.episodeId,
+          identity: {},
+          durationSeconds: 1,
+          providers: [],
+          segments: [],
+          warnings: [],
+        })),
+      ),
+    } as unknown as SkipService;
+    const service = new UpstreamCutService(resolver, cutService, skipService);
+
+    const result = await service.createLongAutomaticCut({
+      seasons: [
+        {
+          season: 1,
+          episodes: [{ episodeId: "ep1", type: "series", videoId: "ep1" }],
+        },
+      ],
+      seasonConcurrency: 1,
+    });
+
+    expect(resolveEpisodes).toHaveBeenCalledTimes(2);
+    expect(prepareSources).toHaveBeenCalledTimes(2);
+    expect(result.selection.episodes[0]?.rank).toBe(1);
   });
 });

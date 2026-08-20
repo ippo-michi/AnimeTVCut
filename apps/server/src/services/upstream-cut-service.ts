@@ -186,72 +186,94 @@ export class UpstreamCutService {
   > {
     if (this.resolver === undefined)
       throw new StremioUpstreamNotConfiguredError();
-    const selections = new Array<{
-      season: number;
-      selection: CandidateFamilySelection;
-    }>(request.seasons.length);
-    let nextIndex = 0;
-    const workers = Array.from(
-      {
-        length: Math.min(request.seasonConcurrency, request.seasons.length),
-      },
-      async () => {
-        while (nextIndex < request.seasons.length) {
-          const index = nextIndex++;
-          const season = request.seasons[index]!;
-          const selection = await this.resolver!.resolve(season.episodes, {
-            allowMixedSources: false,
-          });
-          if (selection.familyMethod === "mixed")
-            throw new Error("Long Cut season selection must be strict.");
-          selections[index] = { season: season.season, selection };
-        }
-      },
-    );
-    await Promise.all(workers);
-    const combined: CandidateFamilySelection = {
-      familyMethod:
-        selections.length === 1
-          ? selections[0]!.selection.familyMethod
-          : "mixed",
-      familyKey:
-        selections.length === 1
-          ? selections[0]!.selection.familyKey
-          : "per-season",
-      episodes: selections.flatMap(({ selection }) => [...selection.episodes]),
-      unsupported: selections.reduce(
-        (total, { selection }) => ({
-          torrent: total.torrent + selection.unsupported.torrent,
-          usenet: total.usenet + selection.unsupported.usenet,
-          archive: total.archive + selection.unsupported.archive,
-          youtube: total.youtube + selection.unsupported.youtube,
-          external: total.external + selection.unsupported.external,
-          unsupported: total.unsupported + selection.unsupported.unsupported,
-        }),
+    const excludedCandidates = new Set<string>();
+    let lastError: unknown;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      const selections = new Array<{
+        season: number;
+        selection: CandidateFamilySelection;
+      }>(request.seasons.length);
+      let nextIndex = 0;
+      const workers = Array.from(
         {
-          torrent: 0,
-          usenet: 0,
-          archive: 0,
-          youtube: 0,
-          external: 0,
-          unsupported: 0,
+          length: Math.min(request.seasonConcurrency, request.seasons.length),
         },
-      ),
-      warnings: selections.flatMap(({ selection }) => [...selection.warnings]),
-    };
-    const episodes = request.seasons.flatMap((season) => [...season.episodes]);
-    const result = await this.createAutomaticCutFromSelection(
-      { ...request, episodes },
-      combined,
-    );
-    return {
-      ...result,
-      families: selections.map(({ season, selection }) => ({
-        season,
-        method: selection.familyMethod as "binge_group" | "filename_family",
-        episodeCount: selection.episodes.length,
-      })),
-    };
+        async () => {
+          while (nextIndex < request.seasons.length) {
+            const index = nextIndex++;
+            const season = request.seasons[index]!;
+            const selection = await this.resolver!.resolve(season.episodes, {
+              allowMixedSources: false,
+              excludedCandidates,
+            });
+            if (selection.familyMethod === "mixed")
+              throw new Error("Long Cut season selection must be strict.");
+            selections[index] = { season: season.season, selection };
+          }
+        },
+      );
+      await Promise.all(workers);
+      const combined: CandidateFamilySelection = {
+        familyMethod:
+          selections.length === 1
+            ? selections[0]!.selection.familyMethod
+            : "mixed",
+        familyKey:
+          selections.length === 1
+            ? selections[0]!.selection.familyKey
+            : "per-season",
+        episodes: selections.flatMap(({ selection }) => [
+          ...selection.episodes,
+        ]),
+        unsupported: selections.reduce(
+          (total, { selection }) => ({
+            torrent: total.torrent + selection.unsupported.torrent,
+            usenet: total.usenet + selection.unsupported.usenet,
+            archive: total.archive + selection.unsupported.archive,
+            youtube: total.youtube + selection.unsupported.youtube,
+            external: total.external + selection.unsupported.external,
+            unsupported: total.unsupported + selection.unsupported.unsupported,
+          }),
+          {
+            torrent: 0,
+            usenet: 0,
+            archive: 0,
+            youtube: 0,
+            external: 0,
+            unsupported: 0,
+          },
+        ),
+        warnings: selections.flatMap(({ selection }) => [
+          ...selection.warnings,
+        ]),
+      };
+      const episodes = request.seasons.flatMap((season) => [
+        ...season.episodes,
+      ]);
+      try {
+        const result = await this.createAutomaticCutFromSelection(
+          { ...request, episodes },
+          combined,
+        );
+        return {
+          ...result,
+          families: selections.map(({ season, selection }) => ({
+            season,
+            method: selection.familyMethod as "binge_group" | "filename_family",
+            episodeCount: selection.episodes.length,
+          })),
+        };
+      } catch (error) {
+        if (!this.isRetryableSourceFailure(error)) throw error;
+        lastError = error;
+        for (const episode of combined.episodes) {
+          excludedCandidates.add(
+            `${episode.episodeId}:${episode.upstreamRank}`,
+          );
+        }
+      }
+    }
+    throw lastError ?? new Error("Long Cut source preparation failed.");
   }
 
   private async createAutomaticCutFromSelection(
