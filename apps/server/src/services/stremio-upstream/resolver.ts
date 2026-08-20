@@ -12,8 +12,8 @@ import type {
 // minutes against AIOStreams; keep the work bounded but use the available
 // concurrency so the pack is usable in normal Stremio request lifetimes.
 const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 8;
-const DEFAULT_NO_URL_RETRY_ATTEMPTS = 2;
-const DEFAULT_RETRY_DELAY_MS = 250;
+const DEFAULT_NO_URL_RETRY_ATTEMPTS = 4;
+const DEFAULT_RETRY_DELAY_MS = 500;
 
 interface StremioEpisodeSourceResolverOptions {
   maxConcurrentEpisodeRequests?: number;
@@ -133,7 +133,10 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
       ) {
         return candidates;
       }
-      await delayWithAbort(this.retryDelayMs, signal);
+      await delayWithAbort(
+        this.retryDelayMs * 2 ** Math.min(attempt, 3),
+        signal,
+      );
     }
   }
 
