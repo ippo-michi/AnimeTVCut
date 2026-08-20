@@ -263,6 +263,85 @@ describe("long-cut upstream orchestration", () => {
     expect(result.selection.episodes[0]?.rank).toBe(1);
   });
 
+  it("preflights one source per season before preparing a long cut", async () => {
+    const resolveEpisodes = vi.fn(
+      async (
+        episodes: readonly UpstreamEpisodeReference[],
+        options?: { excludedCandidates?: ReadonlySet<string> },
+      ): Promise<CandidateFamilySelection> =>
+        rankedSelection(
+          episodes[0]!.episodeId,
+          options?.excludedCandidates?.has(`${episodes[0]!.episodeId}:0`)
+            ? 1
+            : 0,
+        ),
+    );
+    const resolver: EpisodeSourceResolver = { resolve: resolveEpisodes };
+    let prepareAttempts = 0;
+    const prepareSources = vi.fn(
+      async (
+        sources: readonly MediaInputSource[],
+      ): Promise<PreparedInputSource[]> => {
+        prepareAttempts += 1;
+        const duration = prepareAttempts === 1 ? 30 : 1_440;
+        return sources.map((source) => ({
+          source,
+          playlist: {
+            sourceUrl: `fixture://${source.episodeId}`,
+            targetDuration: 1,
+            mediaSequence: 0,
+            duration,
+            independentSegments: true,
+            segments: [],
+          },
+        }));
+      },
+    );
+    const cutService = {
+      prepareSources,
+      attachOutputSkipSegments: vi.fn(),
+      createCutFromPreparedSources: vi.fn(() => ({
+        cutId: "cut",
+        duration: 1,
+        playlistUrl: "/media/cut/cut/master.m3u8",
+        pieces: [],
+        appliedCuts: [],
+      })),
+    } as unknown as CutService;
+    const skipService = {
+      resolve: vi.fn(async (requests: readonly EpisodeSkipLookupRequest[]) =>
+        requests.map((request) => ({
+          episodeId: request.reference.episodeId,
+          identity: {},
+          durationSeconds: 1_440,
+          providers: [],
+          segments: [],
+          warnings: [],
+        })),
+      ),
+    } as unknown as SkipService;
+    const service = new UpstreamCutService(resolver, cutService, skipService);
+
+    const result = await service.createLongAutomaticCut({
+      seasons: [
+        {
+          season: 1,
+          episodes: [{ episodeId: "ep1", type: "series", videoId: "ep1" }],
+        },
+      ],
+      seasonConcurrency: 1,
+      sourcePrepareConcurrency: 2,
+      expectedEpisodeDurationSeconds: 1_440,
+    });
+
+    expect(resolveEpisodes).toHaveBeenCalledTimes(2);
+    expect(prepareSources).toHaveBeenCalledTimes(3);
+    expect(prepareSources.mock.calls[0]?.[0]).toHaveLength(1);
+    expect(prepareSources.mock.calls[1]?.[0]).toHaveLength(1);
+    expect(prepareSources.mock.calls[2]?.[0]).toHaveLength(1);
+    expect(result.selection.episodes[0]?.rank).toBe(1);
+  });
+
   it("only excludes the failed episode candidate during a multi-episode retry", async () => {
     const resolveEpisodes = vi.fn(
       async (

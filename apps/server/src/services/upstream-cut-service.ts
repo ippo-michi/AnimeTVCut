@@ -280,6 +280,7 @@ export class UpstreamCutService {
         ...season.episodes,
       ]);
       try {
+        await this.preflightLongCutSources(request, selections);
         const result = await this.createAutomaticCutFromSelection(
           { ...request, episodes },
           combined,
@@ -306,6 +307,45 @@ export class UpstreamCutService {
     throw lastError instanceof Error
       ? lastError
       : new Error("Long Cut source preparation failed.");
+  }
+
+  private async preflightLongCutSources(
+    request: LongAutomaticUpstreamCutRequest,
+    selections: readonly {
+      season: number;
+      selection: CandidateFamilySelection;
+    }[],
+  ): Promise<void> {
+    const expectedDuration = request.expectedEpisodeDurationSeconds;
+    if (
+      expectedDuration === undefined ||
+      !Number.isFinite(expectedDuration) ||
+      expectedDuration <= 0
+    )
+      return;
+
+    // A provider can return a complete-looking family whose URLs are preview
+    // clips or truncated files. Probe one episode from each season before
+    // preparing the entire long cut so the retry loop can rotate candidates
+    // without spending a full season's worth of MediaFlow requests first.
+    const representatives = selections.flatMap(({ selection }) => {
+      const episode = selection.episodes[0];
+      return episode === undefined ? [] : [episode.mediaSource];
+    });
+    if (representatives.length === 0) return;
+
+    const prepared = await this.cutService.prepareSources(representatives, {
+      ...(request.sourcePrepareConcurrency === undefined
+        ? {}
+        : {
+            concurrency: Math.min(
+              request.sourcePrepareConcurrency,
+              representatives.length,
+            ),
+          }),
+      signal: request.signal,
+    });
+    this.validatePreparedDurations(prepared, expectedDuration);
   }
 
   private async createAutomaticCutFromSelection(
