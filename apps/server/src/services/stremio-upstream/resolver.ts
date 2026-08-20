@@ -7,7 +7,7 @@ import type {
   UpstreamEpisodeReference,
 } from "./types.js";
 
-const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 4;
+const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 2;
 const DEFAULT_NO_URL_RETRY_ATTEMPTS = 2;
 const DEFAULT_RETRY_DELAY_MS = 250;
 
@@ -15,6 +15,15 @@ interface StremioEpisodeSourceResolverOptions {
   maxConcurrentEpisodeRequests?: number;
   noUrlRetryAttempts?: number;
   retryDelayMs?: number;
+}
+
+type RequestSlotRelease = () => void;
+
+interface PendingRequestSlot {
+  resolve: (release: RequestSlotRelease) => void;
+  reject: (error: Error) => void;
+  signal?: AbortSignal;
+  onAbort?: () => void;
 }
 
 function abortError(signal: AbortSignal): Error {
@@ -45,6 +54,8 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
   private readonly maxConcurrentEpisodeRequests: number;
   private readonly noUrlRetryAttempts: number;
   private readonly retryDelayMs: number;
+  private activeEpisodeRequests = 0;
+  private readonly pendingRequestSlots: PendingRequestSlot[] = [];
 
   public constructor(
     public readonly client: StremioUpstreamClient,
@@ -109,7 +120,10 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
     signal?: AbortSignal,
   ) {
     for (let attempt = 0; ; attempt += 1) {
-      const candidates = await this.client.getStreams(reference, signal);
+      const candidates = await this.withRequestSlot(
+        () => this.client.getStreams(reference, signal),
+        signal,
+      );
       if (
         candidates.some((candidate) => candidate.kind === "url") ||
         attempt >= this.noUrlRetryAttempts
@@ -117,6 +131,56 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
         return candidates;
       }
       await delayWithAbort(this.retryDelayMs, signal);
+    }
+  }
+
+  private async withRequestSlot<T>(
+    operation: () => Promise<T>,
+    signal?: AbortSignal,
+  ): Promise<T> {
+    const release = await this.acquireRequestSlot(signal);
+    try {
+      return await operation();
+    } finally {
+      release();
+    }
+  }
+
+  private acquireRequestSlot(
+    signal?: AbortSignal,
+  ): Promise<RequestSlotRelease> {
+    if (signal?.aborted === true) return Promise.reject(abortError(signal));
+    if (this.activeEpisodeRequests < this.maxConcurrentEpisodeRequests) {
+      this.activeEpisodeRequests += 1;
+      return Promise.resolve(() => this.releaseRequestSlot());
+    }
+    return new Promise<RequestSlotRelease>((resolve, reject) => {
+      const pending: PendingRequestSlot = { resolve, reject, signal };
+      const onAbort = () => {
+        const index = this.pendingRequestSlots.indexOf(pending);
+        if (index >= 0) this.pendingRequestSlots.splice(index, 1);
+        reject(abortError(signal!));
+      };
+      pending.onAbort = onAbort;
+      signal?.addEventListener("abort", onAbort, { once: true });
+      this.pendingRequestSlots.push(pending);
+    });
+  }
+
+  private releaseRequestSlot(): void {
+    this.activeEpisodeRequests -= 1;
+    while (this.pendingRequestSlots.length > 0) {
+      const pending = this.pendingRequestSlots.shift()!;
+      if (pending.signal?.aborted === true) {
+        pending.onAbort?.();
+        continue;
+      }
+      if (pending.onAbort !== undefined) {
+        pending.signal?.removeEventListener("abort", pending.onAbort);
+      }
+      this.activeEpisodeRequests += 1;
+      pending.resolve(() => this.releaseRequestSlot());
+      return;
     }
   }
 }

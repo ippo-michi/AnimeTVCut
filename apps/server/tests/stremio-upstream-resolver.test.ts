@@ -61,4 +61,29 @@ describe("Stremio episode source resolver", () => {
       episodes.every((episode) => attempts.get(episode.episodeId) === 2),
     ).toBe(true);
   });
+
+  it("shares the concurrency limit across simultaneous cuts", async () => {
+    let active = 0;
+    let maximumActive = 0;
+    const getStreams = vi.fn(async (episode: UpstreamEpisodeReference) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      await new Promise((resolve) => setTimeout(resolve, 2));
+      active -= 1;
+      return [
+        usableCandidate(Number(episode.episodeId.replace("episode-", ""))),
+      ];
+    });
+    const resolver = new StremioEpisodeSourceResolver({ getStreams } as never, {
+      maxConcurrentEpisodeRequests: 2,
+      noUrlRetryAttempts: 0,
+    });
+
+    await Promise.all([
+      resolver.resolve([reference(1), reference(2)]),
+      resolver.resolve([reference(3), reference(4)]),
+    ]);
+
+    expect(maximumActive).toBe(2);
+  });
 });
