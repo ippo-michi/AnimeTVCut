@@ -17,7 +17,7 @@ import {
 // minutes against AIOStreams; keep the work bounded but use the available
 // concurrency so the pack is usable in normal Stremio request lifetimes.
 const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 12;
-const DEFAULT_NO_URL_RETRY_ATTEMPTS = 2;
+const DEFAULT_NO_URL_RETRY_ATTEMPTS = 3;
 const DEFAULT_RETRY_DELAY_MS = 2_000;
 const DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS = 1;
 
@@ -152,7 +152,6 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
           throw firstError instanceof Error
             ? firstError
             : new Error("Upstream stream resolution failed.");
-        this.client.clearStreamCache();
         indexesToFetch = failedIndexes;
         await delayWithAbort(
           this.retryDelayMs * 2 ** Math.min(familyAttempt, 3),
@@ -180,7 +179,8 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
           familyAttempt >= DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS
         )
           throw error;
-        this.client.clearStreamCache();
+        if (error instanceof NoConsistentStreamFamilyError)
+          this.client.clearStreamCache();
         indexesToFetch =
           error instanceof NoUsableStreamsError
             ? new Set(
