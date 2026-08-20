@@ -18,7 +18,7 @@ import {
 // concurrency so the pack is usable in normal Stremio request lifetimes.
 const DEFAULT_MAX_CONCURRENT_EPISODE_REQUESTS = 12;
 const DEFAULT_NO_URL_RETRY_ATTEMPTS = 2;
-const DEFAULT_RETRY_DELAY_MS = 500;
+const DEFAULT_RETRY_DELAY_MS = 2_000;
 const DEFAULT_FAMILY_SELECTION_RETRY_ATTEMPTS = 1;
 
 interface StremioEpisodeSourceResolverOptions {
