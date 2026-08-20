@@ -159,6 +159,59 @@ describe("generic Stremio metadata protocol", () => {
     });
   });
 
+  it("shares concurrent catalog and meta loads for the same source", async () => {
+    let catalogRequests = 0;
+    let metaRequests = 0;
+    const fetcher = vi.fn<typeof fetch>(async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname.endsWith("manifest.json")) {
+        return new Response(JSON.stringify(manifest));
+      }
+      if (url.pathname.includes("/catalog/")) {
+        catalogRequests += 1;
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        return new Response(
+          JSON.stringify({
+            metas: [{ id: "source", type: "series", name: "Shared" }],
+          }),
+        );
+      }
+      metaRequests += 1;
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return new Response(
+        JSON.stringify({
+          meta: {
+            id: "source",
+            type: "series",
+            name: "Shared",
+            videos: [{ id: "episode", season: 1, episode: 1 }],
+          },
+        }),
+      );
+    });
+    const client = new MetadataStremioClient(
+      { manifestUrl: "https://metadata.test/manifest.json" },
+      fetcher,
+    );
+
+    await Promise.all([
+      client.searchSeries("shared"),
+      client.searchSeries("shared"),
+    ]);
+    await Promise.all([
+      client.getSeriesMeta("source"),
+      client.getSeriesMeta("source"),
+    ]);
+
+    expect(catalogRequests).toBe(1);
+    expect(metaRequests).toBe(1);
+    expect(client.stats).toEqual({
+      manifestRequests: 1,
+      catalogRequests: 1,
+      metaRequests: 1,
+    });
+  });
+
   it("requires a declared searchable series catalog", () => {
     expect(() =>
       parseMetadataManifest({

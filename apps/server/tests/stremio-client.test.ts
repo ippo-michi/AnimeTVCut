@@ -101,7 +101,12 @@ describe("Stremio upstream client", () => {
 
   it("uses five-minute manifest and short stream caches", async () => {
     let time = 1_000;
-    const mock = routingFetch([]);
+    const mock = routingFetch([
+      {
+        url: "https://media.test/episode2.mkv",
+        behaviorHints: { bingeGroup: "family-A" },
+      },
+    ]);
     const client = new StremioUpstreamClient(
       {
         manifestUrl: "https://addon.test/private/manifest.json",
@@ -116,6 +121,22 @@ describe("Stremio upstream client", () => {
     expect(client.stats).toEqual({ manifestRequests: 1, streamRequests: 1 });
     time += 46_000;
     await client.getStreams(reference);
+    expect(client.stats).toEqual({ manifestRequests: 1, streamRequests: 2 });
+  });
+
+  it("does not cache an upstream response without a usable URL", async () => {
+    const mock = routingFetch([{ infoHash: "transient-placeholder" }]);
+    const client = new StremioUpstreamClient(
+      {
+        manifestUrl: "https://addon.test/private/manifest.json",
+        streamCacheTtlMs: 45_000,
+      },
+      mock,
+    );
+
+    await client.getStreams(reference);
+    await client.getStreams(reference);
+
     expect(client.stats).toEqual({ manifestRequests: 1, streamRequests: 2 });
   });
 

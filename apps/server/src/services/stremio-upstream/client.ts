@@ -164,7 +164,14 @@ export class StremioUpstreamClient {
         ),
     );
     const candidates = parseStremioStreamResponse(body);
-    if (this.config.streamCacheTtlMs > 0) {
+    // AIOStreams can briefly return a valid JSON response containing only
+    // placeholder/unsupported entries while providers finish resolving. Do
+    // not turn that transient state into a cache hit; the resolver can retry
+    // the same episode and obtain the usable URL candidates on the next pass.
+    if (
+      this.config.streamCacheTtlMs > 0 &&
+      candidates.some((candidate) => candidate.kind === "url")
+    ) {
       this.streamCache.set(cacheKey, {
         value: candidates,
         expiresAt: this.now() + this.config.streamCacheTtlMs,

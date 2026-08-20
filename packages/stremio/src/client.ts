@@ -89,6 +89,38 @@ async function readBoundedJson(
   }
 }
 
+function abortError(signal: AbortSignal): Error {
+  return signal.reason instanceof Error
+    ? signal.reason
+    : new Error("The operation was aborted.");
+}
+
+async function awaitWithSignal<T>(
+  shared: Promise<T>,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal === undefined) return shared;
+  let abortHandler: (() => void) | undefined;
+  const result = Promise.race([
+    shared,
+    new Promise<never>((_resolve, reject) => {
+      if (signal.aborted) {
+        reject(abortError(signal));
+        return;
+      }
+      abortHandler = () => reject(abortError(signal));
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }),
+  ]);
+  try {
+    return await result;
+  } finally {
+    if (abortHandler !== undefined) {
+      signal.removeEventListener("abort", abortHandler);
+    }
+  }
+}
+
 export class MetadataStremioClient {
   public readonly manifestUrl: URL;
   public readonly requestTimeoutMs: number;
@@ -98,7 +130,12 @@ export class MetadataStremioClient {
     string,
     CacheEntry<readonly StremioMetaPreview[]>
   >();
+  private readonly catalogInFlight = new Map<
+    string,
+    Promise<readonly StremioMetaPreview[]>
+  >();
   private readonly metaCache = new Map<string, CacheEntry<SourceSeriesMeta>>();
+  private readonly metaInFlight = new Map<string, Promise<SourceSeriesMeta>>();
   private readonly counters: MetadataStremioStats = {
     manifestRequests: 0,
     catalogRequests: 0,
@@ -235,27 +272,22 @@ export class MetadataStremioClient {
     const cached = this.catalogCache.get(key);
     if (cached !== undefined && cached.expiresAt > this.now())
       return cached.value;
-    const extras: Record<string, string | number> = { search: normalized };
-    if (skip > 0) extras.skip = skip;
-    const response = await this.request(
-      deriveStremioResourceUrl(
-        this.manifestUrl,
-        ["catalog", "series", catalog.id],
-        extras,
-      ),
-      "catalog",
-      signal,
-    );
-    const values = parseCatalogResponse(
-      await readBoundedJson(response, 2 * 1024 * 1024),
-    );
-    if (this.catalogCacheTtlMs > 0) {
-      this.catalogCache.set(key, {
-        value: values,
-        expiresAt: this.now() + this.catalogCacheTtlMs,
-      });
+    let shared = this.catalogInFlight.get(key);
+    if (shared === undefined) {
+      shared = this.loadSearchCatalog(catalog.id, normalized, skip, key);
+      this.catalogInFlight.set(key, shared);
+      void shared
+        .finally(() => {
+          if (this.catalogInFlight.get(key) === shared) {
+            this.catalogInFlight.delete(key);
+          }
+        })
+        .catch(() => {
+          // The caller-facing await observes the rejection. This catch also
+          // handles the case where every caller detached after aborting.
+        });
     }
-    return values;
+    return awaitWithSignal(shared, signal);
   }
 
   public async getSeriesMeta(
@@ -271,10 +303,55 @@ export class MetadataStremioClient {
     if (cached !== undefined && cached.expiresAt > this.now())
       return cached.value;
     await this.getManifest(signal);
+    let shared = this.metaInFlight.get(sourceId);
+    if (shared === undefined) {
+      shared = this.loadSeriesMeta(sourceId);
+      this.metaInFlight.set(sourceId, shared);
+      void shared
+        .finally(() => {
+          if (this.metaInFlight.get(sourceId) === shared) {
+            this.metaInFlight.delete(sourceId);
+          }
+        })
+        .catch(() => {
+          // See the catalog in-flight cleanup above.
+        });
+    }
+    return awaitWithSignal(shared, signal);
+  }
+
+  private async loadSearchCatalog(
+    catalogId: string,
+    normalized: string,
+    skip: number,
+    key: string,
+  ): Promise<readonly StremioMetaPreview[]> {
+    const extras: Record<string, string | number> = { search: normalized };
+    if (skip > 0) extras.skip = skip;
+    const response = await this.request(
+      deriveStremioResourceUrl(
+        this.manifestUrl,
+        ["catalog", "series", catalogId],
+        extras,
+      ),
+      "catalog",
+    );
+    const values = parseCatalogResponse(
+      await readBoundedJson(response, 2 * 1024 * 1024),
+    );
+    if (this.catalogCacheTtlMs > 0) {
+      this.catalogCache.set(key, {
+        value: values,
+        expiresAt: this.now() + this.catalogCacheTtlMs,
+      });
+    }
+    return values;
+  }
+
+  private async loadSeriesMeta(sourceId: string): Promise<SourceSeriesMeta> {
     const response = await this.request(
       deriveStremioResourceUrl(this.manifestUrl, ["meta", "series", sourceId]),
       "meta",
-      signal,
     );
     const value = parseMetaResponse(
       await readBoundedJson(response, 4 * 1024 * 1024),
