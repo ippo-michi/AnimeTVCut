@@ -2,7 +2,10 @@ import { StremioUpstreamConfigurationError } from "./errors.js";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const DEFAULT_MANIFEST_CACHE_TTL_MS = 5 * 60_000;
-const DEFAULT_STREAM_CACHE_TTL_MS = 45_000;
+// A season resolver can take roughly a minute at the provider-safe request
+// bound. Keep usable candidate families available for the targeted MediaFlow
+// retry instead of expiring them halfway through the first preparation pass.
+const DEFAULT_STREAM_CACHE_TTL_MS = 5 * 60_000;
 
 export interface StremioUpstreamConfigInput {
   manifestUrl: string | URL;
