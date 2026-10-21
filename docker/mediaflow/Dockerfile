@@ -52,7 +52,7 @@ RUN printf '%s  %s\n' \
     && rm -rf /var/lib/apt/lists/* /tmp/animetvcut-mediaflow.patch /tmp/animetvcut-cmaf.patch /tmp/animetvcut-mpegts.patch /tmp/animetvcut-resolved-source.patch /tmp/animetvcut-resilient-source.patch /tmp/animetvcut-video-cues.patch /tmp/animetvcut-refresh-race.patch /tmp/animetvcut-resolution-lock.patch /tmp/animetvcut-exact-trim.py
 
 LABEL org.opencontainers.image.title="AnimeTVCut MediaFlow repair" \
-      org.opencontainers.image.version="2.4.9-atc16" \
+      org.opencontainers.image.version="2.4.9-atc17" \
       org.opencontainers.image.description="Seekable HLS with debrid-safe resolution and continuous audio passthrough"
 
 USER mediaflow_proxy

@@ -1,6 +1,6 @@
 --- a/mediaflow_proxy/remuxer/media_source.py
 +++ b/mediaflow_proxy/remuxer/media_source.py
-@@ -286,8 +286,16 @@
+@@ -286,8 +286,20 @@
              _HTTP_RESOLUTION_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
              lock_path = _HTTP_RESOLUTION_CACHE_DIR / f"{self._resolution_key}.lock"
              lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
@@ -15,10 +15,14 @@
 +                        break
 +                    except BlockingIOError:
 +                        await asyncio.sleep(0.02)
++                # Recheck shared state after acquiring the cross-worker lock.
++                # A private cache entry must never overwrite another worker's
++                # refreshed CDN destination.
++                _http_resolution_cache.pop(self._resolution_key, None)
                  cached = self._cached_resolution(stale_url)
                  if cached is not None:
                      self._apply_resolution(*cached)
-@@ -328,7 +336,9 @@
+@@ -328,7 +340,9 @@
  
                  self._apply_resolution(resolved_url, file_size)
              finally:

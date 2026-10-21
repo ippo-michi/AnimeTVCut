@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc16` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc17` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
@@ -34,6 +34,8 @@ the replacement and resolving the debrid URL again.
 Cross-worker resolution locks use nonblocking acquisition with cancellable waits.
 Cancelling a waiting request closes its descriptor immediately, so an abandoned
 executor call cannot acquire the lock later and block future playback requests.
+Once the lock is held, resolution reloads shared state so a worker's older private
+cache entry cannot overwrite a newer CDN destination published by another worker.
 
 All fallback HTTP sources use the original range-capable URL as a seekable PyAV/FFmpeg
 input, seek to the requested segment time, and transcode only the bounded segment
