@@ -5,7 +5,12 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="${project_root}/docker/compose.stremio-test.yaml"
 
 cleanup() {
+  local result=$?
+  if (( result != 0 )); then
+    docker compose -f "${compose_file}" logs --no-color --tail 250 || true
+  fi
   docker compose -f "${compose_file}" down -v --remove-orphans
+  return "${result}"
 }
 trap cleanup EXIT
 
