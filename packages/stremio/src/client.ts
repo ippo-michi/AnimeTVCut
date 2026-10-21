@@ -67,7 +67,6 @@ async function readBoundedJson(
   for await (const chunk of response.body) {
     length += chunk.byteLength;
     if (length > maximumBytes) {
-      await response.body.cancel();
       throw new MetadataStremioInvalidResponseError(
         "Metadata Stremio response is too large.",
       );

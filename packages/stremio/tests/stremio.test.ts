@@ -4,6 +4,7 @@ import {
   MetadataStremioClient,
   MetadataStremioCompatibilityError,
   MetadataStremioConfigurationError,
+  MetadataStremioInvalidResponseError,
   createVirtualMetaId,
   createVirtualVideoId,
   deriveStremioResourceUrl,
@@ -29,6 +30,25 @@ const manifest = {
 };
 
 describe("generic Stremio metadata protocol", () => {
+  it("cancels an oversized chunked response and preserves its typed error", async () => {
+    const cancel = vi.fn();
+    const client = new MetadataStremioClient(
+      { manifestUrl: "https://metadata.test/manifest.json" },
+      async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new Uint8Array(256 * 1024 + 1));
+            },
+            cancel,
+          }),
+        ),
+    );
+    await expect(client.getManifest()).rejects.toThrow(
+      MetadataStremioInvalidResponseError,
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+  });
   it.each([
     "file:///tmp/manifest.json",
     "https://user:password@example.test/manifest.json",

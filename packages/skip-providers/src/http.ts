@@ -88,7 +88,6 @@ export async function fetchBoundedJson(
   for await (const chunk of response.body) {
     received += chunk.byteLength;
     if (received > options.maximumBytes) {
-      await response.body.cancel();
       throw new SkipProviderHttpError(
         "invalid_response",
         "Skip timestamp provider response is too large.",

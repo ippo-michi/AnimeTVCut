@@ -8,6 +8,7 @@ COPY docker/mediaflow/mediaflow-v2.4.9-mpegts-hls.patch /tmp/animetvcut-mpegts.p
 COPY docker/mediaflow/mediaflow-v2.4.9-resolved-source.patch /tmp/animetvcut-resolved-source.patch
 COPY docker/mediaflow/mediaflow-v2.4.9-resilient-source.patch /tmp/animetvcut-resilient-source.patch
 COPY docker/mediaflow/mediaflow-v2.4.9-video-cues.patch /tmp/animetvcut-video-cues.patch
+COPY docker/mediaflow/mediaflow-v2.4.9-refresh-race.patch /tmp/animetvcut-refresh-race.patch
 COPY docker/mediaflow/apply-exact-trim.py /tmp/animetvcut-exact-trim.py
 
 # Refuse to patch an unexpected upstream tree. The source hashes and image
@@ -30,6 +31,7 @@ RUN printf '%s  %s\n' \
     && patch --batch --forward -p1 < /tmp/animetvcut-mpegts.patch \
     && patch --batch --forward -p1 < /tmp/animetvcut-resolved-source.patch \
     && patch --batch --forward -p1 < /tmp/animetvcut-resilient-source.patch \
+    && patch --batch --forward -p1 < /tmp/animetvcut-refresh-race.patch \
     && patch --batch --forward -p1 < /tmp/animetvcut-video-cues.patch \
     && python /tmp/animetvcut-exact-trim.py \
     && python -m py_compile \
@@ -45,10 +47,10 @@ RUN printf '%s  %s\n' \
     && apt-get purge -y patch \
     && apt-get autoremove -y \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/animetvcut-mediaflow.patch /tmp/animetvcut-cmaf.patch /tmp/animetvcut-mpegts.patch /tmp/animetvcut-resolved-source.patch /tmp/animetvcut-resilient-source.patch /tmp/animetvcut-video-cues.patch /tmp/animetvcut-exact-trim.py
+    && rm -rf /var/lib/apt/lists/* /tmp/animetvcut-mediaflow.patch /tmp/animetvcut-cmaf.patch /tmp/animetvcut-mpegts.patch /tmp/animetvcut-resolved-source.patch /tmp/animetvcut-resilient-source.patch /tmp/animetvcut-video-cues.patch /tmp/animetvcut-refresh-race.patch /tmp/animetvcut-exact-trim.py
 
 LABEL org.opencontainers.image.title="AnimeTVCut MediaFlow repair" \
-      org.opencontainers.image.version="2.4.9-atc14" \
+      org.opencontainers.image.version="2.4.9-atc15" \
       org.opencontainers.image.description="Seekable HLS with debrid-safe resolution and continuous audio passthrough"
 
 USER mediaflow_proxy

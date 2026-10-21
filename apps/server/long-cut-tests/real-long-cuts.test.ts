@@ -270,16 +270,10 @@ describe("real 12-episode Season and Complete Cuts", () => {
   });
 
   it("maps Season and Complete Cut controls onto their final global timelines", () => {
-    expect(seasonSegments.duration).toBeCloseTo(120, 1);
-    expect(seasonSegments.segments).toEqual([
-      expect.objectContaining({ type: "intro", start: 0, end: 6 }),
-      expect.objectContaining({ type: "outro", start: 114, end: 120.008 }),
-    ]);
-    expect(completeSegments.duration).toBeCloseTo(228, 1);
-    expect(completeSegments.segments).toEqual([
-      expect.objectContaining({ type: "intro", start: 0, end: 6 }),
-      expect.objectContaining({ type: "outro", start: 222, end: 228.008 }),
-    ]);
+    expect(seasonSegments.duration).toBeCloseTo(108, 1);
+    expect(seasonSegments.segments).toEqual([]);
+    expect(completeSegments.duration).toBeCloseTo(216, 1);
+    expect(completeSegments.segments).toEqual([]);
     expect(afterComplete.resources).toBe(0);
     expect(subtitleFilesAfterSegments).toBe(0);
   });
@@ -311,7 +305,7 @@ describe("real 12-episode Season and Complete Cuts", () => {
 
   it("composes one opaque fMP4 manifest with a global opening/ending policy", () => {
     const parsed = parseHlsVodPlaylist(completePlaylist, completeStream.url);
-    expect(parsed.segments).toHaveLength(38);
+    expect(parsed.segments).toHaveLength(36);
     expect(completePlaylist).toContain("#EXT-X-MAP");
     expect(completePlaylist.match(/#EXT-X-DISCONTINUITY/g)).toHaveLength(11);
     expect(completePlaylist).toMatch(/\/segment\/r\d+\.m4s/);
@@ -339,30 +333,29 @@ describe("real 12-episode Season and Complete Cuts", () => {
     ]);
     expect(
       completeChapters.chapters.map((item) => Math.round(item.start)),
-    ).toEqual([0, 24, 42, 60, 78, 96, 114, 132, 150, 168, 186, 204]);
+    ).toEqual(Array.from({ length: 12 }, (_, index) => index * 18));
   });
 
   it("composes all-episode WebVTT lazily with bounded fetch concurrency", () => {
     const events = parseWebVtt(english, "combined", 0).events;
     const texts = events.map((event) => event.text);
     const text = texts.join("\n");
-    expect(text).toContain("E1-OPENING");
     expect(text).toContain("E1-STORY-A");
     expect(text).toContain("S2E1-STORY-A");
-    expect(text).toContain("S2E6-ENDING");
+    expect(text).toContain("S2E6-STORY-A");
     for (const marker of [
       ...Array.from({ length: 6 }, (_, index) => `E${index + 1}-ENDING`),
-      ...Array.from({ length: 5 }, (_, index) => `E${index + 2}-OPENING`),
-      ...Array.from({ length: 5 }, (_, index) => `S2E${index + 1}-ENDING`),
+      ...Array.from({ length: 6 }, (_, index) => `E${index + 1}-OPENING`),
+      ...Array.from({ length: 6 }, (_, index) => `S2E${index + 1}-ENDING`),
       ...Array.from({ length: 6 }, (_, index) => `S2E${index + 1}-OPENING`),
     ])
       expect(texts).not.toContain(marker);
     expect(
       events.find((event) => event.text === "S2E1-STORY-A")?.start,
-    ).toBeCloseTo(116, 2);
+    ).toBeCloseTo(110, 2);
     expect(
-      events.find((event) => event.text === "S2E6-ENDING")?.start,
-    ).toBeCloseTo(224, 2);
+      events.find((event) => event.text === "S2E6-STORY-A")?.start,
+    ).toBeCloseTo(200, 2);
     expect(subtitleStatsAfterEnglish.total).toBe(12);
     expect(subtitleStatsAfterEnglish.maxActive).toBeLessThanOrEqual(3);
     expect(
@@ -442,7 +435,7 @@ describe("real 12-episode Season and Complete Cuts", () => {
     expect(probe.streams.map((item) => item.codec_name)).toEqual(
       expect.arrayContaining(["h264", "aac"]),
     );
-    expect(Number(probe.format.duration)).toBeCloseTo(120, 0);
+    expect(Number(probe.format.duration)).toBeCloseTo(108, 0);
     await decodeWindow(seasonStream.url, 58);
   }, 320_000);
 
@@ -467,11 +460,11 @@ describe("real 12-episode Season and Complete Cuts", () => {
         expect.objectContaining({ codec_name: "aac", codec_type: "audio" }),
       ]),
     );
-    expect(Number(probe.format.duration)).toBeCloseTo(228, 0);
+    expect(Number(probe.format.duration)).toBeCloseTo(216, 0);
   }, 320_000);
 
   it("decodes the S1E5/S1E6, S1E6/S2E1, and S2E1/S2E2 boundaries", async () => {
-    await decodeWindow(completeStream.url, 94, 41);
+    await decodeWindow(completeStream.url, 88, 41);
   }, 320_000);
 
   it("seeks into Season 2 and backward into Season 1", async () => {

@@ -161,7 +161,49 @@ describe("lazy media route", () => {
     });
     expect(response.statusCode).toBe(206);
     expect(response.headers["content-range"]).toBe("bytes 10-12/20");
+    expect(response.headers["access-control-allow-origin"]).toBe("*");
+    expect(response.headers["access-control-expose-headers"]).toContain(
+      "Content-Range",
+    );
     expect(response.body).toBe("abc");
+  });
+
+  it("supports browser preflight for every playback resource, including errors", async () => {
+    const { app, resourcePath } = await createCut(vi.fn());
+    const cutPath = resourcePath.split("/segment/")[0]!;
+    for (const suffix of [
+      "master.m3u8",
+      "segment/missing.ts",
+      "subtitle/missing.vtt",
+      "chapters.json",
+      "segments.json",
+    ]) {
+      const response = await app.inject({
+        method: "OPTIONS",
+        url: `${cutPath}/${suffix}`,
+        headers: {
+          origin: "https://web.stremio.com",
+          "access-control-request-method": "GET",
+          "access-control-request-headers": "range",
+        },
+      });
+      expect(response.statusCode).toBe(204);
+      expect(response.headers["access-control-allow-origin"]).toBe("*");
+      expect(response.headers["access-control-allow-headers"]).toContain(
+        "Range",
+      );
+    }
+    const missing = await app.inject({
+      method: "GET",
+      url: `${cutPath}/segment/missing.ts`,
+    });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.headers["access-control-allow-origin"]).toBe("*");
+    const playlist = await app.inject({
+      method: "GET",
+      url: `${cutPath}/master.m3u8`,
+    });
+    expect(playlist.headers["access-control-allow-origin"]).toBe("*");
   });
 
   it("warms only bounded lookahead resources after playback starts", async () => {

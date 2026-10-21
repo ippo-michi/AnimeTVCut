@@ -39,7 +39,7 @@ or another HTTP media endpoint. All such sources still pass through MediaFlow.
 
 Configure `MEDIAFLOW_URL`, `MEDIAFLOW_API_PASSWORD`, and optionally
 `MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` builds the
-project's `2.4.9-atc10` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
+project's `2.4.9-atc15` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
 copy `.env.example` to `.env` and replace the example password before starting the
 stack with `docker compose up -d --build`.
 
@@ -50,6 +50,8 @@ are retained. Incompatible audio is normalized to 48 kHz stereo AAC. Unsafe pass
 example HEVC, AV1, and Hi10 AVC) use the compatibility video-transcode path. Each
 segment is muxed directly onto its actual AnimeTVCut output-timeline position, so
 forward/backward seeks do not scan from the start or replay an earlier episode.
+When a cut boundary falls inside a normalized segment, that boundary segment is
+transcoded to the exact retained interval.
 
 Upstream MediaFlow `v2.4.9` constructs partial synthetic MP4/MKV containers for HLS
 segments. Those partial containers can omit required container context or retain sample
@@ -59,6 +61,36 @@ HTTP source using Range requests, falls back from unusable MKV reconstructed hea
 and stops bounded segment demuxing promptly. Its build verifies the exact upstream
 source hashes before applying the patch so an upstream change fails safely instead of
 silently receiving an incompatible repair.
+
+## Coolify deployment
+
+The production addon at `https://atc.kanji.moe` is a Coolify Docker Compose application
+connected to `ippo-michi/AnimeTVCut`, branch `master`, using `/compose.yaml`. Automatic
+deployment is enabled. Keep production changes in GitHub so the next Coolify deployment
+retains them. Coolify owns domain routing, TLS, and the application network; repository
+Compose files do not need host-specific Traefik labels or an external `proxy` network.
+
+Configure secret upstream/metadata manifest URLs, `MEDIAFLOW_API_PASSWORD`, and
+`PUBLIC_BASE_URL=https://atc.kanji.moe` in Coolify's environment settings. Local `.env`
+files are excluded from Git and Docker build contexts. Keep the app, MediaFlow, and
+Redis in the same Compose application; MediaFlow and Redis stay internal.
+
+Install `https://atc.kanji.moe/v2/manifest.json` in Stremio. After a deployment, check
+`/health`, `/v2/manifest.json`, and a search, then play a TV Cut and seek across an
+episode boundary. Cut sessions live in memory, so an active stream must be reopened
+after the app restarts.
+
+GitHub Actions runs lint, TypeScript compilation, regression tests, client skip-control
+checks, and real MediaFlow/Stremio playback tests on pushes to `master` and pull
+requests. Coolify's automatic push deployment runs independently of these checks.
+The integration suites use a separate `2.4.9-atc15-test` image tag so local tests
+cannot replace the production MediaFlow image tag.
+
+Playback playlists, segments, subtitles, chapters, and skip metadata support browser
+cross-origin requests, including byte ranges. `MEDIA_PREFETCH_RESOURCES` controls both
+the lookahead depth and the maximum number of background resource fetches across
+players (default 3, maximum 8). Background work stops when the app closes; cancelling
+one player does not cancel shared upstream manifest initialization.
 
 Configure a generic upstream Stremio addon with the complete secret manifest URL:
 
@@ -126,9 +158,9 @@ differences are accepted within the configured tolerance; timestamps are never s
 
 `POST /api/v1/dev/skip/resolve` returns provider-neutral diagnostics without creating a
 cut. `POST /api/v1/dev/cuts/from-upstream/auto` loads each normalized playlist once,
-uses its exact duration for timestamp lookup, applies the first-opening/last-ending
-policy, and passes safe bounded ranges through the existing `preserve_content` HLS
-alignment. The original manual endpoints remain independent from skip providers.
+uses its exact duration for timestamp lookup, removes safely identified openings and
+endings by default, and applies the retained ranges through HLS composition. The
+original manual endpoints remain independent from skip providers.
 
 Open-ended credits/previews, mixed OP/ED reports, invalid/out-of-duration ranges,
 duration mismatches, and reports below a configured confidence threshold are diagnostic
@@ -214,10 +246,9 @@ three independently configurable views of each source series:
 - **Season Cut** — one entire finalized source season.
 - **Complete Cut** — all finalized normal seasons in one stream, within safety limits.
 
-Season and Complete Cuts apply one global policy: retain the first safe opening and the
-final safe ending, remove other safely identified OP/ED ranges, and remove safe recaps
-and previews. When timestamps are absent, unsafe, or cannot remove a complete HLS
-segment, AnimeTVCut keeps the footage rather than guessing. Complete Cuts choose one
+Season and Complete Cuts apply one global policy: remove safely identified OP/ED
+ranges, recaps, and previews. Exact boundaries are trimmed when the normalizer supports
+them; missing or unsafe timestamps leave footage intact. Complete Cuts choose one
 strict source family per season, allowing legitimate release-family transitions between
 seasons after MediaFlow normalizes all selected sources.
 
@@ -263,7 +294,7 @@ upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
 subtitle metadata discovery per constituent episode. Subtitle source fetches are
 bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
-Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc10` repair:
+Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc15` repair:
 
 ```bash
 pnpm test:stremio

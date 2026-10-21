@@ -31,6 +31,15 @@ const host = process.env.HOST ?? "127.0.0.1";
 
 try {
   await app.listen({ port, host });
+  const shutdown = () => {
+    app.log.info("Closing AnimeTVCut");
+    void app.close().catch((error: unknown) => {
+      app.log.error({ err: error }, "AnimeTVCut shutdown failed");
+      process.exitCode = 1;
+    });
+  };
+  process.once("SIGTERM", shutdown);
+  process.once("SIGINT", shutdown);
 } catch (error) {
   app.log.error(error);
   process.exitCode = 1;

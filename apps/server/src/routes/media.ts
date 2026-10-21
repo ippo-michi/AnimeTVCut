@@ -1,17 +1,12 @@
-import type { Readable } from "node:stream";
-
 import type { FastifyPluginAsync } from "fastify";
 
-import type {
-  CutSession,
-  CutSessionStore,
-  SessionResource,
-} from "../services/cut-session-store.js";
+import type { CutSessionStore } from "../services/cut-session-store.js";
 import {
   MediaRangeNotSatisfiableError,
   type MediaReadRange,
 } from "../services/hls-source-loader.js";
 import { MediaFlowError } from "../services/mediaflow/errors.js";
+import { MediaPrefetcher } from "../services/media-prefetch.js";
 import type { SubtitleService } from "../services/subtitle-service.js";
 import type { CutWatchProgressTracker } from "../services/watch-progress.js";
 
@@ -26,55 +21,6 @@ const SAFE_RESPONSE_HEADERS = new Set([
   "content-length",
   "content-range",
 ]);
-
-const prefetchInFlight = new WeakMap<SessionResource, Promise<void>>();
-const prefetchedResources = new WeakSet<SessionResource>();
-
-function beginPrefetch(resource: SessionResource): void {
-  if (prefetchedResources.has(resource) || prefetchInFlight.has(resource))
-    return;
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 60_000);
-  const task = (async () => {
-    let stream: Readable | undefined;
-    try {
-      const opened = await resource.open(undefined, controller.signal);
-      stream = opened.stream;
-      for await (const chunk of opened.stream) {
-        void chunk;
-        // Drain only to warm MediaFlow's bounded derived-resource cache.
-      }
-      prefetchedResources.add(resource);
-    } catch {
-      // Prefetch is opportunistic; the normal player request remains
-      // authoritative and reports any real upstream error.
-    } finally {
-      clearTimeout(timeout);
-      stream?.destroy();
-      prefetchInFlight.delete(resource);
-    }
-  })();
-  prefetchInFlight.set(resource, task);
-}
-
-function prefetchAfter(
-  session: CutSession,
-  current: SessionResource,
-  count: number,
-): void {
-  if (count <= 0) return;
-  let foundCurrent = false;
-  let remaining = count;
-  for (const resource of session.resources.values()) {
-    if (!foundCurrent) {
-      foundCurrent = resource === current;
-      continue;
-    }
-    beginPrefetch(resource);
-    remaining -= 1;
-    if (remaining === 0) return;
-  }
-}
 
 function parseRange(header: string): MediaReadRange | undefined {
   const match = /^bytes=(\d+)-(\d*)$/.exec(header);
@@ -131,6 +77,25 @@ export function mediaRoutes(
     throw new Error("Media prefetch resource count must be between 0 and 8.");
   }
   return async (app) => {
+    const prefetcher = new MediaPrefetcher(prefetchResourceCount);
+    app.addHook("preClose", async () => prefetcher.close());
+    app.addHook("onRequest", async (request, reply) => {
+      if (!request.url.startsWith("/media/cut/")) return;
+      reply.header("access-control-allow-origin", "*");
+      reply.header("access-control-allow-methods", "GET, HEAD, OPTIONS");
+      reply.header(
+        "access-control-allow-headers",
+        "Accept, Content-Type, Range",
+      );
+      reply.header(
+        "access-control-expose-headers",
+        "Accept-Ranges, Content-Length, Content-Range",
+      );
+    });
+    app.options("/media/cut/*", async (_request, reply) =>
+      reply.code(204).send(),
+    );
+
     app.get<{ Params: Pick<MediaParams, "cutId"> }>(
       "/media/cut/:cutId/master.m3u8",
       async (request, reply) => {
@@ -170,11 +135,10 @@ export function mediaRoutes(
         reply.raw.once("close", cancel);
 
         try {
-          const pendingPrefetch = prefetchInFlight.get(resource);
-          if (pendingPrefetch !== undefined) await pendingPrefetch;
+          await prefetcher.wait(resource, controller.signal);
           const opened = await resource.open(range, controller.signal);
           sessions.touch(request.params.cutId);
-          prefetchAfter(session, resource, prefetchResourceCount);
+          prefetcher.after(session, resource);
           if (
             watchProgress !== undefined &&
             responseContainsWholeResource(
@@ -234,17 +198,6 @@ export function mediaRoutes(
           chapters: session.chapters ?? [],
         });
       },
-    );
-
-    app.options<{ Params: { cutId: string } }>(
-      "/media/cut/:cutId/segments.json",
-      async (_request, reply) =>
-        reply
-          .header("access-control-allow-origin", "*")
-          .header("access-control-allow-methods", "GET, OPTIONS")
-          .header("access-control-allow-headers", "Accept")
-          .code(204)
-          .send(),
     );
 
     app.get<{ Params: { cutId: string } }>(

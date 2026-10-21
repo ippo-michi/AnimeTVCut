@@ -1,0 +1,30 @@
+--- a/mediaflow_proxy/remuxer/media_source.py
++++ b/mediaflow_proxy/remuxer/media_source.py
+@@ -357,14 +357,15 @@
+             headers["range"] = f"bytes={offset}-{end}"
+ 
+         for attempt in range(2):
++            requested_url = self._url
+             yielded = False
+             try:
+-                async with create_aiohttp_session(self._url, headers=headers) as (
++                async with create_aiohttp_session(requested_url, headers=headers) as (
+                     session,
+                     proxy_url,
+                 ):
+                     async with session.get(
+-                        self._url,
++                        requested_url,
+                         headers=headers,
+                         proxy=proxy_url,
+                         allow_redirects=True,
+@@ -380,7 +381,7 @@
+                     or error.status in {401, 403, 404, 408, 429}
+                     or error.status >= 500
+                 )
+-                if attempt > 0 or yielded or not retryable_status or self._url == self._original_url:
++                if attempt > 0 or yielded or not retryable_status or requested_url == self._original_url:
+                     raise
+-                stale_url = self._url
++                stale_url = requested_url
+                 await self._resolve_destination(stale_url=stale_url)

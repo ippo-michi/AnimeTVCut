@@ -22,6 +22,7 @@ import {
 import {
   MediaFlowAuthenticationError,
   MediaFlowConfigurationError,
+  MediaFlowError,
   MediaFlowInvalidResponseError,
   MediaFlowSourceError,
   MediaFlowUnavailableError,
@@ -121,7 +122,6 @@ async function readLimitedText(response: Response): Promise<string> {
   for await (const chunk of response.body) {
     received += chunk.byteLength;
     if (received > MAX_PLAYLIST_BYTES) {
-      await response.body.cancel();
       throw new MediaFlowInvalidResponseError(
         "MediaFlow playlist is too large.",
       );
@@ -191,12 +191,18 @@ export class MediaFlowClient {
     signal?: AbortSignal,
   ): Promise<HlsVodPlaylist> {
     const playlistUrl = this.buildTranscodePlaylistUrl(source);
-    const response = await this.request(playlistUrl, "playlist", { signal });
-    if (!response.ok) {
-      await response.body?.cancel();
-      this.throwForStatus(response.status);
-    }
-    const text = await readLimitedText(response);
+    const text = await this.request(
+      playlistUrl,
+      "playlist",
+      async (response) => {
+        if (!response.ok) {
+          await response.body?.cancel();
+          this.throwForStatus(response.status);
+        }
+        return readLimitedText(response);
+      },
+      { signal },
+    );
     let playlist: HlsVodPlaylist;
     try {
       playlist = parseHlsVodPlaylist(text, playlistUrl.toString());
@@ -249,9 +255,10 @@ export class MediaFlowClient {
   public async isReachable(): Promise<boolean> {
     const healthUrl = new URL("/health", this.config.baseUrl);
     try {
-      const response = await this.request(healthUrl, "health");
-      await response.body?.cancel();
-      return response.ok;
+      return await this.request(healthUrl, "health", async (response) => {
+        await response.body?.cancel();
+        return response.ok;
+      });
     } catch {
       return false;
     }
@@ -305,10 +312,15 @@ export class MediaFlowClient {
     if (range !== undefined) {
       headers.set("range", `bytes=${range.start}-${range.end ?? ""}`);
     }
-    const response = await this.request(resourceUrl, "resource", {
-      headers,
-      signal,
-    });
+    const response = await this.request(
+      resourceUrl,
+      "resource",
+      (response) => Promise.resolve(response),
+      {
+        headers,
+        signal,
+      },
+    );
     if (response.status !== 200 && response.status !== 206) {
       await response.body?.cancel();
       this.throwForStatus(response.status);
@@ -369,11 +381,12 @@ export class MediaFlowClient {
     }
   }
 
-  private async request(
+  private async request<T>(
     url: string | URL,
     kind: MediaFlowRequestKind,
+    consume: (response: Response) => Promise<T>,
     options: { headers?: Headers; signal?: AbortSignal } = {},
-  ): Promise<Response> {
+  ): Promise<T> {
     const timeoutController = new AbortController();
     const timeout = setTimeout(
       () => timeoutController.abort(),
@@ -393,12 +406,11 @@ export class MediaFlowClient {
         redirect: "manual",
         signal,
       });
-      // For media, this timeout bounds opening the upstream response, not how
-      // long a slow player is allowed to consume it. The caller signal remains
-      // attached to the response body and still cancels on disconnect.
-      if (kind === "resource") clearTimeout(timeout);
-      return response;
-    } catch {
+      // Playlist bodies stay inside the timeout; media bodies are handed to
+      // the player and remain governed by its disconnect signal.
+      return await consume(response);
+    } catch (error) {
+      if (error instanceof MediaFlowError) throw error;
       if (options.signal?.aborted === true) {
         throw new MediaFlowUnavailableError("MediaFlow request was cancelled.");
       }
@@ -406,7 +418,7 @@ export class MediaFlowClient {
         "MediaFlow request timed out or failed.",
       );
     } finally {
-      if (kind === "resource") clearTimeout(timeout);
+      clearTimeout(timeout);
     }
   }
 

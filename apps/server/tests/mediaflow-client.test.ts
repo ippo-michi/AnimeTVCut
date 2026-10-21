@@ -60,6 +60,66 @@ function fetchMock(
 }
 
 describe("MediaFlow client", () => {
+  it("releases successful playlist and health deadlines", async () => {
+    vi.useFakeTimers();
+    try {
+      const client = new MediaFlowClient(
+        { baseUrl: "http://mediaflow:8888" },
+        fetchMock(async () => new Response(mediaFlowPlaylist())),
+      );
+      await client.loadTranscodePlaylist(source);
+      await client.isReachable();
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("times out a stalled playlist body after response headers arrive", async () => {
+    const mock = fetchMock(
+      async (_input, init) =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              init?.signal?.addEventListener(
+                "abort",
+                () => controller.error(new Error("stalled")),
+                { once: true },
+              );
+            },
+          }),
+        ),
+    );
+    const client = new MediaFlowClient(
+      { baseUrl: "http://mediaflow:8888", requestTimeoutMs: 10 },
+      mock,
+    );
+    await expect(client.loadTranscodePlaylist(source)).rejects.toThrow(
+      MediaFlowUnavailableError,
+    );
+  });
+
+  it("cancels an oversized chunked playlist and preserves its typed error", async () => {
+    const cancel = vi.fn();
+    const client = new MediaFlowClient(
+      { baseUrl: "http://mediaflow:8888" },
+      fetchMock(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(2 * 1024 * 1024 + 1));
+              },
+              cancel,
+            }),
+          ),
+      ),
+    );
+    await expect(client.loadTranscodePlaylist(source)).rejects.toThrow(
+      MediaFlowInvalidResponseError,
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+  });
   it("constructs the transcode URL with encoded password and source headers", () => {
     const client = new MediaFlowClient({
       baseUrl: "http://mediaflow:8888/",

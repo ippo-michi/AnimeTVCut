@@ -105,14 +105,16 @@ export function isStructurallyPlausibleEpisodeDuration(
   durationSeconds: number,
   expectedSeconds?: number,
 ): boolean {
+  const minimumSeconds =
+    expectedSeconds !== undefined &&
+    Number.isFinite(expectedSeconds) &&
+    expectedSeconds > 0
+      ? Math.max(1, expectedSeconds * 0.25)
+      : 60;
   return (
     Number.isFinite(durationSeconds) &&
-    durationSeconds >= 60 &&
-    durationSeconds <= 12 * 60 * 60 &&
-    (expectedSeconds === undefined ||
-      !Number.isFinite(expectedSeconds) ||
-      expectedSeconds <= 0 ||
-      durationSeconds >= expectedSeconds * 0.25)
+    durationSeconds >= minimumSeconds &&
+    durationSeconds <= 12 * 60 * 60
   );
 }
 
@@ -280,10 +282,14 @@ export class UpstreamCutService {
         ...season.episodes,
       ]);
       try {
-        await this.preflightLongCutSources(request, selections);
+        const preflight = await this.preflightLongCutSources(
+          request,
+          selections,
+        );
         const result = await this.createAutomaticCutFromSelection(
           { ...request, episodes },
           combined,
+          preflight,
         );
         return {
           ...result,
@@ -315,14 +321,14 @@ export class UpstreamCutService {
       season: number;
       selection: CandidateFamilySelection;
     }[],
-  ): Promise<void> {
+  ): Promise<readonly PreparedInputSource[]> {
     const expectedDuration = request.expectedEpisodeDurationSeconds;
     if (
       expectedDuration === undefined ||
       !Number.isFinite(expectedDuration) ||
       expectedDuration <= 0
     )
-      return;
+      return [];
 
     // A provider can return a complete-looking family whose URLs are preview
     // clips or truncated files. Probe one episode from each season before
@@ -332,7 +338,7 @@ export class UpstreamCutService {
       const episode = selection.episodes[0];
       return episode === undefined ? [] : [episode.mediaSource];
     });
-    if (representatives.length === 0) return;
+    if (representatives.length === 0) return [];
 
     const prepared = await this.cutService.prepareSources(representatives, {
       ...(request.sourcePrepareConcurrency === undefined
@@ -346,24 +352,43 @@ export class UpstreamCutService {
       signal: request.signal,
     });
     this.validatePreparedDurations(prepared, expectedDuration);
+    return prepared;
   }
 
   private async createAutomaticCutFromSelection(
     request: AutomaticUpstreamCutRequest,
     selection: CandidateFamilySelection,
+    preflight: readonly PreparedInputSource[] = [],
   ) {
     if (this.skipService === undefined) {
       throw new Error("Skip timestamp providers are not configured.");
     }
-    const prepared = await this.cutService.prepareSources(
-      selection.episodes.map((episode) => episode.mediaSource),
-      {
+    const sourceIds = selection.episodes.map(
+      ({ mediaSource }) => mediaSource.episodeId,
+    );
+    if (new Set(sourceIds).size !== sourceIds.length) {
+      throw new Error("Duplicate episode ID in selected sources.");
+    }
+    const preparedBySource = new Map(
+      preflight.map((item) => [item.source, item]),
+    );
+    const missing = selection.episodes
+      .map((episode) => episode.mediaSource)
+      .filter((source) => !preparedBySource.has(source));
+    if (missing.length > 0) {
+      const loaded = await this.cutService.prepareSources(missing, {
         ...(request.sourcePrepareConcurrency === undefined
           ? {}
           : { concurrency: request.sourcePrepareConcurrency }),
         signal: request.signal,
-      },
-    );
+      });
+      for (const item of loaded) preparedBySource.set(item.source, item);
+    }
+    const prepared = selection.episodes.map(({ mediaSource }) => {
+      const item = preparedBySource.get(mediaSource);
+      if (item === undefined) throw new Error("Missing prepared source.");
+      return item;
+    });
     this.validatePreparedDurations(
       prepared,
       request.expectedEpisodeDurationSeconds,

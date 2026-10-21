@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc13` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc15` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
@@ -22,6 +22,14 @@ Each independently generated transport stream marks its initial packets as a
 standards-compliant discontinuity so continuity-counter resets are not decoded
 as corrupt packets.
 The fMP4 path remains available for format/regression testing.
+
+Exact cut boundaries inside a normalized segment use the bounded transcode path to
+emit only the retained source interval. The `atc_exact` mode and physical source
+interval participate in derived-resource cache keys.
+
+Concurrent failures retain the URL of each failed HTTP request. A late failure from
+the old CDN therefore reuses an already refreshed destination instead of invalidating
+the replacement and resolving the debrid URL again.
 
 All fallback HTTP sources use the original range-capable URL as a seekable PyAV/FFmpeg
 input, seek to the requested segment time, and transcode only the bounded segment

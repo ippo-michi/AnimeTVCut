@@ -41,6 +41,98 @@ function routingFetch(streams: unknown[] = []): typeof fetch {
 }
 
 describe("Stremio upstream client", () => {
+  it("keeps shared manifest initialization alive when its first caller leaves", async () => {
+    let finish!: (response: Response) => void;
+    let sharedSignal: AbortSignal | null | undefined;
+    const mock = fetchMock(async (_input, init) => {
+      sharedSignal = init?.signal;
+      return new Promise<Response>((resolve, reject) => {
+        finish = resolve;
+        sharedSignal?.addEventListener(
+          "abort",
+          () => reject(new Error("aborted")),
+          { once: true },
+        );
+      });
+    });
+    const client = new StremioUpstreamClient(
+      { manifestUrl: "https://addon.test/secret/manifest.json" },
+      mock,
+    );
+    const controller = new AbortController();
+    const first = client.getManifest(controller.signal);
+    const second = client.getManifest();
+    controller.abort();
+    await expect(first).rejects.toThrow(StremioUpstreamUnavailableError);
+    expect(sharedSignal?.aborted).toBe(false);
+    finish(Response.json(manifest));
+    await expect(second).resolves.toMatchObject({ id: manifest.id });
+    await expect(client.getManifest()).resolves.toMatchObject({
+      id: manifest.id,
+    });
+    expect(mock).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a joining caller independently and retries after a shared failure", async () => {
+    let finish!: (response: Response) => void;
+    const mock = fetchMock(
+      async () =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    const client = new StremioUpstreamClient(
+      { manifestUrl: "https://addon.test/manifest.json" },
+      mock,
+    );
+    const first = client.getManifest();
+    const controller = new AbortController();
+    const second = client.getManifest(controller.signal);
+    controller.abort();
+    await expect(second).rejects.toThrow(/cancelled/);
+    finish(new Response(null, { status: 503 }));
+    await expect(first).rejects.toThrow(StremioUpstreamUnavailableError);
+    const retried = client.getManifest();
+    finish(Response.json(manifest));
+    await expect(retried).resolves.toMatchObject({ id: manifest.id });
+    expect(mock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not start initialization for an already cancelled caller", async () => {
+    const mock = routingFetch();
+    const client = new StremioUpstreamClient(
+      { manifestUrl: "https://addon.test/manifest.json" },
+      mock,
+    );
+    const controller = new AbortController();
+    controller.abort();
+    await expect(client.getManifest(controller.signal)).rejects.toThrow(
+      /cancelled/,
+    );
+    expect(mock).not.toHaveBeenCalled();
+  });
+
+  it("cancels an oversized chunked manifest and preserves its typed error", async () => {
+    const cancel = vi.fn();
+    const client = new StremioUpstreamClient(
+      { manifestUrl: "https://addon.test/manifest.json" },
+      fetchMock(
+        async () =>
+          new Response(
+            new ReadableStream({
+              start(controller) {
+                controller.enqueue(new Uint8Array(256 * 1024 + 1));
+              },
+              cancel,
+            }),
+          ),
+      ),
+    );
+    await expect(client.getManifest()).rejects.toThrow(
+      StremioManifestInvalidError,
+    );
+    expect(cancel).toHaveBeenCalledOnce();
+  });
   it("uses the standard authenticated subtitle resource with exact videoID extras", async () => {
     const requested: string[] = [];
     const client = new StremioUpstreamClient(

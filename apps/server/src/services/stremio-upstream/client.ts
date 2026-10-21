@@ -66,7 +66,6 @@ async function readBoundedJson(
   for await (const chunk of response.body) {
     received += chunk.byteLength;
     if (received > maximumBytes) {
-      await response.body.cancel();
       throw invalidError("response is too large");
     }
     chunks.push(chunk);
@@ -129,16 +128,45 @@ export class StremioUpstreamClient {
   }
 
   public async getManifest(signal?: AbortSignal): Promise<StremioManifest> {
+    if (signal?.aborted === true) {
+      throw new StremioUpstreamUnavailableError(
+        "Upstream Stremio request was cancelled.",
+      );
+    }
     const cached = this.manifestCache;
     if (cached !== undefined && cached.expiresAt > this.now())
       return cached.value;
-    if (this.manifestInFlight !== undefined) return this.manifestInFlight;
-    const loading = this.fetchManifest(signal);
-    this.manifestInFlight = loading;
+    let loading = this.manifestInFlight;
+    if (loading === undefined) {
+      // Each caller owns only its wait. The shared initialization has its own
+      // timeout and must survive a different player's cancellation.
+      loading = this.fetchManifest();
+      this.manifestInFlight = loading;
+      const shared = loading;
+      void shared
+        .finally(() => {
+          if (this.manifestInFlight === shared)
+            this.manifestInFlight = undefined;
+        })
+        .catch(() => {});
+    }
+    if (signal === undefined) return loading;
+    let onAbort: (() => void) | undefined;
     try {
-      return await loading;
+      return await Promise.race([
+        loading,
+        new Promise<never>((_resolve, reject) => {
+          onAbort = () =>
+            reject(
+              new StremioUpstreamUnavailableError(
+                "Upstream Stremio request was cancelled.",
+              ),
+            );
+          signal.addEventListener("abort", onAbort, { once: true });
+        }),
+      ]);
     } finally {
-      if (this.manifestInFlight === loading) this.manifestInFlight = undefined;
+      if (onAbort !== undefined) signal.removeEventListener("abort", onAbort);
     }
   }
 

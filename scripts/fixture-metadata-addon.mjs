@@ -31,6 +31,7 @@ function videos(mode) {
       title: `Synthetic S${season}E${episode}`,
       released: `2025-0${season}-${String(episode).padStart(2, "0")}T00:00:00.000Z`,
       thumbnail: `https://images.invalid/s${season}e${episode}.jpg`,
+      runtime: "0.5 min",
     };
   });
 }
@@ -50,7 +51,7 @@ function preview(mode) {
 }
 
 function meta(mode) {
-  return { ...preview(mode), runtime: "24 min", videos: videos(mode) };
+  return { ...preview(mode), runtime: "0.5 min", videos: videos(mode) };
 }
 
 function decodeResourceId(pathname, prefix) {

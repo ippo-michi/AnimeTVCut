@@ -105,6 +105,14 @@ describe("long-cut upstream orchestration", () => {
     expect(isStructurallyPlausibleEpisodeDuration(4_920, 1_440)).toBe(true);
   });
 
+  it("accepts short episodes when metadata agrees while rejecting preview clips", () => {
+    expect(isStructurallyPlausibleEpisodeDuration(30.008, 30)).toBe(true);
+    expect(isStructurallyPlausibleEpisodeDuration(5, 30)).toBe(false);
+    expect(isStructurallyPlausibleEpisodeDuration(30, 1_440)).toBe(false);
+    expect(isStructurallyPlausibleEpisodeDuration(30)).toBe(false);
+    expect(isStructurallyPlausibleEpisodeDuration(0.1, 0.1)).toBe(false);
+  });
+
   it("bounds per-season selection and prepares every chosen playlist once", async () => {
     let active = 0;
     let maxActive = 0;
@@ -263,7 +271,7 @@ describe("long-cut upstream orchestration", () => {
     expect(result.selection.episodes[0]?.rank).toBe(1);
   });
 
-  it("preflights one source per season before preparing a long cut", async () => {
+  it("preflights alternate sources and reuses the successful playlist", async () => {
     const resolveEpisodes = vi.fn(
       async (
         episodes: readonly UpstreamEpisodeReference[],
@@ -335,10 +343,9 @@ describe("long-cut upstream orchestration", () => {
     });
 
     expect(resolveEpisodes).toHaveBeenCalledTimes(2);
-    expect(prepareSources).toHaveBeenCalledTimes(3);
+    expect(prepareSources).toHaveBeenCalledTimes(2);
     expect(prepareSources.mock.calls[0]?.[0]).toHaveLength(1);
     expect(prepareSources.mock.calls[1]?.[0]).toHaveLength(1);
-    expect(prepareSources.mock.calls[2]?.[0]).toHaveLength(1);
     expect(result.selection.episodes[0]?.rank).toBe(1);
   });
 
