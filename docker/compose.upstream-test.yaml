@@ -55,6 +55,9 @@ services:
     environment:
       API_PASSWORD: phase3-integration-password
       ENABLE_TRANSCODE: "true"
+      GUNICORN_CMD_ARGS: --config /tests/gunicorn_diagnostics.py
+    volumes:
+      - ./mediaflow/tests:/tests:ro
     ports:
       - "127.0.0.1:18888:8888"
     networks: [phase3-test]
