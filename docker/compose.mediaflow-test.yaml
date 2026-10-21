@@ -24,7 +24,7 @@ services:
       retries: 20
 
   mediaflow:
-    image: animetvcut-mediaflow:2.4.9-atc15-test
+    image: animetvcut-mediaflow:2.4.9-atc16-test
     build:
       context: ..
       dockerfile: docker/mediaflow/Dockerfile

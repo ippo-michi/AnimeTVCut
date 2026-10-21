@@ -19,7 +19,7 @@ pnpm fixtures:generate
 docker compose -f "${compose_file}" up -d --wait
 docker run --rm --entrypoint python \
   --volume "${project_root}/docker/mediaflow/tests:/tests:ro" \
-  animetvcut-mediaflow:2.4.9-atc15-test -m unittest discover -s /tests
+  animetvcut-mediaflow:2.4.9-atc16-test -m unittest discover -s /tests
 MEDIAFLOW_TEST_URL="http://127.0.0.1:18888" \
 MEDIAFLOW_TEST_ORIGIN_URL="http://fixture-origin:8090" \
   pnpm exec vitest run --config vitest.mediaflow.config.ts

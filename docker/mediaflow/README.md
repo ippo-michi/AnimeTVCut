@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc15` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc16` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
@@ -30,6 +30,10 @@ interval participate in derived-resource cache keys.
 Concurrent failures retain the URL of each failed HTTP request. A late failure from
 the old CDN therefore reuses an already refreshed destination instead of invalidating
 the replacement and resolving the debrid URL again.
+
+Cross-worker resolution locks use nonblocking acquisition with cancellable waits.
+Cancelling a waiting request closes its descriptor immediately, so an abandoned
+executor call cannot acquire the lock later and block future playback requests.
 
 All fallback HTTP sources use the original range-capable URL as a seekable PyAV/FFmpeg
 input, seek to the requested segment time, and transcode only the bounded segment

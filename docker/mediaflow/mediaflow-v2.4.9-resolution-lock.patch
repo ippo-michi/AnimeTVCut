@@ -1,0 +1,32 @@
+--- a/mediaflow_proxy/remuxer/media_source.py
++++ b/mediaflow_proxy/remuxer/media_source.py
+@@ -286,8 +286,16 @@
+             _HTTP_RESOLUTION_CACHE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+             lock_path = _HTTP_RESOLUTION_CACHE_DIR / f"{self._resolution_key}.lock"
+             lock_fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+-            await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_EX)
+             try:
++                # A cancelled blocking flock in an executor keeps running and
++                # can acquire the lock later without ever closing its fd.
++                # Poll without blocking a worker or retaining an orphan thread.
++                while True:
++                    try:
++                        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
++                        break
++                    except BlockingIOError:
++                        await asyncio.sleep(0.02)
+                 cached = self._cached_resolution(stale_url)
+                 if cached is not None:
+                     self._apply_resolution(*cached)
+@@ -328,7 +336,9 @@
+ 
+                 self._apply_resolution(resolved_url, file_size)
+             finally:
+-                await asyncio.to_thread(fcntl.flock, lock_fd, fcntl.LOCK_UN)
+-                os.close(lock_fd)
++                try:
++                    fcntl.flock(lock_fd, fcntl.LOCK_UN)
++                finally:
++                    os.close(lock_fd)
+ 
+     def pyav_open_input(self) -> tuple[str, dict[str, str]]:
