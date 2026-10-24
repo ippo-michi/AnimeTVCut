@@ -61,7 +61,7 @@ export class AniSkipProvider implements SkipSegmentProvider {
   private readonly timeoutMs: number;
   private readonly cacheTtlMs: number;
   private readonly fetchImplementation: typeof fetch;
-  private readonly cache = new Map<string, CacheEntry>();
+  private readonly cache = new BoundedCache<string, CacheEntry>();
 
   public constructor(options: AniSkipProviderOptions = {}) {
     this.baseUrl = validBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -196,3 +196,4 @@ export class AniSkipProvider implements SkipSegmentProvider {
     return this.result(segments, warnings);
   }
 }
+import { BoundedCache } from "@animetvcut/core";

@@ -220,6 +220,36 @@ export class MediaFlowClient {
         this.validateResource(segment.map.absoluteUri, "map");
       }
     }
+    // HLS starts at zero even when the first video keyframe has a positive
+    // timestamp. Keep MediaFlow's physical timestamps for exact segment
+    // requests, and avoid accumulating rounded EXTINF durations over a show.
+    let cursor = 0;
+    for (const segment of playlist.segments) {
+      const params = new URL(segment.absoluteUri).searchParams;
+      const start = params.get("start_ms");
+      const end = params.get("end_ms");
+      if (start !== null && end !== null) {
+        const mediaStart = Number(start) / 1000;
+        const mediaEnd = Number(end) / 1000;
+        if (
+          !Number.isFinite(mediaStart) ||
+          !Number.isFinite(mediaEnd) ||
+          mediaStart < 0 ||
+          mediaEnd <= mediaStart
+        ) {
+          throw new MediaFlowInvalidResponseError(
+            "MediaFlow playlist contains an invalid source interval.",
+          );
+        }
+        segment.mediaStart = mediaStart;
+        segment.mediaEnd = mediaEnd;
+        segment.duration = mediaEnd - mediaStart;
+      }
+      segment.start = cursor;
+      segment.end = cursor + segment.duration;
+      cursor = segment.end;
+    }
+    playlist.duration = cursor;
     return playlist;
   }
 

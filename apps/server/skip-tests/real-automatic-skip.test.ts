@@ -138,6 +138,7 @@ beforeAll(async () => {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
+        cutPolicy: { openings: "first_only", endings: "last_only" },
         episodes: [1, 2, 3].map((episode) => ({
           episodeId: `ep${episode}`,
           type: "series",
@@ -272,5 +273,49 @@ describe("real automatic Stremio to MediaFlow to AnimeTVCut composition", () => 
     await decodeWindow(30, 1);
     await decodeWindow(50, 1);
     await decodeWindow(10, 1);
+  });
+
+  it("plays the first retained fragment when the default policy removes every theme", async () => {
+    const response = await fetch(
+      `${baseUrl}/api/v1/dev/cuts/from-upstream/auto`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          episodes: [1, 2, 3].map((episode) => ({
+            episodeId: `ep${episode}`,
+            type: "series",
+            videoId: `tt1234567:1:${episode}`,
+          })),
+        }),
+      },
+    );
+    expect(response.status).toBe(200);
+    const automatic = (await response.json()) as {
+      playlistUrl: string;
+      skipPlan: { automaticRemovals: unknown[] };
+    };
+    expect(automatic.skipPlan.automaticRemovals).toHaveLength(6);
+    const url = `${baseUrl}${automatic.playlistUrl}`;
+    const parsed = parseHlsVodPlaylist(await (await fetch(url)).text(), url);
+    const fragment = await fetch(parsed.segments[0]!.absoluteUri);
+    expect(
+      fragment.status,
+      fragment.ok ? undefined : await fragment.text(),
+    ).toBe(200);
+    await fragment.arrayBuffer();
+    await runMediaTool("ffmpeg", [
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-nostdin",
+      "-i",
+      url,
+      "-t",
+      "2",
+      "-f",
+      "null",
+      "-",
+    ]);
   });
 });

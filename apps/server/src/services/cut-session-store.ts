@@ -14,9 +14,15 @@ import type {
 } from "@animetvcut/subtitles";
 import type { HlsResourceKind } from "@animetvcut/hls";
 
-import type { LazyMediaResource } from "./hls-source-loader.js";
+import type {
+  HlsResolvedResource,
+  LazyMediaResource,
+} from "./hls-source-loader.js";
+import type { SessionPersistence } from "./session-persistence.js";
+import type { sanitizeSkipResolution } from "./skip-service.js";
 
 export interface SessionResource extends LazyMediaResource {
+  resolved?: HlsResolvedResource;
   id: string;
   kind: HlsResourceKind;
   sourceEpisodeId: string;
@@ -70,6 +76,10 @@ export interface CutSession {
   subtitleDiagnostics: SubtitleSessionDiagnostics;
   outputSkipSegments: readonly OutputSkipSegment[];
   outputSkipDiagnostics: readonly OutputSkipDiagnostic[];
+  skipDiagnostics?: {
+    episodes: readonly ReturnType<typeof sanitizeSkipResolution>[];
+    warnings: readonly string[];
+  };
   watchProgress?: WatchProgressSessionState;
   chapters?: readonly VirtualChapter[];
   longFormDiagnostics?: {
@@ -90,9 +100,66 @@ export interface CutSession {
 }
 
 export interface CutSessionStoreOptions {
+  persistence?: SessionPersistence;
+  maxSessions?: number;
+  maxMemoryBytes?: number;
   idleTtlMilliseconds?: number;
   maxLifetimeMilliseconds?: number;
   now?: () => number;
+}
+
+export class SessionCapacityError extends Error {
+  public constructor() {
+    super(
+      "Cut session capacity is exhausted. Retry after an active cut expires.",
+    );
+  }
+}
+
+function estimatedBytes(session: CutSession): number {
+  const sources = new Set(
+    [...session.resources.values()].map(
+      (resource) => resource.resolved?.source,
+    ),
+  );
+  return (
+    2048 +
+    Buffer.byteLength(session.playlist) * 2 +
+    [...session.resources.values()].reduce(
+      (size, resource) =>
+        size + 512 + (resource.resolved?.resource.absoluteUri.length ?? 0) * 2,
+      0,
+    ) +
+    session.pieces.length * 256 +
+    session.outputSkipDiagnostics.length * 256 +
+    [...sources].reduce(
+      (size, source) =>
+        size +
+        (source?.kind === "http_media"
+          ? source.url.length * 2 +
+            JSON.stringify(source.headers ?? {}).length * 2 +
+            (source.recovery?.playlist?.segments.reduce(
+              (size, segment) =>
+                size +
+                512 +
+                segment.absoluteUri.length * 2 +
+                (segment.map?.absoluteUri.length ?? 0) * 2,
+              0,
+            ) ?? 0)
+          : 0),
+      0,
+    ) +
+    [...session.subtitleTracks.values()].reduce(
+      (size, track) =>
+        size +
+        (track.cached?.byteLength ?? 0) +
+        track.sources.reduce(
+          (size, source) => size + source.url.length * 2 + 256,
+          0,
+        ),
+      0,
+    )
+  );
 }
 
 export class CutSessionStore {
@@ -100,6 +167,11 @@ export class CutSessionStore {
   private readonly idleTtlMilliseconds: number;
   private readonly maxLifetimeMilliseconds: number;
   private readonly now: () => number;
+  private readonly persistence?: SessionPersistence;
+  private readonly persistedAt = new Map<string, number>();
+  private readonly maxSessions: number;
+  private readonly maxMemoryBytes: number;
+  private persistenceFailures = 0;
 
   public constructor(options: number | CutSessionStoreOptions = {}) {
     const normalized =
@@ -114,6 +186,16 @@ export class CutSessionStore {
     this.maxLifetimeMilliseconds =
       normalized.maxLifetimeMilliseconds ?? 48 * 60 * 60 * 1000;
     this.now = normalized.now ?? Date.now;
+    this.persistence = normalized.persistence;
+    this.maxSessions = normalized.maxSessions ?? 128;
+    this.maxMemoryBytes = normalized.maxMemoryBytes ?? 256 * 1024 * 1024;
+    if (
+      !Number.isSafeInteger(this.maxSessions) ||
+      this.maxSessions < 1 ||
+      !Number.isSafeInteger(this.maxMemoryBytes) ||
+      this.maxMemoryBytes < 1
+    )
+      throw new Error("Cut session capacity configuration is invalid.");
     if (
       !Number.isSafeInteger(this.idleTtlMilliseconds) ||
       this.idleTtlMilliseconds < 0 ||
@@ -121,6 +203,18 @@ export class CutSessionStore {
       this.maxLifetimeMilliseconds < this.idleTtlMilliseconds
     )
       throw new Error("Cut session lifetime configuration is invalid.");
+    for (const session of this.persistence?.restore(
+      this.now(),
+      this.maxSessions,
+      this.maxMemoryBytes,
+    ) ?? []) {
+      if (
+        this.stats().estimatedBytes + estimatedBytes(session) <=
+        this.maxMemoryBytes
+      )
+        this.sessions.set(session.id, session);
+      else this.persistence?.delete(session.id);
+    }
   }
 
   public createId(): string {
@@ -143,7 +237,20 @@ export class CutSessionStore {
       maxExpiresAt,
       expiresAt: Math.min(now + this.idleTtlMilliseconds, maxExpiresAt),
     };
+    if (
+      (!this.sessions.has(complete.id) &&
+        this.sessions.size >= this.maxSessions) ||
+      this.stats().estimatedBytes + estimatedBytes(complete) >
+        this.maxMemoryBytes
+    )
+      throw new SessionCapacityError();
     this.sessions.set(complete.id, complete);
+    try {
+      this.checkpoint(complete.id, true);
+    } catch (error) {
+      this.sessions.delete(complete.id);
+      throw error;
+    }
     return complete;
   }
 
@@ -154,6 +261,14 @@ export class CutSessionStore {
       (session.expiresAt <= now || session.maxExpiresAt <= now)
     ) {
       this.sessions.delete(id);
+      for (const track of session.subtitleTracks.values())
+        track.abortController?.abort();
+      this.persistedAt.delete(id);
+      try {
+        this.persistence?.delete(id);
+      } catch {
+        this.persistenceFailures += 1;
+      }
       return undefined;
     }
     return session;
@@ -167,7 +282,60 @@ export class CutSessionStore {
       now + this.idleTtlMilliseconds,
       session.maxExpiresAt,
     );
+    if (now - (this.persistedAt.get(id) ?? 0) >= 30_000) this.checkpoint(id);
     return session;
+  }
+
+  public checkpoint(id: string, required = false): void {
+    const session = this.sessions.get(id);
+    if (session === undefined || this.persistence === undefined) return;
+    try {
+      this.persistence.save(session);
+      this.persistedAt.set(id, this.now());
+    } catch (error) {
+      this.persistenceFailures += 1;
+      if (required) throw error;
+    }
+  }
+
+  public checkpointAll(): void {
+    for (const id of this.sessions.keys()) this.checkpoint(id);
+  }
+
+  public cacheSubtitle(track: SessionSubtitleTrack, bytes: Uint8Array): void {
+    if (this.stats().estimatedBytes + bytes.byteLength <= this.maxMemoryBytes)
+      track.cached = bytes;
+  }
+
+  public stats() {
+    let bytes = 0,
+      resources = 0,
+      subtitleBytes = 0;
+    for (const session of this.sessions.values()) {
+      bytes += estimatedBytes(session);
+      resources += session.resources.size;
+      for (const track of session.subtitleTracks.values())
+        subtitleBytes += track.cached?.byteLength ?? 0;
+    }
+    return {
+      active: this.sessions.size,
+      limit: this.maxSessions,
+      resources,
+      estimatedBytes: bytes,
+      maxMemoryBytes: this.maxMemoryBytes,
+      subtitleBytes,
+      persistenceEnabled: this.persistence !== undefined,
+      persistenceFailures: this.persistenceFailures,
+      rejectedSnapshots: this.persistence?.rejectedSnapshots ?? 0,
+    };
+  }
+
+  public close(): void {
+    this.cleanup();
+    this.checkpointAll();
+    for (const session of this.sessions.values())
+      for (const track of session.subtitleTracks.values())
+        track.abortController?.abort();
   }
 
   public cleanup(now = this.now()): number {
@@ -188,5 +356,6 @@ export class CutSessionStore {
     session.subtitleTracks.clear();
     for (const track of tracks) session.subtitleTracks.set(track.id, track);
     session.subtitleDiagnostics = diagnostics;
+    this.checkpoint(id);
   }
 }

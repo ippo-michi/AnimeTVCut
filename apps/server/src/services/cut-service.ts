@@ -124,6 +124,7 @@ export class CutService {
       inFlightSourceEpisodeIds: new Set(),
       unavailable: false,
     };
+    this.sessions.checkpoint(cutId);
   }
 
   public attachOutputSkipSegments(
@@ -135,6 +136,7 @@ export class CutService {
     const mapped = mapOutputSkipSegments(session.pieces, sourceSegments);
     session.outputSkipSegments = mapped.segments;
     session.outputSkipDiagnostics = mapped.diagnostics;
+    this.sessions.checkpoint(cutId);
   }
 
   public async prepareSources(
@@ -276,6 +278,7 @@ export class CutService {
       }
       const resolved = this.sourceLoader.createResource({ source, resource });
       resources.set(resource.id, {
+        resolved: { source, resource },
         id: resource.id,
         kind: resource.kind,
         sourceEpisodeId: resource.sourceEpisodeId,

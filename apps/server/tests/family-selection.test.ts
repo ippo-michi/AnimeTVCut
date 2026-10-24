@@ -463,6 +463,47 @@ describe("cross-episode candidate family selection", () => {
     expect(selection.familyKey).toBe("web");
   });
 
+  it.each(["PCM", "LPCM"])(
+    "does not mistake a %s/AAC family for AAC-only audio",
+    (codec) => {
+      const selection = selectCandidateFamily(
+        [1, 2].map((episode) =>
+          set(episode, [
+            url(0, {
+              bingeGroup: "lossless",
+              filename: `Show.S01E0${episode}.1080p.H264.${codec}.AAC.Dual-Audio.mkv`,
+            }),
+            url(9, {
+              bingeGroup: "aac",
+              filename: `Show.S01E0${episode}.1080p.H264.AAC.Dual-Audio.mkv`,
+            }),
+          ]),
+        ),
+        { preferMediaFlowCompatible: true },
+      );
+      expect(selection.familyKey).toBe("aac");
+    },
+  );
+
+  it("prefers 1080p with audio normalization over 4K with AAC", () => {
+    const selection = selectCandidateFamily(
+      [1, 2].map((episode) =>
+        set(episode, [
+          url(0, {
+            bingeGroup: "uhd",
+            filename: `Show.S01E0${episode}.2160p.WEB-DL.H264.AAC.mkv`,
+          }),
+          url(9, {
+            bingeGroup: "hd",
+            filename: `Show.S01E0${episode}.1080p.BluRay.H264.FLAC.mkv`,
+          }),
+        ]),
+      ),
+      { preferMediaFlowCompatible: true },
+    );
+    expect(selection.familyKey).toBe("hd");
+  });
+
   it("falls back to filename families without using video size as identity", () => {
     const selection = selectCandidateFamily([
       set(1, [

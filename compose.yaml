@@ -3,6 +3,14 @@ services:
     build: .
     restart: unless-stopped
     environment:
+      NODE_ENV: production
+      DEV_API_ENABLED: ${DEV_API_ENABLED:-false}
+      DEV_API_TOKEN: ${DEV_API_TOKEN:-}
+      SOURCE_CHAPTER_PROBE_CONCURRENCY: ${SOURCE_CHAPTER_PROBE_CONCURRENCY:-2}
+      CUT_SESSION_DIRECTORY: /var/lib/animetvcut/cuts
+      CUT_SESSION_MAX_COUNT: ${CUT_SESSION_MAX_COUNT:-128}
+      CUT_SESSION_MAX_MEMORY_BYTES: ${CUT_SESSION_MAX_MEMORY_BYTES:-268435456}
+      CUT_MAX_CONCURRENT_BUILDS: ${CUT_MAX_CONCURRENT_BUILDS:-8}
       HOST: 0.0.0.0
       PORT: 3000
       MEDIAFLOW_URL: http://mediaflow:8888
@@ -55,6 +63,8 @@ services:
       ANISKIP_BASE_URL: ${ANISKIP_BASE_URL:-https://api.aniskip.com/v2}
       ANISKIP_REQUEST_TIMEOUT_MS: ${ANISKIP_REQUEST_TIMEOUT_MS:-10000}
       ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS: ${ANISKIP_DURATION_MISMATCH_TOLERANCE_SECONDS:-5}
+    volumes:
+      - cut-sessions:/var/lib/animetvcut/cuts
     expose:
       - "3000"
     depends_on:
@@ -71,9 +81,26 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=proxy
+      - traefik.http.routers.atc.entrypoints=http
+      - traefik.http.routers.atc.rule=Host(`atc.kanji.moe`)
+      - traefik.http.middlewares.atc-https-redirect.redirectscheme.scheme=https
+      - traefik.http.routers.atc.middlewares=atc-https-redirect
+      - traefik.http.routers.atc-secure.entrypoints=https
+      - traefik.http.routers.atc-secure.rule=Host(`atc.kanji.moe`)
+      - traefik.http.routers.atc-secure.tls=true
+      - traefik.http.routers.atc-secure.tls.certresolver=cloudflare
+      - traefik.http.routers.atc-secure.middlewares=default-security-headers@file
+      - traefik.http.routers.atc-secure.service=atc
+      - traefik.http.services.atc.loadbalancer.server.port=3000
+    networks:
+      - proxy
+      - atc
 
   mediaflow:
-    image: animetvcut-mediaflow:2.4.9-atc17
+    image: animetvcut-mediaflow:2.4.9-atc23
     build:
       context: .
       dockerfile: docker/mediaflow/Dockerfile
@@ -101,6 +128,8 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+    networks:
+      - atc
 
   mediaflow-cache:
     image: redis:7.4.2-alpine
@@ -122,3 +151,13 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+    networks:
+      - atc
+
+networks:
+  proxy:
+    external: true
+  atc:
+
+volumes:
+  cut-sessions:

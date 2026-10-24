@@ -156,7 +156,7 @@ function normalizationScore(candidate: UrlStreamCandidate): NormalizationScore {
     );
   const aac = /(?:\bAAC\b|\bAAC[ ._-]?(?:LC|2(?:[ ._-]?0)?))/i.test(text);
   const expensiveAudio =
-    /(?:\bFLAC\b|\bTrueHD\b|\bDTS(?:[ ._-]?HD)?\b|\bE[ ._-]?AC[ ._-]?3\b|\bAC[ ._-]?3\b)/i.test(
+    /(?:\bL?PCM\b|\bFLAC\b|\bTrueHD\b|\bDTS(?:[ ._-]?HD)?\b|\bE[ ._-]?AC[ ._-]?3\b|\bAC[ ._-]?3\b)/i.test(
       text,
     );
   const japanese = /(?:\bJPN\b|\bJapanese\b|🇯🇵)/i.test(text);
@@ -207,10 +207,12 @@ function compareScore(
   return (
     left.implausiblySmall - right.implausiblySmall ||
     left.codec - right.codec ||
-    left.audio - right.audio ||
     left.englishOnly - right.englishOnly ||
-    left.delivery - right.delivery ||
+    // Audio-only normalization is inexpensive compared with decoding 4K
+    // video or fetching a large lossless remux on every segment request.
     left.resolution - right.resolution ||
+    left.audio - right.audio ||
+    left.delivery - right.delivery ||
     left.japaneseAudio - right.japaneseAudio ||
     left.size - right.size ||
     left.rank - right.rank
@@ -382,6 +384,13 @@ function selectedEpisode(
     familyMethod: method,
     familyKey,
     mediaSource: {
+      recovery: {
+        type: set.reference.type,
+        videoId: set.reference.videoId,
+        filename: candidate.filename,
+        videoSize: candidate.videoSize,
+        videoHash: candidate.videoHash,
+      },
       kind: "http_media",
       episodeId: set.reference.episodeId,
       url: candidate.url,

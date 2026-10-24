@@ -13,7 +13,7 @@ COPY . .
 RUN pnpm fixtures:generate && pnpm build
 
 FROM node:22-alpine AS runtime
-RUN corepack enable
+RUN apk add --no-cache ffmpeg && corepack enable
 WORKDIR /app
 ENV NODE_ENV=production
 COPY --from=build /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./

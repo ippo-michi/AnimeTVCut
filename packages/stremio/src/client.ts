@@ -1,4 +1,4 @@
-import { parseRuntimeSeconds } from "@animetvcut/core";
+import { BoundedCache, parseRuntimeSeconds } from "@animetvcut/core";
 
 import {
   MetadataStremioInvalidResponseError,
@@ -125,15 +125,18 @@ export class MetadataStremioClient {
   public readonly requestTimeoutMs: number;
   private manifestCache?: CacheEntry<MetadataStremioManifest>;
   private manifestInFlight?: Promise<MetadataStremioManifest>;
-  private readonly catalogCache = new Map<
+  private readonly catalogCache = new BoundedCache<
     string,
     CacheEntry<readonly StremioMetaPreview[]>
-  >();
+  >(512, () => this.now());
   private readonly catalogInFlight = new Map<
     string,
     Promise<readonly StremioMetaPreview[]>
   >();
-  private readonly metaCache = new Map<string, CacheEntry<SourceSeriesMeta>>();
+  private readonly metaCache = new BoundedCache<
+    string,
+    CacheEntry<SourceSeriesMeta>
+  >(512, () => this.now());
   private readonly metaInFlight = new Map<string, Promise<SourceSeriesMeta>>();
   private readonly counters: MetadataStremioStats = {
     manifestRequests: 0,

@@ -5,6 +5,15 @@ const MEDIAFLOW_TRACK_TIMESCALES = new Map([
   [2, 48_000],
 ]);
 
+function unsignedDecodeTime(value: bigint, trackId: number): bigint {
+  // An AAC packet can straddle the trim boundary at virtual time zero.
+  // tfdt is unsigned: retain at most one packet of decoder preroll at zero,
+  // while rejecting larger underruns or a negative video clock.
+  if (value < 0n && trackId === 2 && value >= -1024n) return 0n;
+  if (value < 0n) throw new Fmp4TimelineError();
+  return value;
+}
+
 interface BoxHeader {
   size: number;
   headerSize: number;
@@ -77,12 +86,17 @@ function rewriteTraf(
     const delta = BigInt(Math.round(offsetSeconds * timescale));
     if (version === 1) {
       if (payload + 12 > endOffset) throw new Fmp4TimelineError();
-      const value = buffer.readBigUInt64BE(payload + 4) + delta;
-      if (value < 0n) throw new Fmp4TimelineError();
+      const value = unsignedDecodeTime(
+        buffer.readBigUInt64BE(payload + 4) + delta,
+        trackId,
+      );
       buffer.writeBigUInt64BE(value, payload + 4);
     } else if (version === 0) {
-      const value = BigInt(buffer.readUInt32BE(payload + 4)) + delta;
-      if (value < 0n || value > 0xffff_ffffn) throw new Fmp4TimelineError();
+      const value = unsignedDecodeTime(
+        BigInt(buffer.readUInt32BE(payload + 4)) + delta,
+        trackId,
+      );
+      if (value > 0xffff_ffffn) throw new Fmp4TimelineError();
       buffer.writeUInt32BE(Number(value), payload + 4);
     } else {
       throw new Fmp4TimelineError();

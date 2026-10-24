@@ -1,0 +1,63 @@
+--- a/mediaflow_proxy/remuxer/container_probe.py
++++ b/mediaflow_proxy/remuxer/container_probe.py
+@@ -19,6 +19,7 @@
+ import struct
+ 
+ from mediaflow_proxy.utils import redis_utils
++from mediaflow_proxy.remuxer.mkv_metadata import complete_mkv_header
+ from mediaflow_proxy.remuxer.ebml_parser import (
+     MKVCueIndex,
+     build_cue_index,
+@@ -43,7 +44,7 @@
+ _MAX_CUES_SIZE = 2 * 1024 * 1024  # 2 MB
+ 
+ # Redis cache for MKV Cue indexes
+-_CUE_INDEX_CACHE_PREFIX = "mfp:cue_index:"
++_CUE_INDEX_CACHE_PREFIX = "mfp:cue_index:atc-v2:"
+ _CUE_INDEX_CACHE_TTL = 3600  # 1 hour
+ 
+ 
+@@ -240,6 +241,11 @@
+             logger.warning("[container_probe] Cues data too small (%d bytes)", len(cues_data))
+             return None
+ 
++        # Recover complete decoder metadata before parsing tracks/cue ownership.
++        header_data = await complete_mkv_header(
++            source, header_data, segment_data_offset, seek_positions, file_size
++        )
++
+         # Step 5: Build the cue index
+         index = build_cue_index(
+             header_data=header_data,
+--- a/mediaflow_proxy/remuxer/transcode_handler.py
++++ b/mediaflow_proxy/remuxer/transcode_handler.py
+@@ -1542,7 +1542,7 @@
+     # segments across container upgrades; serving an older first-GOP-trimmed
+     # segment would otherwise preserve the playback freeze after deployment.
+     cache_key = (
+-        f"{source.cache_key}:mpegts-v14:{language}:{virtual_start_ms:.3f}:"
++        f"{source.cache_key}:mpegts-v15:{language}:{virtual_start_ms:.3f}:"
+         f"{requested_start_ms:.3f}:{requested_end_ms:.3f}"
+     )
+     if is_redis_configured():
+@@ -1582,7 +1582,10 @@
+     input_options: dict[str, str] | None = None
+     source_gen: AsyncIterator[bytes] | None
+     pyav_input = source.pyav_open_input()
+-    if partial_exact:
++    use_seekable_input = partial_exact or (
++        probe.cue_index is not None and not probe.cue_index.seek_header
++    )
++    if use_seekable_input:
+         if pyav_input is None:
+             return PlainTextResponse(
+                 "Exact trimming requires a seekable source", status_code=503
+@@ -1604,7 +1607,7 @@
+         "copy" if copy_audio else "encode",
+     )
+     try:
+-        if partial_exact:
++        if use_seekable_input:
+             assert input_url is not None
+             segment = await _mux_mpegts_exact_segment(
+                 input_url,

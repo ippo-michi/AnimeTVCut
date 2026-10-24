@@ -1,4 +1,8 @@
 import { selectCandidateFamily } from "./family-selection.js";
+import {
+  chapterSkipSegments,
+  type SourceChapterReader,
+} from "../source-chapters.js";
 import type { StremioUpstreamClient } from "./client.js";
 import type {
   CandidateFamilySelection,
@@ -24,6 +28,7 @@ interface StremioEpisodeSourceResolverOptions {
   maxConcurrentEpisodeRequests?: number;
   noUrlRetryAttempts?: number;
   retryDelayMs?: number;
+  chapterReader?: SourceChapterReader;
 }
 
 type RequestSlotRelease = () => void;
@@ -70,6 +75,7 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
   private readonly maxConcurrentEpisodeRequests: number;
   private readonly noUrlRetryAttempts: number;
   private readonly retryDelayMs: number;
+  private readonly chapterReader?: SourceChapterReader;
   private activeEpisodeRequests = 0;
   private readonly pendingRequestSlots: PendingRequestSlot[] = [];
 
@@ -77,6 +83,7 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
     public readonly client: StremioUpstreamClient,
     options: StremioEpisodeSourceResolverOptions = {},
   ) {
+    this.chapterReader = options.chapterReader;
     this.maxConcurrentEpisodeRequests = Math.max(
       1,
       options.maxConcurrentEpisodeRequests ??
@@ -99,6 +106,10 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
       signal?: AbortSignal;
       excludedFamilies?: ReadonlySet<string>;
       excludedCandidates?: ReadonlySet<string>;
+      chapterRequirements?: ReadonlyMap<
+        string,
+        readonly ("opening" | "ending")[]
+      >;
     } = {},
   ): Promise<CandidateFamilySelection> {
     const sets = new Array<EpisodeCandidateSet | undefined>(episodes.length);
@@ -165,6 +176,62 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
           );
         return set;
       });
+      if (
+        options.chapterRequirements !== undefined &&
+        this.chapterReader !== undefined
+      ) {
+        // This is a bounded second selection after provider coverage failed.
+        // Probe original upstream order so chaptered releases remain eligible
+        // even when codec/delivery preferences favor a chapterless WEB file.
+        const chapterQueue = new WorkQueue(this.maxConcurrentEpisodeRequests);
+        await Promise.all(
+          readySets.map((set) =>
+            chapterQueue.run(async () => {
+              const required = options.chapterRequirements!.get(
+                set.reference.episodeId,
+              );
+              if (required === undefined || required.length === 0) return;
+              const matching: EpisodeCandidateSet["candidates"][number][] = [];
+              const candidates = set.candidates
+                .filter(
+                  (candidate) =>
+                    candidate.kind === "url" &&
+                    !options.excludedCandidates?.has(
+                      `${set.reference.episodeId}:${candidate.rank}`,
+                    ),
+                )
+                .slice(0, 4);
+              for (const candidate of candidates) {
+                if (candidate.kind !== "url") continue;
+                const chapters = await this.chapterReader!.read(
+                  {
+                    kind: "http_media",
+                    episodeId: set.reference.episodeId,
+                    url: candidate.url,
+                    headers: candidate.requestHeaders,
+                  },
+                  options.signal,
+                );
+                const types = new Set(
+                  chapterSkipSegments(chapters, Number.MAX_SAFE_INTEGER).map(
+                    (chapter) => chapter.type,
+                  ),
+                );
+                if (required.every((type) => types.has(type))) {
+                  matching.push(candidate);
+                  break;
+                }
+              }
+              set.candidates = matching;
+            }, options.signal),
+          ),
+        );
+        // Do not refresh upstream catalogs when chapters simply don't exist.
+        return selectCandidateFamily(readySets, {
+          ...options,
+          preferMediaFlowCompatible: true,
+        });
+      }
       try {
         return selectCandidateFamily(readySets, {
           allowMixedSources: options.allowMixedSources ?? false,
@@ -312,3 +379,4 @@ export function sanitizeCandidateSelection(
     warnings: selection.warnings,
   };
 }
+import { WorkQueue } from "@animetvcut/core";

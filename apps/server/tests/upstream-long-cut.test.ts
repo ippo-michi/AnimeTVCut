@@ -145,6 +145,7 @@ describe("long-cut upstream orchestration", () => {
         })),
     );
     const cutService = {
+      session: vi.fn(() => undefined),
       prepareSources,
       attachOutputSkipSegments: vi.fn(),
       createCutFromPreparedSources: vi.fn(() => ({
@@ -232,6 +233,7 @@ describe("long-cut upstream orchestration", () => {
       },
     );
     const cutService = {
+      session: vi.fn(() => undefined),
       prepareSources,
       attachOutputSkipSegments: vi.fn(),
       createCutFromPreparedSources: vi.fn(() => ({
@@ -306,6 +308,7 @@ describe("long-cut upstream orchestration", () => {
       },
     );
     const cutService = {
+      session: vi.fn(() => undefined),
       prepareSources,
       attachOutputSkipSegments: vi.fn(),
       createCutFromPreparedSources: vi.fn(() => ({
@@ -388,6 +391,7 @@ describe("long-cut upstream orchestration", () => {
       },
     );
     const cutService = {
+      session: vi.fn(() => undefined),
       prepareSources,
       attachOutputSkipSegments: vi.fn(),
       createCutFromPreparedSources: vi.fn(() => ({

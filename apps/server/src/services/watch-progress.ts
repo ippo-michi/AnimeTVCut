@@ -94,7 +94,10 @@ export class AiometadataWatchProgressReporter implements EpisodeWatchProgressRep
 }
 
 export class CutWatchProgressTracker {
-  public constructor(private readonly reporter: EpisodeWatchProgressReporter) {}
+  public constructor(
+    private readonly reporter: EpisodeWatchProgressReporter,
+    private readonly changed?: (cutId: string) => void,
+  ) {}
 
   public sourceEpisodeCompleted(
     session: CutSession,
@@ -119,6 +122,7 @@ export class CutWatchProgressTracker {
         if (result === "triggered")
           state.triggeredSourceEpisodeIds.add(resource.sourceEpisodeId);
         else if (result === "unsupported") state.unavailable = true;
+        this.changed?.(session.id);
       })
       .catch(() => {
         // Progress reporting is best-effort and must never affect playback.

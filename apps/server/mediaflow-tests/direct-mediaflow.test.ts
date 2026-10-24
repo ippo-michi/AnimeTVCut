@@ -1,11 +1,14 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 
-import { parseHlsVodPlaylist } from "@animetvcut/hls";
+import { buildTimeline } from "@animetvcut/core";
+import { composeHlsVod, parseHlsVodPlaylist } from "@animetvcut/hls";
 import { afterAll, describe, expect, it } from "vitest";
+
+import { MediaFlowClient } from "../src/services/mediaflow/client.js";
 
 const execFileAsync = promisify(execFile);
 const mediaFlowUrl = process.env.MEDIAFLOW_TEST_URL ?? "http://127.0.0.1:18888";
@@ -241,6 +244,143 @@ describe("direct MediaFlow seekable source normalization", () => {
     expect(Math.abs(span - (end - start))).toBeLessThan(0.25);
   });
 
+  it.each(["aac", "pcm"])(
+    "keeps copied and exact-cut MPEG-TS on one timeline with %s audio",
+    async (audio) => {
+      const client = new MediaFlowClient({
+        baseUrl: mediaFlowUrl,
+        apiPassword: password,
+        outputContainer: "mpegts",
+      });
+      const playlist = await client.loadTranscodePlaylist({
+        kind: "http_media",
+        episodeId: "mixed",
+        url: `${originUrl}/control-h264-${audio}.mkv`,
+        headers: { "X-Test-Token": sourceToken },
+      });
+      const second = playlist.segments[1]!;
+      const composed = composeHlsVod(
+        "mixed",
+        [{ episodeId: "mixed", playlist }],
+        buildTimeline(
+          [
+            [0, second.start + 0.75],
+            [second.end - 0.75, playlist.duration],
+          ].map(([sourceStart, sourceEnd]) => ({
+            sourceEpisodeId: "mixed",
+            sourceStart: sourceStart!,
+            sourceEnd: sourceEnd!,
+            kind: "content" as const,
+          })),
+        ),
+      );
+      expect(composed.resources.length).toBeGreaterThanOrEqual(4);
+      const directory = await mkdtemp(path.join(tmpdir(), "atc-mixed-timing-"));
+      temporaryDirectories.push(directory);
+      for (const resource of composed.resources) {
+        const opened = await client.createLazyResource(resource).open();
+        const chunks: Buffer[] = [];
+        for await (const chunk of opened.stream as AsyncIterable<Uint8Array>) {
+          chunks.push(Buffer.from(chunk));
+        }
+        const mediaPath = path.join(directory, resource.id);
+        await writeFile(mediaPath, Buffer.concat(chunks));
+        const result = await execFileAsync("ffprobe", [
+          "-v",
+          "error",
+          "-show_entries",
+          "packet=stream_index,pts_time,duration_time",
+          "-of",
+          "json",
+          mediaPath,
+        ]);
+        const { packets } = JSON.parse(result.stdout) as {
+          packets: Array<{
+            stream_index: number;
+            pts_time: string;
+            duration_time: string;
+          }>;
+        };
+        for (const index of [0, 1]) {
+          const track = packets.filter(
+            (packet) => packet.stream_index === index,
+          );
+          expect(track.length).toBeGreaterThan(0);
+          const start = Math.min(
+            ...track.map((packet) => Number(packet.pts_time)),
+          );
+          const end = Math.max(
+            ...track.map(
+              (packet) =>
+                Number(packet.pts_time) + Number(packet.duration_time),
+            ),
+          );
+          // Copied AAC packets follow cluster ownership and can straddle
+          // a declared video boundary.
+          const tolerance = index === 0 ? 0.08 : 0.125;
+          expect(Math.abs(start - resource.outputStart!)).toBeLessThan(
+            tolerance,
+          );
+          expect(
+            Math.abs(
+              end -
+                (resource.outputStart! +
+                  resource.sourceEnd! -
+                  resource.sourceStart!),
+            ),
+          ).toBeLessThan(tolerance);
+        }
+      }
+    },
+  );
+
+  it("decodes composed cuts with large MKV tracks and a nonzero time origin", async () => {
+    const client = new MediaFlowClient({
+      baseUrl: mediaFlowUrl,
+      apiPassword: password,
+      outputContainer: "mpegts",
+    });
+    const playlist = await client.loadTranscodePlaylist({
+      kind: "http_media",
+      episodeId: "large-tracks",
+      url: `${originUrl}/control-h264-large-tracks.mkv`,
+      headers: { "X-Test-Token": sourceToken },
+    });
+    expect(playlist.segments[0]!.mediaStart).toBeGreaterThan(0);
+    const composed = composeHlsVod(
+      "large-tracks",
+      [{ episodeId: "large-tracks", playlist }],
+      buildTimeline([
+        {
+          sourceEpisodeId: "large-tracks",
+          sourceStart: 0,
+          sourceEnd: playlist.duration,
+          kind: "content",
+        },
+      ]),
+    );
+    const fragments: Buffer[] = [];
+    for (const resource of composed.resources) {
+      const opened = await client.createLazyResource(resource).open();
+      const chunks: Buffer[] = [];
+      for await (const chunk of opened.stream as AsyncIterable<Uint8Array>) {
+        chunks.push(Buffer.from(chunk));
+      }
+      fragments.push(Buffer.concat(chunks));
+    }
+    const span = await probeVideoPacketSpan(Buffer.concat(fragments), ".ts");
+    expect(Math.abs(span - playlist.duration)).toBeLessThan(0.25);
+    const directory = await mkdtemp(path.join(tmpdir(), "atc-large-tracks-"));
+    temporaryDirectories.push(directory);
+    const mediaPath = path.join(directory, "cut.ts");
+    await writeFile(mediaPath, Buffer.concat(fragments));
+    await execFileAsync(
+      "ffmpeg",
+      ["-v", "error", "-xerror", "-i", mediaPath, "-f", "null", "-"],
+      { timeout: 60_000 },
+    );
+  });
+
   it("uses HTTP byte ranges with standards-compliant 206 responses", async () => {
     const sourceResponse = await fetch(
       `${originStatsUrl}/control-h264-aac.mp4`,
@@ -343,6 +483,7 @@ describe("direct MediaFlow seekable source normalization", () => {
   it.each([
     ["AAC", "control-h264-aac.mkv"],
     ["E-AC-3", "control-h264-eac3.mkv"],
+    ["PCM", "control-h264-pcm.mkv"],
   ])(
     "keeps the boundary H.264 GOP across %s MPEG-TS segment seams",
     async (_label, fileName) => {
@@ -422,6 +563,130 @@ describe("direct MediaFlow seekable source normalization", () => {
     });
     expect(Math.max(...gaps.map(Math.abs))).toBeLessThan(0.001);
   });
+
+  it.each([
+    ["44.1 kHz FLAC", "control-h264-flac-offset.mkv"],
+    ["48 kHz PCM", "control-h264-pcm-offset.mkv"],
+    ["48 kHz FLAC", "control-h264-flac.mkv"],
+  ])(
+    "plays %s through MPV without repeated AAC padding",
+    async (_label, fileName) => {
+      const client = new MediaFlowClient({
+        baseUrl: mediaFlowUrl,
+        apiPassword: password,
+        outputContainer: "mpegts",
+      });
+      const playlist = await client.loadTranscodePlaylist({
+        kind: "http_media",
+        episodeId: "tone",
+        url: `${originUrl}/${fileName}`,
+        headers: { "X-Test-Token": sourceToken },
+      });
+      const cutStart = playlist.segments[1]!.start + 0.75;
+      const composed = composeHlsVod(
+        "tone",
+        [{ episodeId: "tone", playlist }],
+        buildTimeline(
+          [
+            [0, cutStart],
+            [cutStart + 1, playlist.duration],
+          ].map(([sourceStart, sourceEnd]) => ({
+            sourceEpisodeId: "tone",
+            sourceStart: sourceStart!,
+            sourceEnd: sourceEnd!,
+            kind: "content" as const,
+          })),
+        ),
+      );
+      const directory = await mkdtemp(path.join(tmpdir(), "atc-audio-seams-"));
+      temporaryDirectories.push(directory);
+      let previousEnd: number | undefined;
+      let totalSamples = 0;
+      const seams: number[] = [];
+      for (const resource of composed.resources) {
+        const opened = await client.createLazyResource(resource).open();
+        const chunks: Buffer[] = [];
+        for await (const chunk of opened.stream as AsyncIterable<Uint8Array>)
+          chunks.push(Buffer.from(chunk));
+        const mediaPath = path.join(directory, resource.id);
+        await writeFile(mediaPath, Buffer.concat(chunks));
+        const result = await execFileAsync("ffprobe", [
+          "-v",
+          "error",
+          "-select_streams",
+          "a:0",
+          "-show_entries",
+          "packet=pts_time,duration_time",
+          "-of",
+          "json",
+          mediaPath,
+        ]);
+        const { packets } = JSON.parse(result.stdout) as {
+          packets: Array<{ pts_time: string; duration_time: string }>;
+        };
+        expect(packets.length).toBeGreaterThan(0);
+        const first = Number(packets[0]!.pts_time);
+        if (previousEnd !== undefined) {
+          expect(
+            Math.abs(first - previousEnd),
+            `${resource.id} audio gap/overlap`,
+          ).toBeLessThan(0.000025);
+          seams.push(totalSamples);
+        }
+        for (const packet of packets) {
+          const pts = Number(packet.pts_time);
+          if (previousEnd !== undefined)
+            expect(Math.abs(pts - previousEnd)).toBeLessThan(0.000025);
+          previousEnd = pts + Number(packet.duration_time);
+        }
+        totalSamples += packets.length * 1024;
+      }
+      let localPlaylist = composed.text;
+      for (const resource of composed.resources)
+        localPlaylist = localPlaylist.replace(
+          `/media/cut/tone/segment/${resource.id}`,
+          path.join(directory, resource.id),
+        );
+      const playlistPath = path.join(directory, "tone.m3u8");
+      const pcmPath = path.join(directory, "mpv.pcm");
+      await writeFile(playlistPath, localPlaylist);
+      await execFileAsync(
+        "mpv",
+        [
+          "--no-config",
+          "--no-video",
+          "--ao=pcm",
+          `--ao-pcm-file=${pcmPath}`,
+          "--ao-pcm-waveheader=no",
+          "--audio-format=float",
+          "--audio-channels=mono",
+          "--audio-samplerate=48000",
+          playlistPath,
+        ],
+        { timeout: 60_000 },
+      );
+      const pcm = await readFile(pcmPath);
+      expect(Math.abs(pcm.length / 4 - totalSamples)).toBeLessThanOrEqual(1);
+      const rms = (start: number, length: number) => {
+        let sum = 0;
+        for (let n = start; n < start + length; n++)
+          sum += pcm.readFloatLE(n * 4) ** 2;
+        return Math.sqrt(sum / length);
+      };
+      const interior = rms(48000, 4800);
+      expect(interior).toBeGreaterThan(0.02);
+      // Priming/padded AAC packets dropped a steady tone below 1% amplitude.
+      // Allow lossy overlap windows around a cut while rejecting that dropout.
+      for (const seam of seams) {
+        for (let offset = -1920; offset < 1920; offset += 240) {
+          expect(
+            rms(seam + offset, 240),
+            `dropout at sample ${seam + offset}`,
+          ).toBeGreaterThan(interior * 0.25);
+        }
+      }
+    },
+  );
 
   it("marks independent MPEG-TS continuity-counter resets", async () => {
     const playlistUrl = transcodePlaylistUrl("control-h264-aac.mkv", true);

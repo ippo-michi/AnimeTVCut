@@ -68,7 +68,11 @@ importers:
         specifier: workspace:*
         version: link:../core
 
-  packages/skip-providers: {}
+  packages/skip-providers:
+    dependencies:
+      '@animetvcut/core':
+        specifier: workspace:*
+        version: link:../core
 
   packages/stremio:
     dependencies:

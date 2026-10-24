@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  BoundedCache,
   groupTvCutEpisodes,
   planLongCuts,
   type LongFormCutMode,
@@ -49,6 +50,12 @@ interface CachedStream {
   expiresAt: number;
   cutId: string;
   response: PublicStreamResponse;
+}
+
+interface StreamBuild {
+  controller: AbortController;
+  promise: Promise<PublicStreamResponse>;
+  waiters: number;
 }
 
 export interface PlannedTvCutGroup extends TvCutGroup {
@@ -142,11 +149,16 @@ async function awaitWithSignal<T>(
 }
 
 export class TvCutCatalogService {
-  private readonly streamCache = new Map<string, CachedStream>();
-  private readonly streamInFlight = new Map<
-    string,
-    Promise<PublicStreamResponse>
-  >();
+  private readonly streamCache = new BoundedCache<string, CachedStream>(
+    256,
+    () => this.now(),
+  );
+  private readonly streamInFlight = new Map<string, StreamBuild>();
+
+  public close(): void {
+    for (const build of this.streamInFlight.values()) build.controller.abort();
+    this.streamInFlight.clear();
+  }
 
   public constructor(
     private readonly metadataClient: MetadataStremioClient | undefined,
@@ -157,7 +169,15 @@ export class TvCutCatalogService {
     private readonly now: () => number = Date.now,
     private readonly streamCacheTtlMs = 5 * 60 * 1000,
     private readonly longCuts: LongCutConfiguration = DEFAULT_LONG_CUT_CONFIGURATION,
-  ) {}
+    private readonly maxInFlightBuilds = 8,
+  ) {
+    if (!Number.isSafeInteger(maxInFlightBuilds) || maxInFlightBuilds < 1)
+      throw new Error("Stream build limit must be a positive integer.");
+  }
+
+  public get activeBuilds(): number {
+    return this.streamInFlight.size;
+  }
 
   public get configured(): boolean {
     return this.metadataClient !== undefined;
@@ -399,6 +419,7 @@ export class TvCutCatalogService {
   ): Promise<PublicStreamResponse> {
     if (this.publicBaseUrl === undefined)
       throw new Error("PUBLIC_BASE_URL is not configured.");
+    signal?.throwIfAborted();
     const cached = this.streamCache.get(virtualVideoId);
     if (
       cached !== undefined &&
@@ -406,15 +427,39 @@ export class TvCutCatalogService {
       this.cutService.isCutActive(cached.cutId)
     )
       return cached.response;
-    const inFlight = this.streamInFlight.get(virtualVideoId);
-    if (inFlight !== undefined) return awaitWithSignal(inFlight, signal);
-    const creating = this.createPublicStream(virtualVideoId, signal);
-    this.streamInFlight.set(virtualVideoId, creating);
+    let build = this.streamInFlight.get(virtualVideoId);
+    if (build === undefined) {
+      if (this.streamInFlight.size >= this.maxInFlightBuilds)
+        throw new Error(
+          "Stream preparation capacity is exhausted. Retry shortly.",
+        );
+      const controller = new AbortController();
+      const promise = this.createPublicStream(
+        virtualVideoId,
+        controller.signal,
+      );
+      build = { controller, promise, waiters: 0 };
+      this.streamInFlight.set(virtualVideoId, build);
+      const shared = build;
+      void promise
+        .finally(() => {
+          if (this.streamInFlight.get(virtualVideoId) === shared)
+            this.streamInFlight.delete(virtualVideoId);
+        })
+        .catch(() => {});
+    }
+    build.waiters += 1;
     try {
-      return await creating;
+      return await awaitWithSignal(build.promise, signal);
     } finally {
-      if (this.streamInFlight.get(virtualVideoId) === creating)
+      build.waiters -= 1;
+      if (
+        build.waiters === 0 &&
+        this.streamInFlight.get(virtualVideoId) === build
+      ) {
         this.streamInFlight.delete(virtualVideoId);
+        build.controller.abort();
+      }
     }
   }
 
@@ -485,10 +530,7 @@ export class TvCutCatalogService {
               scope.estimatedDurationSeconds / scope.episodes.length,
             signal,
           });
-    this.cutService.enableWatchProgress(
-      cut.cutId,
-      scope.episodes.map((episode) => episode.id),
-    );
+    signal?.throwIfAborted();
     if (scope.mode !== "tv" && "families" in cut) {
       const families = cut.families as readonly {
         season: number;
@@ -529,6 +571,10 @@ export class TvCutCatalogService {
         };
       }
     }
+    this.cutService.enableWatchProgress(
+      cut.cutId,
+      scope.episodes.map((episode) => episode.id),
+    );
     const response: PublicStreamResponse = {
       streams: [
         {

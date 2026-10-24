@@ -13,6 +13,14 @@ export interface HttpMediaSource {
   episodeId: string;
   url: string;
   headers?: Readonly<Record<string, string>>;
+  recovery?: {
+    type: string;
+    videoId: string;
+    filename?: string;
+    videoSize?: number;
+    videoHash?: string;
+    playlist?: HlsVodPlaylist;
+  };
   sourceMetadata?: {
     filename?: string;
     videoSize?: number;

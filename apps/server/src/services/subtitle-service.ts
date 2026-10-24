@@ -199,7 +199,7 @@ export class SubtitleService {
       .then(({ bytes, cueCount }) => {
         if (bytes.byteLength > this.config.maxGeneratedBytes)
           throw new Error("generated_subtitle_too_large");
-        track.cached = bytes;
+        this.sessions.cacheSubtitle(track, bytes);
         track.cueCount = cueCount;
         track.state = "ready";
         track.errorCode = undefined;

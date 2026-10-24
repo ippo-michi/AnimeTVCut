@@ -237,15 +237,17 @@ describe("cut watch-progress tracking", () => {
     );
   });
 
-  it("does not let server lookahead prefetch report an episode", async () => {
+  it("does not let opening or lookahead prefetch report an episode", async () => {
     const opened = vi.fn();
     const reportEpisodeWatched = vi.fn(async () => "triggered" as const);
     const { app, resources } = await trackedCut(
       { reportEpisodeWatched },
       { prefetch: 1, opened },
     );
+    await vi.waitFor(() => expect(opened).toHaveBeenCalledTimes(1));
+    expect(reportEpisodeWatched).not.toHaveBeenCalled();
     await app.inject({ method: "GET", url: resources[1]! });
-    await vi.waitFor(() => expect(opened).toHaveBeenCalledTimes(2));
+    await vi.waitFor(() => expect(opened).toHaveBeenCalledTimes(3));
     expect(reportEpisodeWatched).not.toHaveBeenCalled();
 
     await app.inject({ method: "GET", url: resources[2]! });

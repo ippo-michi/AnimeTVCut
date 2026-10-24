@@ -1,4 +1,6 @@
 export { DomainValidationError } from "./errors/validation-error.js";
+export { WorkQueue } from "./work-queue.js";
+export { BoundedCache, cleanupCaches, cacheStats } from "./bounded-cache.js";
 export {
   subtractRemovedRanges,
   validateRemovedRanges,

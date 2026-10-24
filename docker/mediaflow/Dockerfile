@@ -11,6 +11,12 @@ COPY docker/mediaflow/mediaflow-v2.4.9-video-cues.patch /tmp/animetvcut-video-cu
 COPY docker/mediaflow/mediaflow-v2.4.9-refresh-race.patch /tmp/animetvcut-refresh-race.patch
 COPY docker/mediaflow/mediaflow-v2.4.9-resolution-lock.patch /tmp/animetvcut-resolution-lock.patch
 COPY docker/mediaflow/apply-exact-trim.py /tmp/animetvcut-exact-trim.py
+COPY docker/mediaflow/mediaflow-v2.4.9-mkv-metadata.patch /tmp/animetvcut-mkv-metadata.patch
+COPY docker/mediaflow/mediaflow-v2.4.9-independent-video.patch /tmp/animetvcut-independent-video.patch
+COPY docker/mediaflow/mediaflow-v2.4.9-aac-silence.patch /tmp/animetvcut-aac-silence.patch
+COPY docker/mediaflow/mediaflow-v2.4.9-audio-seams.patch /tmp/animetvcut-audio-seams.patch
+COPY docker/mediaflow/mkv_metadata.py /mediaflow_proxy/mediaflow_proxy/remuxer/mkv_metadata.py
+COPY docker/mediaflow/mpegts_audio.py /mediaflow_proxy/mediaflow_proxy/remuxer/mpegts_audio.py
 
 # Refuse to patch an unexpected upstream tree. The source hashes and image
 # digest tie this repair to MediaFlow 2.4.9 / e88bf613 exactly.
@@ -18,6 +24,7 @@ RUN printf '%s  %s\n' \
       'd4038d37fe583f9190d9b2353512d6fcf71d0d797a80ff508d1ec5f099a2b383' 'mediaflow_proxy/remuxer/media_source.py' \
       '45b398fe51f4dd8089f9c6e09912a09799290febdc31bc2911f1ea984de2beb6' 'mediaflow_proxy/remuxer/pyav_demuxer.py' \
       '470b02bd7a00a013d6d4962e22ddd338c67cd9e283334738803ee5d63291703f' 'mediaflow_proxy/remuxer/ebml_parser.py' \
+      '1e40e63ddec714eb5e5b143f028042faf9b2e485b10669ac45634fdf1f4f7edb' 'mediaflow_proxy/remuxer/container_probe.py' \
       '28ef29d33adababe40c18f31906a9c6a3c1db3cd6545fdbaf2f1ebe13b511907' 'mediaflow_proxy/remuxer/transcode_pipeline.py' \
       '51d323b5fb4f91872acf622649a84784eaa160251e6b157068573afc6ab0d7d6' 'mediaflow_proxy/remuxer/audio_transcoder.py' \
       'd877452eb1f12a1a058f9c2d0bd8bead4b7aef852de860776ec395c443748335' 'mediaflow_proxy/remuxer/mp4_muxer.py' \
@@ -36,10 +43,17 @@ RUN printf '%s  %s\n' \
     && patch --batch --forward -p1 < /tmp/animetvcut-resolution-lock.patch \
     && patch --batch --forward -p1 < /tmp/animetvcut-video-cues.patch \
     && python /tmp/animetvcut-exact-trim.py \
+    && patch --batch --forward -p1 < /tmp/animetvcut-mkv-metadata.patch \
+    && patch --batch --forward -p1 < /tmp/animetvcut-independent-video.patch \
+    && patch --batch --forward -p1 < /tmp/animetvcut-aac-silence.patch \
+    && patch --batch --forward -p1 < /tmp/animetvcut-audio-seams.patch \
     && python -m py_compile \
       mediaflow_proxy/remuxer/media_source.py \
       mediaflow_proxy/remuxer/pyav_demuxer.py \
       mediaflow_proxy/remuxer/ebml_parser.py \
+      mediaflow_proxy/remuxer/container_probe.py \
+      mediaflow_proxy/remuxer/mkv_metadata.py \
+      mediaflow_proxy/remuxer/mpegts_audio.py \
       mediaflow_proxy/remuxer/transcode_pipeline.py \
       mediaflow_proxy/remuxer/audio_transcoder.py \
       mediaflow_proxy/remuxer/mp4_muxer.py \
@@ -49,10 +63,10 @@ RUN printf '%s  %s\n' \
     && apt-get purge -y patch \
     && apt-get autoremove -y \
     && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* /tmp/animetvcut-mediaflow.patch /tmp/animetvcut-cmaf.patch /tmp/animetvcut-mpegts.patch /tmp/animetvcut-resolved-source.patch /tmp/animetvcut-resilient-source.patch /tmp/animetvcut-video-cues.patch /tmp/animetvcut-refresh-race.patch /tmp/animetvcut-resolution-lock.patch /tmp/animetvcut-exact-trim.py
+    && rm -rf /var/lib/apt/lists/* /tmp/animetvcut-mediaflow.patch /tmp/animetvcut-cmaf.patch /tmp/animetvcut-mpegts.patch /tmp/animetvcut-resolved-source.patch /tmp/animetvcut-resilient-source.patch /tmp/animetvcut-video-cues.patch /tmp/animetvcut-refresh-race.patch /tmp/animetvcut-resolution-lock.patch /tmp/animetvcut-exact-trim.py /tmp/animetvcut-mkv-metadata.patch /tmp/animetvcut-independent-video.patch /tmp/animetvcut-aac-silence.patch /tmp/animetvcut-audio-seams.patch
 
 LABEL org.opencontainers.image.title="AnimeTVCut MediaFlow repair" \
-      org.opencontainers.image.version="2.4.9-atc17" \
+      org.opencontainers.image.version="2.4.9-atc23" \
       org.opencontainers.image.description="Seekable HLS with debrid-safe resolution and continuous audio passthrough"
 
 USER mediaflow_proxy

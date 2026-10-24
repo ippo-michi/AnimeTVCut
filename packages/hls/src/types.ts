@@ -22,6 +22,9 @@ export interface HlsSegment extends HlsResourceMetadata {
   title: string;
   start: number;
   end: number;
+  /** Optional timestamps in the underlying media, before the HLS time origin. */
+  mediaStart?: number;
+  mediaEnd?: number;
   discontinuityBefore: boolean;
   map?: HlsMap;
 }

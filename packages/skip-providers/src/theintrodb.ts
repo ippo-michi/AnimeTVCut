@@ -79,7 +79,7 @@ export class TheIntroDbProvider implements SkipSegmentProvider {
   private readonly cacheTtlMs: number;
   private readonly minimumConfidence?: number;
   private readonly fetchImplementation: typeof fetch;
-  private readonly cache = new Map<string, CacheEntry>();
+  private readonly cache = new BoundedCache<string, CacheEntry>();
 
   public constructor(options: TheIntroDbProviderOptions = {}) {
     this.baseUrl = validBaseUrl(options.baseUrl ?? DEFAULT_BASE_URL);
@@ -258,3 +258,4 @@ export class TheIntroDbProvider implements SkipSegmentProvider {
     return providerResult(segments, warnings);
   }
 }
+import { BoundedCache } from "@animetvcut/core";

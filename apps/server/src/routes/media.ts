@@ -105,6 +105,7 @@ export function mediaRoutes(
             .code(404)
             .send({ error: "Cut session is missing or expired" });
         }
+        prefetcher.prime(session);
         return reply
           .type("application/vnd.apple.mpegurl")
           .send(session.playlist);

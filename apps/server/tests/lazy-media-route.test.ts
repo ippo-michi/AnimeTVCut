@@ -206,7 +206,7 @@ describe("lazy media route", () => {
     expect(playlist.headers["access-control-allow-origin"]).toBe("*");
   });
 
-  it("warms only bounded lookahead resources after playback starts", async () => {
+  it("warms a bounded opening window and advances it during playback", async () => {
     const open = vi.fn();
     const app = createApp({
       sourceLoader: prefetchLoader(open),
@@ -232,7 +232,7 @@ describe("lazy media route", () => {
       method: "GET",
       url: (cut.json() as { playlistUrl: string }).playlistUrl,
     });
-    expect(open).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(2));
     const resourcePaths = playlist.body
       .split("\n")
       .filter((line) => line.startsWith("/media/cut/") && line.endsWith(".ts"));
@@ -243,9 +243,10 @@ describe("lazy media route", () => {
       url: resourcePaths[0]!,
     });
     expect(response.statusCode).toBe(200);
-    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(open).toHaveBeenCalledTimes(4));
     expect(open).toHaveBeenNthCalledWith(1, "fixture://prefetch/segment-0.ts");
     expect(open).toHaveBeenNthCalledWith(2, "fixture://prefetch/segment-1.ts");
-    expect(open).toHaveBeenNthCalledWith(3, "fixture://prefetch/segment-2.ts");
+    expect(open).toHaveBeenNthCalledWith(3, "fixture://prefetch/segment-0.ts");
+    expect(open).toHaveBeenNthCalledWith(4, "fixture://prefetch/segment-2.ts");
   });
 });

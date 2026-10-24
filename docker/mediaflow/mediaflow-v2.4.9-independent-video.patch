@@ -1,0 +1,52 @@
+--- a/mediaflow_proxy/remuxer/transcode_handler.py
++++ b/mediaflow_proxy/remuxer/transcode_handler.py
+@@ -120,6 +120,22 @@
+ _REMUX_SAFE_AAC_CODECS = frozenset(
+     {CODEC_ID_AAC, "A_AAC/MPEG2/LC", "A_AAC/MPEG4/LC"}
+ )
++
++
++def _can_copy_mpegts_video(cue_index: MKVCueIndex | None) -> bool:
++    """MPEG-TS video passthrough is independent of audio normalization."""
++    if (
++        cue_index is None
++        or not cue_index.seek_header
++        or cue_index.video_codec_id != CODEC_ID_H264
++    ):
++        return False
++    avcc = ensure_avcc_extradata(cue_index.video_codec_private)
++    return (
++        len(avcc) >= 4
++        and avcc[0] == 1
++        and avcc[1] in _REMUX_SAFE_AVC_PROFILES
++    )
+ 
+ 
+ def _can_remux_hls_mkv(cue_index: MKVCueIndex | None) -> bool:
+@@ -1462,7 +1478,7 @@
+         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+         "-avoid_negative_ts", "disabled", "-muxdelay", "0", "-muxpreload", "0",
+         "-mpegts_flags", "resend_headers+initial_discontinuity",
+-        "-output_ts_offset", f"{(output_start_time_ms / 1000.0) + 1.0:.6f}",
++        "-output_ts_offset", f"{(output_start_time_ms + 1.0) / 1000.0:.6f}",
+         "-f", "mpegts", "pipe:1",
+     ]
+     process = await asyncio.create_subprocess_exec(
+@@ -1542,7 +1558,7 @@
+     # segments across container upgrades; serving an older first-GOP-trimmed
+     # segment would otherwise preserve the playback freeze after deployment.
+     cache_key = (
+-        f"{source.cache_key}:mpegts-v15:{language}:{virtual_start_ms:.3f}:"
++        f"{source.cache_key}:mpegts-v17:{language}:{virtual_start_ms:.3f}:"
+         f"{requested_start_ms:.3f}:{requested_end_ms:.3f}"
+     )
+     if is_redis_configured():
+@@ -1558,7 +1574,7 @@
+                 },
+             )
+ 
+-    copy_video = _can_remux_hls_mkv(probe.cue_index) and not partial_exact
++    copy_video = _can_copy_mpegts_video(probe.cue_index) and not partial_exact
+     mpegts_copy_audio_codecs = _REMUX_SAFE_AAC_CODECS | {"A_AC3", "A_EAC3"}
+     copy_audio = (not partial_exact) and bool(audio_codec_ids) and all(
+         codec_id in mpegts_copy_audio_codecs for codec_id in audio_codec_ids

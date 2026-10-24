@@ -110,6 +110,8 @@ generate_mediaflow_control() {
   local video_codec="$2"
   local audio_codec="$3"
   local pixel_format="$4"
+  local sample_rate="${5:-48000}"
+  local time_offset="${6:-0}"
   local output_file="${media_fixture_root}/${output_name}"
 
   if [[ -f "${output_file}" ]] && [[ "${FORCE_FIXTURES:-0}" != "1" ]]; then
@@ -142,10 +144,11 @@ generate_mediaflow_control() {
 
   ffmpeg -hide_banner -loglevel error -y \
     -f lavfi -i "testsrc2=s=320x180:r=25:d=18" \
-    -f lavfi -i "sine=frequency=523:sample_rate=48000:duration=18" \
+    -f lavfi -i "sine=frequency=523:sample_rate=${sample_rate}:duration=18" \
     -map 0:v:0 -map 1:a:0 \
     "${video_options[@]}" \
-    -c:a "${audio_codec}" -b:a 64k -ar 48000 \
+    -c:a "${audio_codec}" -b:a 64k -ar "${sample_rate}" \
+    -output_ts_offset "${time_offset}" \
     "${container_options[@]}" \
     "${output_file}"
 }
@@ -154,4 +157,18 @@ generate_mediaflow_control control-h264-aac.mp4 libx264 aac yuv420p
 generate_mediaflow_control control-h264-aac.mkv libx264 aac yuv420p
 generate_mediaflow_control control-h264-eac3.mkv libx264 eac3 yuv420p
 generate_mediaflow_control control-h264-flac.mkv libx264 flac yuv420p
+generate_mediaflow_control control-h264-pcm.mkv libx264 pcm_s16le yuv420p
+generate_mediaflow_control control-h264-flac-offset.mkv libx264 flac yuv420p 44100 0.046
+generate_mediaflow_control control-h264-pcm-offset.mkv libx264 pcm_s16le yuv420p 48000 0.046
 generate_mediaflow_control control-hevc-opus.mkv libx265 libopus yuv420p10le
+
+# Exercise a nonzero first keyframe and a Tracks element beyond the 64 KiB
+# probe. Large track names occur in real releases alongside attached fonts.
+if [[ ! -f "${media_fixture_root}/control-h264-large-tracks.mkv" ]] \
+  || [[ "${FORCE_FIXTURES:-0}" == "1" ]]; then
+  printf -v large_track_title '%080000d' 0
+  ffmpeg -hide_banner -loglevel error -y \
+    -i "${media_fixture_root}/control-h264-aac.mkv" -map 0 -c copy \
+    -metadata:s:v:0 "title=${large_track_title}" -output_ts_offset 0.046 \
+    "${media_fixture_root}/control-h264-large-tracks.mkv"
+fi

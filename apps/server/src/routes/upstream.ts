@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { SessionCapacityError } from "../services/cut-session-store.js";
 
 import type { UpstreamCutService } from "../services/upstream-cut-service.js";
 import {
@@ -63,6 +64,7 @@ const automaticUpstreamCutSchema = resolveSchema.extend({
 });
 
 function statusFor(error: unknown): number {
+  if (error instanceof SessionCapacityError) return 503;
   if (error instanceof StremioUpstreamNotConfiguredError) return 503;
   if (error instanceof StremioUpstreamUnavailableError) return 503;
   if (error instanceof MediaFlowUnavailableError) return 503;

@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { buildTimeline } from "@animetvcut/core";
+import { composeHlsVod } from "@animetvcut/hls";
 
 import {
   MediaFlowClient,
@@ -211,6 +213,78 @@ describe("MediaFlow client", () => {
       .open();
     expect(mock).toHaveBeenCalledOnce();
   });
+
+  it.each(["mpegts", "fmp4"] as const)(
+    "preserves a nonzero media origin and rounded durations in %s cuts",
+    async (outputContainer) => {
+      const extension = outputContainer === "mpegts" ? "ts" : "m4s";
+      const boundaries = Array.from({ length: 301 }, (_, i) =>
+        Math.floor(46 + i * 10427.333333),
+      );
+      const text = [
+        "#EXTM3U",
+        "#EXT-X-TARGETDURATION:11",
+        ...(outputContainer === "fmp4"
+          ? ['#EXT-X-MAP:URI="/proxy/transcode/init.mp4"']
+          : []),
+        ...boundaries
+          .slice(0, -1)
+          .flatMap((start, i) => [
+            "#EXTINF:10.427,",
+            `/proxy/transcode/segment.${extension}?start_ms=${start}&end_ms=${boundaries[i + 1]}`,
+          ]),
+        "#EXT-X-ENDLIST",
+      ].join("\n");
+      const requested: URL[] = [];
+      const client = new MediaFlowClient(
+        { baseUrl: "http://mediaflow:8888", outputContainer },
+        fetchMock(async (input) => {
+          const url = new URL(input.toString());
+          if (url.pathname.endsWith("playlist.m3u8")) return new Response(text);
+          requested.push(url);
+          return new Response(new Uint8Array());
+        }),
+      );
+      const playlist = await client.loadTranscodePlaylist(source);
+      const late = playlist.segments[299]!;
+      const composed = composeHlsVod(
+        "offset",
+        [{ episodeId: "ep1", playlist }],
+        buildTimeline([
+          {
+            sourceEpisodeId: "ep1",
+            sourceStart: 0,
+            sourceEnd: playlist.segments[0]!.end,
+            kind: "content",
+          },
+          {
+            sourceEpisodeId: "ep1",
+            sourceStart: late.start + 0.75,
+            sourceEnd: late.end - 0.75,
+            kind: "content",
+          },
+        ]),
+      );
+      for (const resource of composed.resources.filter(
+        (item) => item.kind === "segment",
+      )) {
+        const opened = await client.createLazyResource(resource).open();
+        opened.stream.resume();
+      }
+      expect(requested.map((url) => url.searchParams.get("start_ms"))).toEqual([
+        "46",
+        String(boundaries[299]! + 750),
+      ]);
+      expect(requested.map((url) => url.searchParams.get("end_ms"))).toEqual([
+        String(boundaries[1]),
+        String(boundaries[300]! - 750),
+      ]);
+      expect(playlist.duration).toBeCloseTo(
+        (boundaries[300]! - boundaries[0]!) / 1000,
+        8,
+      );
+    },
+  );
 
   it("redacts all sensitive query parameters", () => {
     expect(

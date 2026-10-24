@@ -11,9 +11,20 @@ interface PrefetchTask {
 export class MediaPrefetcher {
   private readonly inFlight = new Map<SessionResource, PrefetchTask>();
   private readonly completed = new WeakSet<SessionResource>();
+  private readonly primed = new WeakSet<CutSession>();
   private closed = false;
 
   public constructor(private readonly limit: number) {}
+
+  public prime(session: CutSession): void {
+    if (this.closed || this.limit === 0 || this.primed.has(session)) return;
+    this.primed.add(session);
+    let remaining = this.limit;
+    for (const resource of session.resources.values()) {
+      this.begin(resource);
+      if (--remaining === 0) return;
+    }
+  }
 
   public after(session: CutSession, current: SessionResource): void {
     if (this.closed || this.limit === 0) return;

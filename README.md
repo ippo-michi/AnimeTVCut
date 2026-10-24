@@ -39,7 +39,7 @@ or another HTTP media endpoint. All such sources still pass through MediaFlow.
 
 Configure `MEDIAFLOW_URL`, `MEDIAFLOW_API_PASSWORD`, and optionally
 `MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` builds the
-project's `2.4.9-atc17` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
+project's `2.4.9-atc23` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
 copy `.env.example` to `.env` and replace the example password before starting the
 stack with `docker compose up -d --build`.
 
@@ -65,10 +65,12 @@ silently receiving an incompatible repair.
 ## Coolify deployment
 
 The production addon at `https://atc.kanji.moe` is a Coolify Docker Compose application
-connected to `ippo-michi/AnimeTVCut`, branch `master`, using `/compose.yaml`. Automatic
-deployment is enabled. Keep production changes in GitHub so the next Coolify deployment
-retains them. Coolify owns domain routing, TLS, and the application network; repository
-Compose files do not need host-specific Traefik labels or an external `proxy` network.
+connected to `ippo-michi/AnimeTVCut`, branch `master`, using `/compose.yaml`.
+GitHub Actions deploys only after its checks and playback jobs succeed, pinning the
+exact tested commit in Coolify. Coolify's independent deploy-on-push setting must stay
+disabled. Keep production changes in GitHub so the next deployment retains them.
+The checked-in Compose routing uses `atc.kanji.moe` and the existing external `proxy`
+network; adjust those settings when deploying to another host.
 
 Configure secret upstream/metadata manifest URLs, `MEDIAFLOW_API_PASSWORD`, and
 `PUBLIC_BASE_URL=https://atc.kanji.moe` in Coolify's environment settings. Local `.env`
@@ -77,13 +79,23 @@ Redis in the same Compose application; MediaFlow and Redis stay internal.
 
 Install `https://atc.kanji.moe/v2/manifest.json` in Stremio. After a deployment, check
 `/health`, `/v2/manifest.json`, and a search, then play a TV Cut and seek across an
-episode boundary. Cut sessions live in memory, so an active stream must be reopened
-after the app restarts.
+episode boundary. Compose mounts the private `cut-sessions` volume at
+`/var/lib/animetvcut/cuts`. New sessions survive application restarts, retaining their
+original playlist URLs, resource IDs, cuts, chapters, subtitle families, watch-progress
+deduplication, and expiry deadlines. Sessions created before this upgrade must be
+reopened once. Outside Compose, set `CUT_SESSION_DIRECTORY` to enable persistence.
 
 GitHub Actions runs lint, TypeScript compilation, regression tests, client skip-control
 checks, and real MediaFlow/Stremio playback tests on pushes to `master` and pull
-requests. Coolify's automatic push deployment runs independently of these checks.
-The integration suites use a separate `2.4.9-atc17-test` image tag so local tests
+requests. The production job requires repository secrets `COOLIFY_URL`,
+`COOLIFY_APPLICATION_UUID`, and `COOLIFY_TOKEN`. Enable Coolify API access and use a
+team token with `read`, `write`, and `deploy` permissions: writing is needed to pin
+the tested SHA before queuing a deployment. Rotate the token before its expiry.
+Pull requests never receive deployment credentials or trigger production deployment.
+The job waits for deployment completion, verifies the deployed commit, and checks
+public health and the addon manifest. Failed tests cannot start this job; a newer
+push does not cancel an ongoing production deployment.
+The integration suites use a separate `2.4.9-atc23-test` image tag so local tests
 cannot replace the production MediaFlow image tag.
 
 Playback playlists, segments, subtitles, chapters, and skip metadata support browser
@@ -91,6 +103,34 @@ cross-origin requests, including byte ranges. `MEDIA_PREFETCH_RESOURCES` control
 the lookahead depth and the maximum number of background resource fetches across
 players (default 3, maximum 8). Background work stops when the app closes; cancelling
 one player does not cancel shared upstream manifest initialization.
+Shared cut builds also track viewers independently: disconnecting one viewer leaves
+the build available to the remaining viewers; disconnecting every viewer cancels it
+and allows a retry immediately.
+
+Production disables every `/api/v1/dev/*` endpoint by default. To use diagnostics,
+set `DEV_API_ENABLED=true` and a nonempty `DEV_API_TOKEN`, then send
+`Authorization: Bearer <token>`. Enabling the API without a token in production fails
+at startup. Public Stremio, playback, and `/health` routes do not need this token.
+`GET /api/v1/dev/diagnostics` reports process memory, session capacity and persistence
+failures, aggregate cache counters, active builds, and preparation-stage timings. It
+does not return cache keys, source URLs, headers, or credentials. Stage durations are
+also logged for resolution, playlist preparation, skip lookup, chapters, and subtitles.
+
+Sessions default to a maximum of 128 and an estimated 256 MiB memory budget, controlled
+by `CUT_SESSION_MAX_COUNT` and `CUT_SESSION_MAX_MEMORY_BYTES`. New cuts receive HTTP
+503 at capacity; active cuts are retained. Optional subtitle caching respects the same
+budget. `CUT_MAX_CONCURRENT_BUILDS` defaults to 8. Metadata, stream, and skip caches
+have 512-entry LRU limits, with 256 entries for public streams and source chapters.
+Expired caches and sessions are swept every minute, including when no new cut is
+created. Diagnostics distinguish estimated session memory from actual process memory.
+
+Recovery snapshots contain signed source URLs and headers. The application writes
+them atomically with owner-only file permissions and retains the original absolute
+expiry. Invalid, expired, or over-capacity snapshots are discarded on restoration;
+subtitle bytes and in-flight work are rebuilt lazily. The volume should be backed up
+and handled as private application data, with one application process writing to it.
+A persistence failure prevents publishing a
+new session; later checkpoint failures are counted without interrupting active playback.
 
 Configure a generic upstream Stremio addon with the complete secret manifest URL:
 
@@ -162,6 +202,21 @@ uses its exact duration for timestamp lookup, removes safely identified openings
 endings by default, and applies the retained ranges through HLS composition. The
 original manual endpoints remain independent from skip providers.
 
+Automatic playback also reads explicit `OP`/`Opening` and `ED`/`Ending` chapters
+from the selected media file using `ffprobe` (included in the runtime image).
+These timestamps take precedence for that release. Probes run concurrently within
+one shared budget (`SOURCE_CHAPTER_PROBE_CONCURRENCY`, default 2, maximum 8), retaining
+episode order and cancellation semantics. If provider coverage is
+incomplete and the preferred release has no usable chapters, AnimeTVCut probes
+up to four alternatives per episode and selects a consistent chaptered release
+when available. Each probe has a 15-second deadline and bounded output, and its
+results are cached. Generic `Intro`, `Credits`, and mixed story/theme chapters
+are retained. No timings are copied between episodes or different releases.
+
+`GET /api/v1/dev/cuts/:cutId/skip` shows provider results, the verified ranges
+used for that cut, and explicit warnings when opening or ending coverage is
+unavailable. Missing coverage keeps the footage intact.
+
 Open-ended credits/previews, mixed OP/ED reports, invalid/out-of-duration ranges,
 duration mismatches, and reports below a configured confidence threshold are diagnostic
 only. Missing or failed providers leave footage intact rather than failing playback or
@@ -181,7 +236,8 @@ pnpm test:aniskip:live
 ```
 
 `test:mediaflow` starts an isolated fixture-origin → MediaFlow container topology and
-uses real FFprobe/FFmpeg playback against AnimeTVCut. It also directly validates two
+uses real FFprobe/FFmpeg playback against AnimeTVCut, plus MPV-decoded audio checks
+at segment boundaries. Install `ffmpeg` and `mpv` locally before running it. It also directly validates two
 non-empty fMP4 fragments from generated H.264/AAC MP4, H.264/AAC MKV, and 10-bit
 HEVC/Opus MKV inputs over an HTTP Range origin. Docker is required; no public media is
 used.
@@ -196,9 +252,14 @@ AnimeTVCut → FFmpeg flow without manual `remove[]`. Live provider smoke tests 
 opt-in through the `INTRODB_TEST_*` and `ANISKIP_TEST_*` variables documented in
 `.env.example`; normal tests never depend on public timestamp services.
 
-Created cuts retain the initially selected URLs. Phase 3 deliberately does not refresh
-or hot-replace expired playback URLs; later work can re-query using the stable family,
-filename, and upstream video ID metadata.
+If opening a normalized resource fails, an automatic cut can re-query its original
+opaque upstream video ID, bypassing the stream cache. Recovery requires the same
+filename and the original video size and/or hash, plus an identical complete normalized
+timeline. Only source URLs and headers change; resource IDs, retained intervals, and
+output placement stay fixed. Concurrent recovery requests coalesce and repeated
+attempts are limited to one per source per 30 seconds. Missing identity, a changed
+release, or a different timeline fails safely. Manual HTTP sources without verified
+upstream identity must be reopened when their URLs expire.
 
 ## Stremio cut modes
 
@@ -294,7 +355,7 @@ upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
 subtitle metadata discovery per constituent episode. Subtitle source fetches are
 bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
-Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc17` repair:
+Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc23` repair:
 
 ```bash
 pnpm test:stremio

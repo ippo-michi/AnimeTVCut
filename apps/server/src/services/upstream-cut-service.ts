@@ -3,11 +3,14 @@ import type {
   RemovedRange,
   SafeSourceSkipSegment,
 } from "@animetvcut/core";
+import { WorkQueue } from "@animetvcut/core";
+import { OperationMetrics } from "./operation-metrics.js";
 import {
   buildAutomaticCutPlan,
   DEFAULT_AUTOMATIC_CUT_POLICY,
   mergeRemovalRanges,
   type AutomaticCutPolicy,
+  type EpisodeSkipResolution,
 } from "@animetvcut/skip-providers";
 
 import type {
@@ -23,6 +26,10 @@ import {
   MediaFlowUnavailableError,
 } from "./mediaflow/errors.js";
 import { sanitizeSkipResolution, type SkipService } from "./skip-service.js";
+import {
+  chapterSkipSegments,
+  type SourceChapterReader,
+} from "./source-chapters.js";
 import { StremioUpstreamNotConfiguredError } from "./stremio-upstream/errors.js";
 import { sanitizeCandidateSelection } from "./stremio-upstream/resolver.js";
 import type {
@@ -124,6 +131,9 @@ export class UpstreamCutService {
     private readonly cutService: CutService,
     private readonly skipService?: SkipService,
     private readonly subtitleService?: SubtitleService,
+    private readonly sourceChapterReader?: SourceChapterReader,
+    private readonly metrics = new OperationMetrics(),
+    private readonly chapterConcurrency = 2,
   ) {}
 
   public async resolveEpisodes(
@@ -182,11 +192,13 @@ export class UpstreamCutService {
     const excludedCandidates = new Set<string>();
     let lastError: unknown;
     for (let attempt = 0; attempt < 6; attempt += 1) {
-      const selection = await this.resolver.resolve(request.episodes, {
-        allowMixedSources: request.allowMixedSources ?? false,
-        excludedCandidates,
-        signal: request.signal,
-      });
+      const selection = await this.metrics.measure("source_resolution", () =>
+        this.resolver!.resolve(request.episodes, {
+          allowMixedSources: request.allowMixedSources ?? false,
+          excludedCandidates,
+          signal: request.signal,
+        }),
+      );
       try {
         return await this.createAutomaticCutFromSelection(request, selection);
       } catch (error) {
@@ -232,11 +244,15 @@ export class UpstreamCutService {
           while (nextIndex < request.seasons.length) {
             const index = nextIndex++;
             const season = request.seasons[index]!;
-            const selection = await this.resolver!.resolve(season.episodes, {
-              allowMixedSources: false,
-              excludedCandidates,
-              signal: request.signal,
-            });
+            const selection = await this.metrics.measure(
+              "source_resolution",
+              () =>
+                this.resolver!.resolve(season.episodes, {
+                  allowMixedSources: false,
+                  excludedCandidates,
+                  signal: request.signal,
+                }),
+            );
             if (selection.familyMethod === "mixed")
               throw new Error("Long Cut season selection must be strict.");
             selections[index] = { season: season.season, selection };
@@ -340,17 +356,19 @@ export class UpstreamCutService {
     });
     if (representatives.length === 0) return [];
 
-    const prepared = await this.cutService.prepareSources(representatives, {
-      ...(request.sourcePrepareConcurrency === undefined
-        ? {}
-        : {
-            concurrency: Math.min(
-              request.sourcePrepareConcurrency,
-              representatives.length,
-            ),
-          }),
-      signal: request.signal,
-    });
+    const prepared = await this.metrics.measure("playlist_preparation", () =>
+      this.cutService.prepareSources(representatives, {
+        ...(request.sourcePrepareConcurrency === undefined
+          ? {}
+          : {
+              concurrency: Math.min(
+                request.sourcePrepareConcurrency,
+                representatives.length,
+              ),
+            }),
+        signal: request.signal,
+      }),
+    );
     this.validatePreparedDurations(prepared, expectedDuration);
     return prepared;
   }
@@ -359,7 +377,8 @@ export class UpstreamCutService {
     request: AutomaticUpstreamCutRequest,
     selection: CandidateFamilySelection,
     preflight: readonly PreparedInputSource[] = [],
-  ) {
+    allowChapterSelection = true,
+  ): ReturnType<UpstreamCutService["createAutomaticCut"]> {
     if (this.skipService === undefined) {
       throw new Error("Skip timestamp providers are not configured.");
     }
@@ -376,12 +395,14 @@ export class UpstreamCutService {
       .map((episode) => episode.mediaSource)
       .filter((source) => !preparedBySource.has(source));
     if (missing.length > 0) {
-      const loaded = await this.cutService.prepareSources(missing, {
-        ...(request.sourcePrepareConcurrency === undefined
-          ? {}
-          : { concurrency: request.sourcePrepareConcurrency }),
-        signal: request.signal,
-      });
+      const loaded = await this.metrics.measure("playlist_preparation", () =>
+        this.cutService.prepareSources(missing, {
+          ...(request.sourcePrepareConcurrency === undefined
+            ? {}
+            : { concurrency: request.sourcePrepareConcurrency }),
+          signal: request.signal,
+        }),
+      );
       for (const item of loaded) preparedBySource.set(item.source, item);
     }
     const prepared = selection.episodes.map(({ mediaSource }) => {
@@ -396,13 +417,121 @@ export class UpstreamCutService {
     const preparedByEpisode = new Map(
       prepared.map((item) => [item.source.episodeId, item]),
     );
-    const skipResolutions = await this.skipService.resolve(
-      request.episodes.map((reference) => ({
-        reference,
-        durationSeconds: this.preparedDuration(preparedByEpisode, reference),
-      })),
-      request.signal,
+    let skipResolutions = await this.metrics.measure("skip_lookup", () =>
+      this.skipService!.resolve(
+        request.episodes.map((reference) => ({
+          reference,
+          durationSeconds: this.preparedDuration(preparedByEpisode, reference),
+        })),
+        request.signal,
+      ),
     );
+    if (this.sourceChapterReader !== undefined) {
+      // Chapter timestamps describe the selected release itself. Prefer them
+      // over community timestamps, which may describe a different release.
+      const queue = new WorkQueue(this.chapterConcurrency);
+      const enriched = await this.metrics.measure("chapter_lookup", () =>
+        Promise.all(
+          skipResolutions.map((resolution) =>
+            queue.run(async (): Promise<EpisodeSkipResolution> => {
+              const source = preparedByEpisode.get(
+                resolution.episodeId,
+              )?.source;
+              const chapters =
+                source?.kind === "http_media"
+                  ? chapterSkipSegments(
+                      await this.sourceChapterReader!.read(
+                        source,
+                        request.signal,
+                      ),
+                      resolution.durationSeconds,
+                    )
+                  : [];
+              const types = new Set(chapters.map((chapter) => chapter.type));
+              return {
+                ...resolution,
+                segments: [
+                  ...resolution.segments.filter(
+                    (segment) => !types.has(segment.type),
+                  ),
+                  ...chapters,
+                ],
+                providers: [
+                  ...resolution.providers,
+                  {
+                    provider: "source-chapters",
+                    status: chapters.length > 0 ? "found" : "not_found",
+                    warnings: [],
+                  },
+                ],
+              };
+            }, request.signal),
+          ),
+        ),
+      );
+      skipResolutions = enriched;
+      const missing = skipResolutions.some(
+        (resolution) => this.missingThemeTypes(resolution).length > 0,
+      );
+      if (missing && allowChapterSelection && this.resolver !== undefined) {
+        // Require chapter evidence for all themes in the replacement release,
+        // so switching from WEB to BD never reuses mismatched WEB timestamps.
+        const chapterRequirements = new Map(
+          skipResolutions.map((resolution) => {
+            const known = (["opening", "ending"] as const).filter((type) =>
+              resolution.segments.some(
+                (segment) =>
+                  segment.type === type &&
+                  segment.automaticRemoval &&
+                  segment.end !== null,
+              ),
+            );
+            // An episode with an ED but no OP may intentionally have no
+            // opening (premieres/finales). Do not make that block recovery of
+            // a completely uncovered episode elsewhere in a Complete Cut.
+            return [
+              resolution.episodeId,
+              known.length > 0 ? known : (["opening", "ending"] as const),
+            ];
+          }),
+        );
+        try {
+          const alternative = await this.metrics.measure("chapter_lookup", () =>
+            this.resolver!.resolve(request.episodes, {
+              allowMixedSources: request.allowMixedSources ?? false,
+              signal: request.signal,
+              chapterRequirements,
+            }),
+          );
+          const changed = alternative.episodes.some(
+            (episode, index) =>
+              episode.mediaSource.url !==
+              selection.episodes[index]?.mediaSource.url,
+          );
+          if (changed)
+            return await this.createAutomaticCutFromSelection(
+              request,
+              alternative,
+              [],
+              false,
+            );
+        } catch {
+          request.signal?.throwIfAborted();
+          // A chapterless release is still playable. Keep known skips and
+          // surface incomplete coverage instead of inventing timestamps.
+        }
+      }
+    }
+    skipResolutions = skipResolutions.map((resolution) => ({
+      ...resolution,
+      warnings: [
+        ...resolution.warnings,
+        ...this.missingThemeTypes(resolution).map(
+          (type) =>
+            `No verified ${type} skip range for ${resolution.episodeId}; retained source content.`,
+        ),
+      ],
+    }));
     const policy: AutomaticCutPolicy = {
       ...DEFAULT_AUTOMATIC_CUT_POLICY,
       ...request.cutPolicy,
@@ -432,6 +561,13 @@ export class UpstreamCutService {
         ? {}
         : { maxManifestBytes: request.maxManifestBytes }),
     });
+    const session = this.cutService.session(cut.cutId);
+    if (session !== undefined) {
+      session.skipDiagnostics = {
+        episodes: skipResolutions.map(sanitizeSkipResolution),
+        warnings: plan.warnings,
+      };
+    }
     this.cutService.attachOutputSkipSegments(
       cut.cutId,
       plan.episodes.flatMap((episode): SafeSourceSkipSegment[] =>
@@ -459,11 +595,16 @@ export class UpstreamCutService {
         }),
       ),
     );
-    const subtitleTracks = await this.subtitleService?.discover(
-      cut.cutId,
-      selection,
-      request.signal,
-    );
+    const subtitleTracks =
+      this.subtitleService === undefined
+        ? undefined
+        : await this.metrics.measure("subtitle_discovery", () =>
+            this.subtitleService!.discover(
+              cut.cutId,
+              selection,
+              request.signal,
+            ),
+          );
     return {
       ...cut,
       ...(subtitleTracks === undefined ? {} : { subtitleTracks }),
@@ -480,6 +621,20 @@ export class UpstreamCutService {
         warnings: plan.warnings,
       },
     };
+  }
+
+  private missingThemeTypes(
+    resolution: EpisodeSkipResolution,
+  ): ("opening" | "ending")[] {
+    return (["opening", "ending"] as const).filter(
+      (type) =>
+        !resolution.segments.some(
+          (segment) =>
+            segment.type === type &&
+            segment.automaticRemoval &&
+            segment.end !== null,
+        ),
+    );
   }
 
   private preparedDuration(

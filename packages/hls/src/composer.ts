@@ -182,8 +182,12 @@ export function composeHlsVod(
       }
     }
     const segmentId = register(item.sourceEpisodeId, item.segment, "segment", {
-      sourceStart: item.retainedStart,
-      sourceEnd: item.retainedEnd,
+      sourceStart:
+        (item.segment.mediaStart ?? item.segment.start) +
+        (item.retainedStart - item.segment.start),
+      sourceEnd:
+        (item.segment.mediaEnd ?? item.segment.end) -
+        (item.segment.end - item.retainedEnd),
       outputStart: item.outputStart,
     });
     const retainedDuration = item.retainedEnd - item.retainedStart;

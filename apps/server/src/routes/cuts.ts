@@ -1,5 +1,6 @@
 import type { FastifyPluginAsync } from "fastify";
 import { z } from "zod";
+import { SessionCapacityError } from "../services/cut-session-store.js";
 
 import {
   PreparedSourceError,
@@ -36,21 +37,34 @@ const sourceSchema = z.union([
 ]);
 
 const cutRequestSchema = z.object({
-  sources: z.array(sourceSchema).min(1),
-  remove: z.array(
-    z.object({
-      episodeId: z.string().min(1).max(128),
-      start: z.number().finite().nonnegative(),
-      end: z.number().finite().positive(),
-      type: z.enum(["opening", "ending", "recap", "preview"]),
-    }),
-  ),
+  sources: z.array(sourceSchema).min(1).max(128),
+  remove: z
+    .array(
+      z.object({
+        episodeId: z.string().min(1).max(128),
+        start: z.number().finite().nonnegative(),
+        end: z.number().finite().positive(),
+        type: z.enum(["opening", "ending", "recap", "preview"]),
+      }),
+    )
+    .max(10_000),
   alignmentPolicy: z.enum(["preserve_content", "aggressive"]).optional(),
   strictAlignment: z.boolean().optional(),
 });
 
 export function cutRoutes(cutService: CutService): FastifyPluginAsync {
   return async (app) => {
+    app.get<{ Params: { cutId: string } }>(
+      "/api/v1/dev/cuts/:cutId/skip",
+      async (request, reply) => {
+        const session = cutService.session(request.params.cutId);
+        if (session?.skipDiagnostics === undefined)
+          return reply
+            .code(404)
+            .send({ error: "Cut skip diagnostics are missing or expired." });
+        return session.skipDiagnostics;
+      },
+    );
     app.post("/api/v1/dev/cuts", async (request, reply) => {
       const parsed = cutRequestSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -97,7 +111,8 @@ export function cutRoutes(cutService: CutService): FastifyPluginAsync {
         const rootError =
           error instanceof PreparedSourceError ? error.cause : error;
         const statusCode =
-          rootError instanceof MediaFlowUnavailableError
+          rootError instanceof MediaFlowUnavailableError ||
+          rootError instanceof SessionCapacityError
             ? 503
             : rootError instanceof MediaFlowAuthenticationError ||
                 rootError instanceof MediaFlowError

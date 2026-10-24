@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import {
   MediaFlowTimelineTransform,
   rewriteMediaFlowMoofTimeline,
+  Fmp4TimelineError,
 } from "../src/services/mediaflow/fmp4-timeline.js";
 
 function box(type: string, ...payloads: Buffer[]): Buffer {
@@ -50,6 +51,20 @@ function readTfdt(moof: Buffer, trafIndex: number): bigint {
 }
 
 describe("MediaFlow fMP4 timeline rebasing", () => {
+  it("bounds AAC packet preroll at output zero without accepting invalid video clocks", () => {
+    const source = box("moof", traf(1, 540_000n), traf(2, 287_744n));
+    const rewritten = rewriteMediaFlowMoofTimeline(source, -6);
+    expect(readTfdt(rewritten, 0)).toBe(0n);
+    expect(readTfdt(rewritten, 1)).toBe(0n);
+    expect(readTfdt(source, 1)).toBe(287_744n);
+    expect(() =>
+      rewriteMediaFlowMoofTimeline(box("moof", traf(1, 539_999n)), -6),
+    ).toThrow(Fmp4TimelineError);
+    expect(() =>
+      rewriteMediaFlowMoofTimeline(box("moof", traf(2, 286_975n)), -6),
+    ).toThrow(Fmp4TimelineError);
+  });
+
   it("rebases video and audio decode clocks by their track timescales", () => {
     const source = box("moof", traf(1, 540_000n), traf(2, 288_000n));
     const rewritten = rewriteMediaFlowMoofTimeline(source, -4);

@@ -130,6 +130,10 @@ export interface EpisodeSourceResolver {
       signal?: AbortSignal;
       excludedFamilies?: ReadonlySet<string>;
       excludedCandidates?: ReadonlySet<string>;
+      chapterRequirements?: ReadonlyMap<
+        string,
+        readonly ("opening" | "ending")[]
+      >;
     },
   ): Promise<CandidateFamilySelection>;
 }

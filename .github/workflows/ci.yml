@@ -11,7 +11,7 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   checks:
@@ -30,6 +30,7 @@ jobs:
       - run: pnpm build
       - run: pnpm test
       - run: pnpm test:skip-controls
+      - run: node --test scripts/tests/*.test.mjs
 
   playback:
     needs: checks
@@ -42,10 +43,36 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: sudo apt-get update && sudo apt-get install -y ffmpeg mpv
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: docker build -t animetvcut-mediaflow:2.4.9-atc17-test -f docker/mediaflow/Dockerfile .
+      - run: docker build -t animetvcut-mediaflow:2.4.9-atc23-test -f docker/mediaflow/Dockerfile .
       - run: pnpm test:mediaflow
       - run: pnpm test:stremio
       - run: pnpm test:long-cuts
+      - run: pnpm test:skip
+
+  deploy:
+    needs: [checks, playback]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: production-deployment
+      cancel-in-progress: false
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Deploy the revision that passed CI
+        run: node scripts/deploy.mjs
+        env:
+          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
+          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
+          COOLIFY_APPLICATION_UUID: ${{ secrets.COOLIFY_APPLICATION_UUID }}
+      - name: Verify public health and addon manifest
+        run: |
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 https://atc.kanji.moe/health | jq -e '.status == "ok"'
+          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 https://atc.kanji.moe/v2/manifest.json | jq -e '.id == "org.animetvcut.addon.v2"'

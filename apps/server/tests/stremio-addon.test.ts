@@ -581,6 +581,75 @@ describe("search sequence regression: Frieren, other query, Frieren again", () =
 });
 
 describe("public TV Cut stream authorization and caching", () => {
+  function pendingBuildService() {
+    const builds: { signal?: AbortSignal; resolve: () => void }[] = [];
+    const createAutomaticCut = vi.fn(
+      (request: AutomaticUpstreamCutRequest) =>
+        new Promise((resolve, reject) => {
+          builds.push({
+            signal: request.signal,
+            resolve: () =>
+              resolve({
+                cutId: "shared-cut",
+                playlistUrl: "/media/cut/shared-cut/master.m3u8",
+              }),
+          });
+          request.signal?.addEventListener(
+            "abort",
+            () => reject(new Error("Build cancelled")),
+            { once: true },
+          );
+        }),
+    );
+    const service = new TvCutCatalogService(
+      metadataClient(),
+      { createAutomaticCut } as unknown as UpstreamCutService,
+      {
+        isCutActive: () => true,
+        enableWatchProgress: () => {},
+      } as unknown as CutService,
+      new URL("https://public.animetvcut.test/"),
+      DEFAULT_TV_CUT_GROUPING_CONFIG,
+      () => Date.parse("2026-01-01T00:00:00Z"),
+    );
+    return {
+      service,
+      builds,
+      videoId: createVirtualVideoId(sourceId, 1, 1, 3),
+    };
+  }
+
+  it("keeps a shared build alive when its first viewer disconnects", async () => {
+    const { service, builds, videoId } = pendingBuildService();
+    const first = new AbortController();
+    const one = service.publicStream(videoId, first.signal);
+    const rejected = expect(one).rejects.toThrow();
+    const two = service.publicStream(videoId);
+    await vi.waitFor(() => expect(builds).toHaveLength(1));
+    first.abort();
+    await rejected;
+    expect(builds[0]!.signal!.aborted).toBe(false);
+    builds[0]!.resolve();
+    expect((await two).streams).toHaveLength(1);
+    service.close();
+  });
+
+  it("cancels abandoned builds and lets a retry start immediately", async () => {
+    const { service, builds, videoId } = pendingBuildService();
+    const first = new AbortController();
+    const one = service.publicStream(videoId, first.signal);
+    const rejected = expect(one).rejects.toThrow();
+    await vi.waitFor(() => expect(builds).toHaveLength(1));
+    first.abort();
+    await rejected;
+    expect(builds[0]!.signal!.aborted).toBe(true);
+    const retry = service.publicStream(videoId);
+    await vi.waitFor(() => expect(builds).toHaveLength(2));
+    builds[1]!.resolve();
+    expect((await retry).streams).toHaveLength(1);
+    service.close();
+  });
+
   it("regenerates the current plan, forwards exact episode IDs, and coalesces cache hits", async () => {
     const createAutomaticCut = vi.fn(async () => ({
       cutId: "active-cut",

@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc17` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc23` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
@@ -22,6 +22,31 @@ Each independently generated transport stream marks its initial packets as a
 standards-compliant discontinuity so continuity-counter resets are not decoded
 as corrupt packets.
 The fMP4 path remains available for format/regression testing.
+
+MPEG-TS checks video compatibility independently of audio. PCM or other audio
+that needs normalization cannot force compatible H.264 through a video encoder.
+This preserves frame continuity and leaves segment generation enough headroom
+to keep up with playback. The app warms the initial playback window as soon as
+the player requests its playlist, and prefers 1080p sources over 4K when only
+audio needs normalization. PCM/AAC remuxes are scored as lossless sources.
+Exact-cut fragments use the same timestamp offset as copied fragments, so
+switching between them cannot add or subtract a second at a skip boundary.
+The AAC silence frame also clears its sample storage before encoding; encoding
+uninitialized floating-point samples could hang a worker during lazy startup.
+Normalized MPEG-TS audio is encoded with preroll and lookahead, then packet-trimmed
+on a shared output sample grid. Encoder priming and flush padding never belong to
+two adjacent segments. The regression suite checks raw packet timestamps and MPV's
+decoded tone samples, including 44.1 kHz input, nonzero origins, and exact cuts.
+
+MKV probes recover complete Info and Tracks elements with bounded range reads
+when the initial 64 KiB ends inside metadata. SeekHead positions let probes skip
+large attachments instead of downloading them. The cue cache is versioned so an
+incomplete index from an older image is rebuilt. Files without a reconstructable
+header use the seekable source for MPEG-TS generation.
+
+AnimeTVCut preserves the media timestamps from segment URLs separately from the
+zero-based HLS timeline, including for exact cuts. Rounded manifest durations
+therefore cannot shift later segment requests outside their physical boundaries.
 
 Exact cut boundaries inside a normalized segment use the bounded transcode path to
 emit only the retained source interval. The `atc_exact` mode and physical source

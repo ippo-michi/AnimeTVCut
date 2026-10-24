@@ -50,6 +50,20 @@ describe("bounded media prefetch", () => {
     return value;
   }
 
+  it("warms the initial playback window before the first segment completes", async () => {
+    const resources = Array.from({ length: 4 }, (_, i) => resource(String(i)));
+    const cut = session(resources);
+    const prefetch = worker(3);
+    prefetch.prime(cut);
+    prefetch.prime(cut);
+    await vi.waitFor(() => expect(resources[0]!.open).toHaveBeenCalledOnce());
+    expect(resources[1]!.open).toHaveBeenCalledOnce();
+    expect(resources[2]!.open).toHaveBeenCalledOnce();
+    expect(resources[3]!.open).not.toHaveBeenCalled();
+    prefetch.after(cut, resources[0]!);
+    expect(resources[3]!.open).not.toHaveBeenCalled();
+  });
+
   it("shares its concurrency budget across players and seeks", async () => {
     const resources = Array.from({ length: 8 }, (_, i) => resource(String(i)));
     const cut = session(resources);

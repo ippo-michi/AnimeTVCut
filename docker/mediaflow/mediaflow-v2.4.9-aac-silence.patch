@@ -1,0 +1,13 @@
+--- a/mediaflow_proxy/remuxer/audio_transcoder.py
++++ b/mediaflow_proxy/remuxer/audio_transcoder.py
+@@ -62,6 +62,10 @@
+             )
+             frame.sample_rate = enc.sample_rate
+             frame.pts = 0
++            # AudioFrame storage is uninitialized. Invalid float samples can
++            # leave the native AAC encoder stuck while this module imports.
++            for plane in frame.planes:
++                plane.update(bytes(plane.buffer_size))
+ 
+             for pkt in enc.encode(frame):
+                 return bytes(pkt)

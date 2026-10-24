@@ -87,10 +87,10 @@ export class StremioUpstreamClient {
   public readonly config: StremioUpstreamConfig;
   private manifestCache?: CacheEntry<StremioManifest>;
   private manifestInFlight?: Promise<StremioManifest>;
-  private readonly streamCache = new Map<
+  private readonly streamCache = new BoundedCache<
     string,
     CacheEntry<readonly StremioStreamCandidate[]>
-  >();
+  >(512, () => this.now());
   private readonly counters: {
     manifestRequests: number;
     streamRequests: number;
@@ -173,12 +173,13 @@ export class StremioUpstreamClient {
   public async getStreams(
     reference: UpstreamEpisodeReference,
     signal?: AbortSignal,
+    refresh = false,
   ): Promise<readonly StremioStreamCandidate[]> {
     const manifest = await this.getManifest(signal);
     assertManifestSupportsReference(manifest, reference);
     const cacheKey = JSON.stringify([reference.type, reference.videoId]);
     const cached = this.streamCache.get(cacheKey);
-    if (cached !== undefined && cached.expiresAt > this.now())
+    if (!refresh && cached !== undefined && cached.expiresAt > this.now())
       return cached.value;
 
     const resourceUrl = buildStreamResourceUrl(
@@ -343,3 +344,4 @@ export class StremioUpstreamClient {
     }
   }
 }
+import { BoundedCache } from "@animetvcut/core";

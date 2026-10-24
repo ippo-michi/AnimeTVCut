@@ -11,6 +11,9 @@
       "import": "./dist/index.js"
     }
   },
+  "dependencies": {
+    "@animetvcut/core": "workspace:*"
+  },
   "scripts": {
     "build": "tsc -b"
   }

@@ -27,6 +27,41 @@ function usableCandidate(index: number): StremioStreamCandidate {
 }
 
 describe("Stremio episode source resolver", () => {
+  it("probes alternative chaptered releases concurrently without changing episode order", async () => {
+    let active = 0,
+      peak = 0;
+    const episodes = Array.from({ length: 6 }, (_, index) =>
+      reference(index + 1),
+    );
+    const resolver = new StremioEpisodeSourceResolver(
+      {
+        getStreams: async (episode: UpstreamEpisodeReference) => [
+          usableCandidate(Number(episode.episodeId.replace("episode-", ""))),
+        ],
+      } as never,
+      {
+        chapterReader: {
+          read: async () => {
+            active += 1;
+            peak = Math.max(peak, active);
+            await new Promise((resolve) => setTimeout(resolve, 5));
+            active -= 1;
+            return [{ title: "OP", start: 0, end: 90 }];
+          },
+        },
+      },
+    );
+    const result = await resolver.resolve(episodes, {
+      chapterRequirements: new Map(
+        episodes.map((episode) => [episode.episodeId, ["opening"]]),
+      ),
+    });
+    expect(peak).toBe(2);
+    expect(result.episodes.map((episode) => episode.episodeId)).toEqual(
+      episodes.map((episode) => episode.episodeId),
+    );
+  });
+
   it("bounds episode requests and retries transient no-URL responses", async () => {
     let active = 0;
     let maximumActive = 0;

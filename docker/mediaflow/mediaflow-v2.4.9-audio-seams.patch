@@ -1,0 +1,125 @@
+--- a/mediaflow_proxy/remuxer/transcode_handler.py
++++ b/mediaflow_proxy/remuxer/transcode_handler.py
+@@ -48,6 +48,7 @@
+ )
+ from mediaflow_proxy.remuxer.ebml_parser import CODEC_ID_AAC, CODEC_ID_H264, MKVTrack
+ from mediaflow_proxy.remuxer.audio_transcoder import get_ffmpeg_codec_name
++from mediaflow_proxy.remuxer.mpegts_audio import mpegts_audio_plan
+ from mediaflow_proxy.remuxer.hls_manifest import generate_vod_playlist, merge_cue_points
+ from mediaflow_proxy.remuxer.media_source import MediaSource, _MKV_EXTENSIONS, _MP4_EXTENSIONS
+ from mediaflow_proxy.remuxer.mp4_muxer import build_fmp4_init_segment
+@@ -1293,36 +1294,14 @@
+         audio_args = ["-c:a", "copy"]
+         timestamp_offset = output_start_time_ms - start_time_ms + 1.0
+     else:
+-        # Independently encoded segments must share one global AAC packet
+-        # grid. The current keyframe cluster contains the audio packets that
+-        # own this boundary; trimming on source timestamps prevents overlap.
+-        aac_frame_ms = 1024.0 * 1000.0 / 48000.0
+-        audio_start_ms = (
+-            int((start_time_ms + aac_frame_ms - 0.000001) / aac_frame_ms)
+-            * aac_frame_ms
+-        )
+-        audio_end_ms = (
+-            int((end_time_ms + 0.000001) / aac_frame_ms)
+-            * aac_frame_ms
+-        )
+-        timing_args = [
+-            "-to",
+-            f"{(end_time_ms + 250.0) / 1000.0:.6f}",
+-        ]
++        audio_plan = mpegts_audio_plan(
++            start_time_ms, end_time_ms, output_start_time_ms
++        )
++        timing_args = []
+         audio_args = [
+-            "-af",
+-            (
+-                f"atrim=start={audio_start_ms / 1000.0:.6f}:"
+-                f"end={audio_end_ms / 1000.0:.6f},asetpts=PTS+1024"
+-            ),
+-            "-c:a",
+-            "aac",
+-            "-ar",
+-            "48000",
+-            "-ac",
+-            "2",
+-            "-b:a",
+-            "192k",
++            "-af", audio_plan.filter,
++            "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
++            "-bsf:a", audio_plan.packet_filter,
+         ]
+         timestamp_offset = output_start_time_ms - start_time_ms + 1.0
+     video_args = ["-c:v", "copy"]
+@@ -1344,9 +1323,7 @@
+         # An encoded-audio second input starts early to preserve decoder
+         # history; atrim still assigns frames to the exact segment interval.
+         input_seek_ms = (
+-            start_time_ms
+-            if source is None
+-            else max(0.0, start_time_ms - 1000.0)
++            start_time_ms if copy_audio else audio_plan.input_seek_ms
+         )
+         input_args.extend(
+             ("-noaccurate_seek", "-ss", f"{input_seek_ms / 1000.0:.6f}")
+@@ -1463,22 +1440,34 @@
+         if audio_order
+         else ["-map", "0:a?"]
+     )
+-    input_args = ["-ss", f"{start_time_ms / 1000.0:.6f}"]
+-    for option, value in (input_options or {}).items():
+-        input_args.extend((f"-{option}", value))
+-    input_args.extend(("-i", input_url))
++    audio_plan = mpegts_audio_plan(
++        start_time_ms, end_time_ms, output_start_time_ms
++    )
++    input_args: list[str] = []
++    for seek_ms, accurate in [
++        (start_time_ms, True), (audio_plan.input_seek_ms, False)
++    ]:
++        if not accurate:
++            input_args.append("-noaccurate_seek")
++        input_args.extend(("-ss", f"{seek_ms / 1000.0:.6f}"))
++        for option, value in (input_options or {}).items():
++            input_args.extend((f"-{option}", value))
++        input_args.extend(("-i", input_url))
++    audio_map_args = [value.replace("0:a", "1:a") for value in audio_map_args]
+     command = [
+         "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin",
+         *input_args,
+-        "-t", f"{(end_time_ms - start_time_ms) / 1000.0:.6f}",
+         "-map", "0:v:0", *audio_map_args, "-sn", "-dn",
++        "-vf", f"trim=start={start_time_ms / 1000.0:.6f}:end={end_time_ms / 1000.0:.6f}",
+         "-c:v", "libx264", "-preset", "veryfast", "-tune", "zerolatency",
+         "-sc_threshold", "0",
+         "-force_key_frames", "expr:if(isnan(prev_forced_t),1,gte(t,prev_forced_t+2))",
++        "-af", audio_plan.filter,
+         "-c:a", "aac", "-ar", "48000", "-ac", "2", "-b:a", "192k",
+-        "-avoid_negative_ts", "disabled", "-muxdelay", "0", "-muxpreload", "0",
++        "-bsf:a", audio_plan.packet_filter,
++        "-copyts", "-avoid_negative_ts", "disabled", "-muxdelay", "0", "-muxpreload", "0",
+         "-mpegts_flags", "resend_headers+initial_discontinuity",
+-        "-output_ts_offset", f"{(output_start_time_ms + 1.0) / 1000.0:.6f}",
++        "-output_ts_offset", f"{(output_start_time_ms - start_time_ms + 1.0) / 1000.0:.6f}",
+         "-f", "mpegts", "pipe:1",
+     ]
+     process = await asyncio.create_subprocess_exec(
+@@ -1558,7 +1547,7 @@
+     # segments across container upgrades; serving an older first-GOP-trimmed
+     # segment would otherwise preserve the playback freeze after deployment.
+     cache_key = (
+-        f"{source.cache_key}:mpegts-v17:{language}:{virtual_start_ms:.3f}:"
++        f"{source.cache_key}:mpegts-v19:{language}:{virtual_start_ms:.3f}:"
+         f"{requested_start_ms:.3f}:{requested_end_ms:.3f}"
+     )
+     if is_redis_configured():
+@@ -1598,7 +1587,7 @@
+     input_options: dict[str, str] | None = None
+     source_gen: AsyncIterator[bytes] | None
+     pyav_input = source.pyav_open_input()
+-    use_seekable_input = partial_exact or (
++    use_seekable_input = partial_exact or probe.mp4_index is not None or (
+         probe.cue_index is not None and not probe.cue_index.seek_header
+     )
+     if use_seekable_input:
