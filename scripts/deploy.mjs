@@ -1,97 +1,79 @@
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { setTimeout as delay } from "node:timers/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 
-/** Called only by the production job after checks and playback have succeeded. */
+const exec = promisify(execFile);
+const repository = "ippo-michi/AnimeTVCut";
+
+/** Promote the exact successful revision; Coolify watches only this release branch. */
 export async function deploy(
   env = process.env,
   fetchImplementation = globalThis.fetch,
-  sleep = delay,
+  push = async (sha) =>
+    exec("git", ["push", "origin", `${sha}:refs/heads/production`]),
 ) {
-  const { COOLIFY_URL, COOLIFY_TOKEN, COOLIFY_APPLICATION_UUID, GITHUB_SHA } =
-    env;
+  const { GITHUB_TOKEN, GITHUB_SHA, GITHUB_RUN_ID, GITHUB_REPOSITORY } = env;
   if (
-    !COOLIFY_URL ||
-    !COOLIFY_TOKEN ||
-    !COOLIFY_APPLICATION_UUID ||
-    !/^[a-f0-9]{40}$/.test(GITHUB_SHA ?? "")
+    !GITHUB_TOKEN ||
+    !/^[a-f0-9]{40}$/.test(GITHUB_SHA ?? "") ||
+    !/^\d+$/.test(GITHUB_RUN_ID ?? "") ||
+    GITHUB_REPOSITORY !== repository
   )
     throw new Error(
-      "Deployment requires COOLIFY_URL, COOLIFY_TOKEN, COOLIFY_APPLICATION_UUID, and a tested GITHUB_SHA.",
+      "Production promotion requires this repository's token, tested GITHUB_SHA, and GITHUB_RUN_ID.",
     );
-  const base = new URL(COOLIFY_URL);
-  if (
-    base.protocol !== "https:" ||
-    base.username ||
-    base.password ||
-    base.search ||
-    base.hash
-  )
-    throw new Error("COOLIFY_URL must be a credential-free HTTPS URL.");
-  if (!/^[A-Za-z0-9_-]+$/.test(COOLIFY_APPLICATION_UUID))
-    throw new Error("Invalid Coolify application UUID.");
-  const api = async (resource, body) => {
+  const api = async (path) => {
     const response = await fetchImplementation(
-      new URL(`/api/v1/${resource}`, base),
+      `https://api.github.com/repos/${repository}/${path}`,
       {
-        method: body === undefined ? "GET" : "PATCH",
         headers: {
-          authorization: `Bearer ${COOLIFY_TOKEN}`,
-          accept: "application/json",
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
+          authorization: `Bearer ${GITHUB_TOKEN}`,
+          accept: "application/vnd.github+json",
+          "x-github-api-version": "2022-11-28",
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         redirect: "error",
         signal: globalThis.AbortSignal.timeout(30_000),
       },
     );
     if (!response.ok)
-      throw new Error(`Coolify API request failed (${response.status}).`);
+      throw new Error(
+        `GitHub promotion preflight failed (${response.status}).`,
+      );
     return response.json();
   };
-  const applicationPath = `applications/${COOLIFY_APPLICATION_UUID}`;
-  const application = await api(applicationPath);
+  const run = await api(`actions/runs/${GITHUB_RUN_ID}`);
   if (
-    application.git_repository !== "ippo-michi/AnimeTVCut" ||
-    application.git_branch !== "master"
-  )
-    throw new Error("Refusing to deploy an unexpected repository or branch.");
-  // Pin the successful revision before queuing: HEAD may have advanced during CI.
-  await api(applicationPath, {
-    is_auto_deploy_enabled: false,
-    git_commit_sha: GITHUB_SHA,
-  });
-  const pinned = await api(applicationPath);
-  if (
-    pinned.git_commit_sha !== GITHUB_SHA ||
-    pinned.settings?.is_auto_deploy_enabled !== false
+    run.head_sha !== GITHUB_SHA ||
+    run.head_branch !== "master" ||
+    run.event !== "push" ||
+    run.path !== ".github/workflows/ci.yml" ||
+    run.repository?.full_name !== repository
   )
     throw new Error(
-      "Coolify did not confirm the tested revision and disabled push deployments.",
+      "Refusing to promote a revision outside the trusted master CI workflow.",
     );
-  const queued = await api(`deploy?uuid=${COOLIFY_APPLICATION_UUID}`);
-  const deploymentId = queued.deployments?.find(
-    (item) => item.resource_uuid === COOLIFY_APPLICATION_UUID,
-  )?.deployment_uuid;
-  if (!/^[A-Za-z0-9_-]+$/.test(deploymentId ?? ""))
-    throw new Error("Coolify did not queue an identifiable deployment.");
-  const deadline = Date.now() + 25 * 60_000;
-  while (Date.now() < deadline) {
-    const deployment = await api(`deployments/${deploymentId}`);
-    if (["failed", "cancelled", "canceled"].includes(deployment.status))
-      throw new Error(`Deployment ${deploymentId} ${deployment.status}.`);
-    if (deployment.status === "finished") {
-      if (deployment.commit !== GITHUB_SHA)
-        throw new Error(
-          "The deployed revision differs from the revision that passed CI.",
-        );
-      return { deploymentId, commit: GITHUB_SHA };
-    }
-    await sleep(5_000);
+  const jobs = await api(`actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100`);
+  for (const name of ["checks", "playback"]) {
+    const matches = jobs.jobs?.filter((job) => job.name === name) ?? [];
+    if (
+      matches.length !== 1 ||
+      matches[0].status !== "completed" ||
+      matches[0].conclusion !== "success"
+    )
+      throw new Error(
+        `Production promotion requires a successful ${name} job.`,
+      );
   }
-  throw new Error(
-    `Deployment ${deploymentId} did not finish before the deadline.`,
-  );
+  // A normal git push enforces both fast-forward history and branch protection.
+  // The repository-scoped deploy key also supports commits that change workflows.
+  await push(GITHUB_SHA);
+  const ref = await api("git/ref/heads/production");
+  if (ref.object?.sha !== GITHUB_SHA)
+    throw new Error(
+      "The production branch does not match the tested revision.",
+    );
+  return { commit: GITHUB_SHA, branch: "production" };
 }
 
 if (
@@ -101,11 +83,11 @@ if (
   try {
     const result = await deploy();
     process.stdout.write(
-      `Deployed tested commit ${result.commit} (${result.deploymentId}).\n`,
+      `Promoted tested commit ${result.commit} to ${result.branch}; Coolify receives the deployment webhook.\n`,
     );
   } catch (error) {
     process.stderr.write(
-      `${error instanceof Error ? error.message : "Deployment failed."}\n`,
+      `${error instanceof Error ? error.message : "Production promotion failed."}\n`,
     );
     process.exitCode = 1;
   }

@@ -65,10 +65,11 @@ silently receiving an incompatible repair.
 ## Coolify deployment
 
 The production addon at `https://atc.kanji.moe` is a Coolify Docker Compose application
-connected to `ippo-michi/AnimeTVCut`, branch `master`, using `/compose.yaml`.
-GitHub Actions deploys only after its checks and playback jobs succeed, pinning the
-exact tested commit in Coolify. Coolify's independent deploy-on-push setting must stay
-disabled. Keep production changes in GitHub so the next deployment retains them.
+connected to `ippo-michi/AnimeTVCut`, branch `production`, using `/compose.yaml`.
+GitHub Actions promotes the exact tested `master` commit to `production` only after
+its checks and playback jobs succeed. Coolify deploys that branch through its existing
+GitHub webhook. Keep Coolify pointed at `production`, with deploy-on-push enabled
+only for that branch; never point production deployment directly at `master`.
 The checked-in Compose routing uses `atc.kanji.moe` and the existing external `proxy`
 network; adjust those settings when deploying to another host.
 
@@ -87,14 +88,18 @@ reopened once. Outside Compose, set `CUT_SESSION_DIRECTORY` to enable persistenc
 
 GitHub Actions runs lint, TypeScript compilation, regression tests, client skip-control
 checks, and real MediaFlow/Stremio playback tests on pushes to `master` and pull
-requests. The production job requires repository secrets `COOLIFY_URL`,
-`COOLIFY_APPLICATION_UUID`, and `COOLIFY_TOKEN`. Enable Coolify API access and use a
-team token with `read`, `write`, and `deploy` permissions: writing is needed to pin
-the tested SHA before queuing a deployment. Rotate the token before its expiry.
+requests. The production job uses the repository-scoped write deploy key stored in
+`PRODUCTION_DEPLOY_KEY`; its GitHub token only reads the current workflow and checks.
+The protected `production` branch requires successful `checks` and `playback` checks,
+including for administrators, and forbids force pushes. The promotion script verifies
+the workflow, exact commit, both job results, and the resulting branch revision.
 Pull requests never receive deployment credentials or trigger production deployment.
-The job waits for deployment completion, verifies the deployed commit, and checks
-public health and the addon manifest. Failed tests cannot start this job; a newer
-push does not cancel an ongoing production deployment.
+Coolify's admin API and the addon remain accessible through the host's private DNS;
+the public Cloudflare tunnel exposes only the signed GitHub webhook. CI therefore
+reports successful promotion, while Coolify deployment completion and live health,
+manifest, search, and playback are verified from the deployment host. A newer push
+does not cancel an ongoing release. No public Coolify API or self-hosted Actions
+runner is required.
 The integration suites use a separate `2.4.9-atc23-test` image tag so local tests
 cannot replace the production MediaFlow image tag.
 

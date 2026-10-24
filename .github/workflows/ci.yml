@@ -61,18 +61,17 @@ jobs:
       group: production-deployment
       cancel-in-progress: false
     environment: production
+    permissions:
+      contents: read
+      actions: read
     steps:
       - uses: actions/checkout@v4
+        with:
+          ssh-key: ${{ secrets.PRODUCTION_DEPLOY_KEY }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Deploy the revision that passed CI
+      - name: Promote the revision that passed CI to production
         run: node scripts/deploy.mjs
         env:
-          COOLIFY_URL: ${{ secrets.COOLIFY_URL }}
-          COOLIFY_TOKEN: ${{ secrets.COOLIFY_TOKEN }}
-          COOLIFY_APPLICATION_UUID: ${{ secrets.COOLIFY_APPLICATION_UUID }}
-      - name: Verify public health and addon manifest
-        run: |
-          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 https://atc.kanji.moe/health | jq -e '.status == "ok"'
-          curl --fail --silent --show-error --retry 6 --retry-all-errors --retry-delay 5 https://atc.kanji.moe/v2/manifest.json | jq -e '.id == "org.animetvcut.addon.v2"'
+          GITHUB_TOKEN: ${{ github.token }}
