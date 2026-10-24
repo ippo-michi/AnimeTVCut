@@ -7,5 +7,6 @@ Run the relevant checks, commit and push the tested changes, and wait for GitHub
 Actions to finish its checks, playback tests, and promotion to the protected
 `production` branch. Coolify deploys only that branch through its GitHub webhook;
 keep it separate from `master`, and wait for the Coolify deployment to finish.
+Let Coolify manage domain routing and networks; do not add host-specific Traefik labels.
 Verify the live health endpoint and addon manifest, then report the deployed commit
 and public test URL. Follow deployment failures through to resolution.

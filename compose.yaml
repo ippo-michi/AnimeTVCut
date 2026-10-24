@@ -81,23 +81,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    labels:
-      - traefik.enable=true
-      - traefik.docker.network=proxy
-      - traefik.http.routers.atc.entrypoints=http
-      - traefik.http.routers.atc.rule=Host(`atc.kanji.moe`)
-      - traefik.http.middlewares.atc-https-redirect.redirectscheme.scheme=https
-      - traefik.http.routers.atc.middlewares=atc-https-redirect
-      - traefik.http.routers.atc-secure.entrypoints=https
-      - traefik.http.routers.atc-secure.rule=Host(`atc.kanji.moe`)
-      - traefik.http.routers.atc-secure.tls=true
-      - traefik.http.routers.atc-secure.tls.certresolver=cloudflare
-      - traefik.http.routers.atc-secure.middlewares=default-security-headers@file
-      - traefik.http.routers.atc-secure.service=atc
-      - traefik.http.services.atc.loadbalancer.server.port=3000
-    networks:
-      - proxy
-      - atc
 
   mediaflow:
     image: animetvcut-mediaflow:2.4.9-atc23
@@ -128,8 +111,6 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
-    networks:
-      - atc
 
   mediaflow-cache:
     image: redis:7.4.2-alpine
@@ -151,13 +132,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    networks:
-      - atc
-
-networks:
-  proxy:
-    external: true
-  atc:
 
 volumes:
   cut-sessions:

@@ -70,8 +70,9 @@ GitHub Actions promotes the exact tested `master` commit to `production` only af
 its checks and playback jobs succeed. Coolify deploys that branch through its existing
 GitHub webhook. Keep Coolify pointed at `production`, with deploy-on-push enabled
 only for that branch; never point production deployment directly at `master`.
-The checked-in Compose routing uses `atc.kanji.moe` and the existing external `proxy`
-network; adjust those settings when deploying to another host.
+Coolify owns domain routing, TLS, and the application network. Compose deliberately
+omits host-specific Traefik labels and external proxy networks; stale network labels
+can send healthy applications to a network the Coolify proxy cannot reach.
 
 Configure secret upstream/metadata manifest URLs, `MEDIAFLOW_API_PASSWORD`, and
 `PUBLIC_BASE_URL=https://atc.kanji.moe` in Coolify's environment settings. Local `.env`
