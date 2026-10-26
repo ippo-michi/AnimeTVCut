@@ -130,7 +130,7 @@ describe("public Stremio addon", () => {
     expect(manifestResponse.headers["access-control-allow-origin"]).toBe("*");
     expect(manifestResponse.json()).toMatchObject({
       id: "org.animetvcut.addon",
-      version: "0.2.1",
+      version: "0.3.0",
       types: ["series"],
       catalogs: [
         {
@@ -162,7 +162,7 @@ describe("public Stremio addon", () => {
     expect(response.headers["cache-control"]).toBe("no-store, max-age=0");
     expect(response.json()).toMatchObject({
       id: "org.animetvcut.addon.v2",
-      version: "0.2.1",
+      version: "0.3.0",
       catalogs: [
         {
           id: "animetvcut-v2",
@@ -857,7 +857,7 @@ describe("public TV Cut stream authorization and caching", () => {
     );
     await expect(
       service.publicStream(createVirtualVideoId(sourceId, 1, 2, 4)),
-    ).rejects.toThrow(/current finalized grouping plan/);
+    ).rejects.toThrow(/current plan/);
   });
 });
 

@@ -1,3 +1,7 @@
+import {
+  CutUnavailableError,
+  explainCutFailure,
+} from "../services/cut-availability.js";
 import type { FastifyPluginAsync, FastifyReply, FastifyRequest } from "fastify";
 
 import {
@@ -21,7 +25,7 @@ import {
 } from "../services/stremio-upstream/errors.js";
 import type { TvCutCatalogService } from "../services/tv-cut-catalog-service.js";
 
-export const ANIMETVCUT_VERSION = "0.2.1";
+export const ANIMETVCUT_VERSION = "0.3.0";
 
 const LEGACY_ADDON_ID = "org.animetvcut.addon";
 const REPAIRED_ADDON_ID = "org.animetvcut.addon.v2";
@@ -135,7 +139,7 @@ function addonManifest(id: string, catalogId: string) {
         extra: [{ name: "search", isRequired: true }],
       },
     ],
-    behaviorHints: { configurable: false },
+    behaviorHints: { configurable: true },
   };
 }
 
@@ -156,6 +160,8 @@ function parseExtra(extra: string): {
 }
 
 function isResolvableStreamFailure(error: unknown): boolean {
+  if (error instanceof CutUnavailableError && error.reason === "capacity")
+    return false;
   if (error instanceof PreparedSourceError)
     return isResolvableStreamFailure(error.cause);
   return (
@@ -183,10 +189,15 @@ function infrastructureStatus(error: unknown): number {
 }
 
 export function publicStremioRoutes(
-  service: TvCutCatalogService,
+  serviceProvider:
+    TvCutCatalogService | ((request: FastifyRequest) => TvCutCatalogService),
   options?: { routeTimeoutMs?: number },
 ): FastifyPluginAsync {
   const routeTimeoutMs = options?.routeTimeoutMs ?? 30_000;
+  const getService = (request: FastifyRequest) =>
+    typeof serviceProvider === "function"
+      ? serviceProvider(request)
+      : serviceProvider;
   return async (app) => {
     // Instrument every public Stremio request so the full client sequence
     // can be reconstructed: manifest, catalog, meta, and stream requests
@@ -262,6 +273,7 @@ export function publicStremioRoutes(
 
     app.addHook("onSend", async (_request, reply, payload) => {
       void reply.header("access-control-allow-origin", "*");
+      void reply.header("access-control-expose-headers", "X-AnimeTVCut-Reason");
       void reply.header("access-control-allow-methods", "GET, OPTIONS");
       void reply.header("access-control-allow-headers", "Accept, Content-Type");
       return payload;
@@ -297,6 +309,8 @@ export function publicStremioRoutes(
       const diagnostics = requestDiagnostics(request);
       diagnostics.resourceType = "manifest";
       diagnostics.itemCount = manifest.catalogs.length;
+      if (typeof serviceProvider === "function")
+        manifest.id += `.${getService(request).profileKey}`;
       return manifest;
     });
     // A separate standards-compatible identity is intentional. Stremio may
@@ -308,6 +322,8 @@ export function publicStremioRoutes(
       const diagnostics = requestDiagnostics(request);
       diagnostics.resourceType = "manifest";
       diagnostics.itemCount = manifest.catalogs.length;
+      if (typeof serviceProvider === "function")
+        manifest.id += `.${getService(request).profileKey}`;
       return manifest;
     });
     app.get(`${REPAIRED_BASE_PATH}/manifest.json`, async (request, reply) => {
@@ -316,6 +332,8 @@ export function publicStremioRoutes(
       const diagnostics = requestDiagnostics(request);
       diagnostics.resourceType = "manifest";
       diagnostics.itemCount = manifest.catalogs.length;
+      if (typeof serviceProvider === "function")
+        manifest.id += `.${getService(request).profileKey}`;
       return manifest;
     });
 
@@ -357,6 +375,7 @@ export function publicStremioRoutes(
         diagnostics.catalogId = catalogId;
         if (extra.search !== undefined) diagnostics.search = extra.search;
         diagnostics.skip = extra.skip;
+        const service = getService(request);
         const statsBefore = service.metadataStats;
         // Diagnostic entry covering both the success and failure paths.
         // Never log credentials, authentication query parameters, cookies,
@@ -490,6 +509,7 @@ export function publicStremioRoutes(
       const diagnostics = requestDiagnostics(request);
       diagnostics.resourceType = "meta";
       diagnostics.virtualIdPrefix = virtualIdPrefix(id);
+      const service = getService(request);
       const statsBefore = service.metadataStats;
       try {
         const resultPromise = service.publicMeta(id, combinedSignal);
@@ -557,6 +577,7 @@ export function publicStremioRoutes(
       const diagnostics = requestDiagnostics(request);
       diagnostics.resourceType = "stream";
       diagnostics.virtualIdPrefix = virtualIdPrefix(id);
+      const service = getService(request);
       const statsBefore = service.metadataStats;
       const abortController = new AbortController();
       const onRequestAborted = () => abortController.abort();
@@ -599,8 +620,17 @@ export function publicStremioRoutes(
           },
           "Public stream request failed",
         );
-        if (isResolvableStreamFailure(error)) return { streams: [] };
-        return reply.code(infrastructureStatus(error)).send({ streams: [] });
+        void reply.header(
+          "x-animetvcut-reason",
+          explainCutFailure(error).reason,
+        );
+        const failure = service.failureResponse?.(
+          error,
+          id,
+          (request.params as { profile?: string }).profile,
+        ) ?? { streams: [] };
+        if (isResolvableStreamFailure(error)) return failure;
+        return reply.code(infrastructureStatus(error)).send(failure);
       } finally {
         request.raw.removeListener("aborted", onRequestAborted);
         reply.raw.removeListener("close", onResponseClosed);

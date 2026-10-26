@@ -1,3 +1,4 @@
+import type { PlaybackPreferences } from "./playback-preferences.js";
 import type {
   CutAlignmentPolicy,
   RemovedRange,
@@ -58,6 +59,7 @@ export interface UpstreamCutResponse extends DevCutResponse {
 }
 
 export interface AutomaticUpstreamCutRequest {
+  preferences?: PlaybackPreferences;
   episodes: readonly UpstreamEpisodeReference[];
   remove?: RemovedRange[];
   cutPolicy?: Partial<AutomaticCutPolicy>;
@@ -195,6 +197,7 @@ export class UpstreamCutService {
       const selection = await this.metrics.measure("source_resolution", () =>
         this.resolver!.resolve(request.episodes, {
           allowMixedSources: request.allowMixedSources ?? false,
+          preferences: request.preferences,
           excludedCandidates,
           signal: request.signal,
         }),
@@ -249,6 +252,7 @@ export class UpstreamCutService {
               () =>
                 this.resolver!.resolve(season.episodes, {
                   allowMixedSources: false,
+                  preferences: request.preferences,
                   excludedCandidates,
                   signal: request.signal,
                 }),
@@ -417,57 +421,72 @@ export class UpstreamCutService {
     const preparedByEpisode = new Map(
       prepared.map((item) => [item.source.episodeId, item]),
     );
-    let skipResolutions = await this.metrics.measure("skip_lookup", () =>
-      this.skipService!.resolve(
-        request.episodes.map((reference) => ({
-          reference,
-          durationSeconds: this.preparedDuration(preparedByEpisode, reference),
-        })),
-        request.signal,
-      ),
-    );
-    if (this.sourceChapterReader !== undefined) {
-      // Chapter timestamps describe the selected release itself. Prefer them
-      // over community timestamps, which may describe a different release.
-      const queue = new WorkQueue(this.chapterConcurrency);
-      const enriched = await this.metrics.measure("chapter_lookup", () =>
-        Promise.all(
-          skipResolutions.map((resolution) =>
-            queue.run(async (): Promise<EpisodeSkipResolution> => {
-              const source = preparedByEpisode.get(
-                resolution.episodeId,
-              )?.source;
-              const chapters =
-                source?.kind === "http_media"
-                  ? chapterSkipSegments(
-                      await this.sourceChapterReader!.read(
-                        source,
-                        request.signal,
-                      ),
-                      resolution.durationSeconds,
-                    )
-                  : [];
-              const types = new Set(chapters.map((chapter) => chapter.type));
-              return {
-                ...resolution,
-                segments: [
-                  ...resolution.segments.filter(
-                    (segment) => !types.has(segment.type),
-                  ),
-                  ...chapters,
-                ],
-                providers: [
-                  ...resolution.providers,
-                  {
-                    provider: "source-chapters",
-                    status: chapters.length > 0 ? "found" : "not_found",
-                    warnings: [],
-                  },
-                ],
-              };
-            }, request.signal),
-          ),
+    const queue = new WorkQueue(this.chapterConcurrency);
+    const [providerResolutions, sourceChapters] = await Promise.all([
+      this.metrics.measure("skip_lookup", () =>
+        this.skipService!.resolve(
+          request.episodes.map((reference) => ({
+            reference,
+            durationSeconds: this.preparedDuration(
+              preparedByEpisode,
+              reference,
+            ),
+          })),
+          request.signal,
         ),
+      ),
+      this.sourceChapterReader === undefined
+        ? Promise.resolve([])
+        : this.metrics.measure("chapter_lookup", () =>
+            Promise.all(
+              prepared.map((item) =>
+                queue.run(
+                  async () => ({
+                    episodeId: item.source.episodeId,
+                    chapters:
+                      item.source.kind === "http_media"
+                        ? chapterSkipSegments(
+                            await this.sourceChapterReader!.read(
+                              item.source,
+                              request.signal,
+                            ),
+                            item.playlist.duration,
+                          )
+                        : [],
+                  }),
+                  request.signal,
+                ),
+              ),
+            ),
+          ),
+    ]);
+    let skipResolutions = providerResolutions;
+    if (this.sourceChapterReader !== undefined) {
+      const byEpisode = new Map(
+        sourceChapters.map((item) => [item.episodeId, item.chapters]),
+      );
+      const enriched = skipResolutions.map(
+        (resolution): EpisodeSkipResolution => {
+          const chapters = byEpisode.get(resolution.episodeId) ?? [];
+          const types = new Set(chapters.map((chapter) => chapter.type));
+          return {
+            ...resolution,
+            segments: [
+              ...resolution.segments.filter(
+                (segment) => !types.has(segment.type),
+              ),
+              ...chapters,
+            ],
+            providers: [
+              ...resolution.providers,
+              {
+                provider: "source-chapters",
+                status: chapters.length > 0 ? "found" : "not_found",
+                warnings: [],
+              },
+            ],
+          };
+        },
       );
       skipResolutions = enriched;
       const missing = skipResolutions.some(
@@ -501,6 +520,7 @@ export class UpstreamCutService {
               allowMixedSources: request.allowMixedSources ?? false,
               signal: request.signal,
               chapterRequirements,
+              preferences: request.preferences,
             }),
           );
           const changed = alternative.episodes.some(

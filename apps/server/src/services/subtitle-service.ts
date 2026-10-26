@@ -1,3 +1,4 @@
+import type { EmbeddedSubtitleReader } from "./embedded-subtitles.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -38,6 +39,7 @@ export class SubtitleService {
     private readonly sessions: CutSessionStore,
     private readonly upstreamClient?: StremioUpstreamClient,
     fetcher?: SafeSubtitleFetcher,
+    private readonly embeddedReader?: EmbeddedSubtitleReader,
   ) {
     this.fetcher = fetcher ?? new SafeSubtitleFetcher(config);
   }
@@ -105,6 +107,62 @@ export class SubtitleService {
         })),
       }),
     );
+    if (
+      tracks.length === 0 &&
+      this.config.embeddedEnabled &&
+      this.embeddedReader !== undefined
+    ) {
+      const probed = await Promise.all(
+        selection.episodes.map(async (episode) => ({
+          episode,
+          tracks: await this.embeddedReader!.discover(
+            episode.mediaSource,
+            signal,
+          ),
+        })),
+      );
+      signal?.throwIfAborted();
+      for (const item of probed)
+        counts[item.episode.episodeId] =
+          (counts[item.episode.episodeId] ?? 0) + item.tracks.length;
+      const keys = new Set(probed[0]?.tracks.map((track) => track.key) ?? []);
+      for (const key of keys) {
+        const matches = probed.map((item) => ({
+          episode: item.episode,
+          tracks: item.tracks.filter((track) => track.key === key),
+        }));
+        // Ambiguous duplicate tracks and incomplete families are never guessed.
+        if (matches.some((item) => item.tracks.length !== 1)) continue;
+        const first = matches[0]!.tracks[0]!;
+        tracks.push({
+          id: `embedded-${createHash("sha256").update(key).digest("base64url").slice(0, 12)}`,
+          lang: first.lang,
+          familyMethod: "exact_id",
+          outputFormat:
+            first.format === "ass" || first.format === "ssa" ? "ass" : "webvtt",
+          state: "lazy",
+          sources: matches.map(({ episode, tracks }) => {
+            const track = tracks[0]!;
+            return {
+              episodeId: episode.episodeId,
+              subtitleId: key,
+              url: `embedded://${track.streamIndex}/${track.format}`,
+              formatHint: track.format,
+              embedded: {
+                source: {
+                  kind: "http_media",
+                  episodeId: episode.episodeId,
+                  url: episode.mediaSource.url,
+                  headers: episode.mediaSource.headers,
+                },
+                streamIndex: track.streamIndex,
+                format: track.format,
+              },
+            };
+          }),
+        });
+      }
+    }
     this.sessions.attachSubtitles(cutId, tracks, {
       discoveredPerEpisode: counts,
       issues: matched.issues,
@@ -170,6 +228,21 @@ export class SubtitleService {
             ? "text/x-ssa; charset=utf-8"
             : "text/vtt; charset=utf-8",
       };
+    }
+    // Restored subtitle descriptors share the current recovered URL when video
+    // recovery has refreshed the selected release since the snapshot was written.
+    for (const source of track.sources) {
+      if (source.embedded === undefined) continue;
+      const current = [...session.resources.values()].find(
+        (resource) => resource.sourceEpisodeId === source.episodeId,
+      )?.resolved?.source;
+      if (current?.kind === "http_media")
+        source.embedded.source = {
+          kind: "http_media",
+          episodeId: current.episodeId,
+          url: current.url,
+          headers: current.headers,
+        };
     }
     const inFlight =
       track.inFlight ?? this.startComposition(track, session.pieces);
@@ -282,10 +355,28 @@ export class SubtitleService {
         while (nextIndex < track.sources.length) {
           const episodeOrder = nextIndex++;
           const source = track.sources[episodeOrder]!;
-          let request = fetchedByUrl.get(source.url);
+          const fetchKey =
+            source.embedded === undefined
+              ? source.url
+              : JSON.stringify([
+                  source.episodeId,
+                  source.embedded.source.url,
+                  source.embedded.source.headers,
+                  source.embedded.streamIndex,
+                ]);
+          let request = fetchedByUrl.get(fetchKey);
           if (request === undefined) {
-            request = this.fetcher.fetch(source.url, signal);
-            fetchedByUrl.set(source.url, request);
+            if (source.embedded !== undefined) {
+              if (this.embeddedReader === undefined)
+                throw new Error("embedded_subtitles_unavailable");
+              const descriptor = source.embedded;
+              request = this.embeddedReader.extract(
+                descriptor.source,
+                descriptor,
+                signal,
+              );
+            } else request = this.fetcher.fetch(source.url, signal);
+            fetchedByUrl.set(fetchKey, request);
           }
           const fetched = await request;
           const format = detectSubtitleFormat(

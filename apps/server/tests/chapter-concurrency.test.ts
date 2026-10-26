@@ -9,6 +9,12 @@ describe("chapter preparation concurrency", () => {
   it("overlaps chapter reads within the configured budget and preserves episode order", async () => {
     let active = 0,
       peak = 0;
+    let releaseProvider!: () => void;
+    const providerGate = new Promise<void>((resolve) => {
+      releaseProvider = resolve;
+    });
+    let providerFinished = false;
+    let overlappedProvider = false;
     const episodes = [1, 2, 3, 4].map((number) => ({
       episodeId: `ep${number}`,
       type: "series",
@@ -16,8 +22,27 @@ describe("chapter preparation concurrency", () => {
     }));
     const app = createApp({
       chapterProbeConcurrency: 2,
+      skipProviders: [
+        {
+          name: "gated-provider",
+          priority: 1,
+          supports: () => true,
+          getSegments: async () => {
+            await providerGate;
+            providerFinished = true;
+            return {
+              provider: "gated-provider",
+              status: "not_found",
+              segments: [],
+              warnings: [],
+            };
+          },
+        },
+      ],
       sourceChapterReader: {
         read: async (source) => {
+          if (!providerFinished) overlappedProvider = true;
+          releaseProvider();
           active += 1;
           peak = Math.max(peak, active);
           await new Promise((resolve) =>
@@ -84,6 +109,7 @@ describe("chapter preparation concurrency", () => {
       });
       expect(response.statusCode).toBe(200);
       expect(peak).toBe(2);
+      expect(overlappedProvider).toBe(true);
       expect(
         response
           .json()

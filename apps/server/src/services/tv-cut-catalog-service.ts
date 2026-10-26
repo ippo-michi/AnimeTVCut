@@ -1,3 +1,9 @@
+import { OperationMetrics } from "./operation-metrics.js";
+import {
+  CutUnavailableError,
+  availabilityMessages,
+  explainCutFailure,
+} from "./cut-availability.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -35,6 +41,12 @@ import {
   type LongCutConfiguration,
 } from "./metadata-config.js";
 import type { UpstreamCutService } from "./upstream-cut-service.js";
+
+import {
+  encodePreferences,
+  cutPolicyFor,
+  type PlaybackPreferences,
+} from "./playback-preferences.js";
 
 // Some Stremio clients (Stremio Kai) resolve a catalog meta item to IMDb
 // before rendering it. AIOMetadata search items carry an IMDb-shaped id but
@@ -170,9 +182,16 @@ export class TvCutCatalogService {
     private readonly streamCacheTtlMs = 5 * 60 * 1000,
     private readonly longCuts: LongCutConfiguration = DEFAULT_LONG_CUT_CONFIGURATION,
     private readonly maxInFlightBuilds = 8,
+    private readonly preferences: PlaybackPreferences = {},
+    private readonly metrics = new OperationMetrics(),
+    private readonly canStartBuild: () => boolean = () => true,
   ) {
     if (!Number.isSafeInteger(maxInFlightBuilds) || maxInFlightBuilds < 1)
       throw new Error("Stream build limit must be a positive integer.");
+  }
+
+  public get profileKey(): string {
+    return stableHash(encodePreferences(this.preferences));
   }
 
   public get activeBuilds(): number {
@@ -329,6 +348,146 @@ export class TvCutCatalogService {
     };
   }
 
+  public failureResponse(
+    error: unknown,
+    virtualVideoId: string,
+    profile?: string,
+  ) {
+    if (this.publicBaseUrl === undefined) return { streams: [] };
+    const explanation = explainCutFailure(error);
+    const url = new URL(
+      profile === undefined ? "configure" : `p/${profile}/configure`,
+      this.publicBaseUrl,
+    );
+    url.hash = new URLSearchParams({ cut: virtualVideoId }).toString();
+    return {
+      streams: [
+        {
+          name: "AnimeTVCut",
+          title: `${explanation.message}\nOpen details to retry or adjust preferences.`,
+          externalUrl: url.href,
+        },
+      ],
+    };
+  }
+
+  public async previewPlan(virtualMetaId: string, signal?: AbortSignal) {
+    const { mode, sourceId } = parseLongFormVirtualMetaId(virtualMetaId);
+    this.requireModeEnabled(mode);
+    const plan = await this.planBySourceId(sourceId, signal);
+    const describe = (
+      available: boolean,
+      reason?: keyof typeof availabilityMessages,
+    ) => ({
+      available,
+      ...(available
+        ? {}
+        : {
+            reason: reason ?? "still_airing",
+            message: availabilityMessages[reason ?? "still_airing"],
+          }),
+    });
+    const cuts =
+      mode === "tv"
+        ? plan.groups
+            .filter((group) => group.season > 0)
+            .map((group) => ({
+              id: group.virtualVideoId,
+              title: `Season ${group.season} · Part ${group.part} · Episodes ${group.firstEpisode}–${group.lastEpisode}`,
+              estimatedDurationSeconds: group.estimatedDurationSeconds,
+              episodes: group.episodes.length,
+              ...describe(group.finalized),
+            }))
+        : mode === "season"
+          ? plan.seasonCuts.map((season) => ({
+              id: season.virtualVideoId,
+              title: `Season ${season.season}`,
+              estimatedDurationSeconds: season.estimatedDurationSeconds,
+              episodes: season.episodes.length,
+              ...describe(season.eligible, season.reason),
+            }))
+          : [
+              {
+                id: plan.seriesCut.virtualVideoId,
+                title: "Complete Series",
+                episodes: plan.seriesCut.episodes.length,
+                estimatedDurationSeconds:
+                  plan.seriesCut.estimatedDurationSeconds,
+                ...describe(plan.seriesCut.eligible, plan.seriesCut.reason),
+              },
+            ];
+    return { name: plan.source.name, mode, cuts };
+  }
+
+  public async previewCut(virtualVideoId: string, signal?: AbortSignal) {
+    const scope = await this.validateScope(virtualVideoId, signal);
+    const response = await this.publicStream(virtualVideoId, signal);
+    const playlistUrl = response.streams[0]?.url;
+    if (playlistUrl === undefined) throw new CutUnavailableError("unavailable");
+    const cutId = /\/media\/cut\/([^/]+)\//.exec(
+      new URL(playlistUrl).pathname,
+    )?.[1];
+    const session =
+      cutId === undefined ? undefined : this.cutService.session(cutId);
+    if (session === undefined) throw new CutUnavailableError("invalid_cut");
+    const episodeLabel = (id: string) => {
+      const episode = scope.episodes.find((episode) => episode.id === id);
+      return episode === undefined
+        ? "an included episode"
+        : `season ${episode.season}, episode ${episode.episode}`;
+    };
+    const warnings = (session.skipDiagnostics?.episodes ?? []).flatMap(
+      (episode) =>
+        (["opening", "ending"] as const).flatMap((type) =>
+          episode.segments.some(
+            (segment) =>
+              segment.type === type &&
+              segment.automaticRemoval &&
+              segment.end !== null,
+          )
+            ? []
+            : [
+                `No verified ${type} for ${episodeLabel(episode.episodeId)}; footage is retained.`,
+              ],
+        ),
+    );
+    return {
+      title: scope.title,
+      estimatedDurationSeconds: scope.estimatedDurationSeconds,
+      duration: session.duration,
+      playlistUrl,
+      episodes: scope.episodes.map(({ id, season, episode, title }) => ({
+        id,
+        season,
+        episode,
+        title,
+      })),
+      removals: session.appliedCuts.flatMap((cut) =>
+        cut.status === "applied"
+          ? [
+              {
+                episodeId: cut.episodeId,
+                type: cut.type,
+                start: cut.appliedStart,
+                end: cut.appliedEnd,
+                requestedStart: cut.requestedStart,
+                requestedEnd: cut.requestedEnd,
+              },
+            ]
+          : [],
+      ),
+      warnings: [
+        ...warnings,
+        ...session.appliedCuts
+          .filter((cut) => cut.status !== "applied")
+          .map(
+            (cut) =>
+              `No safe ${cut.type} boundary for ${episodeLabel(cut.episodeId)}; footage is retained.`,
+          ),
+      ],
+    };
+  }
+
   public async publicMeta(
     virtualMetaId: string,
     signal?: AbortSignal,
@@ -410,7 +569,28 @@ export class TvCutCatalogService {
                 },
               ]
             : [];
-    return { meta: { ...base, videos } };
+    const pendingReason =
+      coordinates.mode === "season"
+        ? plan.seasonCuts.find((cut) => !cut.eligible)?.reason
+        : coordinates.mode === "series"
+          ? plan.seriesCut.reason
+          : "still_airing";
+    return {
+      meta: {
+        ...base,
+        ...(videos.length === 0
+          ? {
+              description: [
+                base.description,
+                availabilityMessages[pendingReason ?? "invalid_cut"],
+              ]
+                .filter(Boolean)
+                .join("\n\n"),
+            }
+          : {}),
+        videos,
+      },
+    };
   }
 
   public async publicStream(
@@ -429,14 +609,19 @@ export class TvCutCatalogService {
       return cached.response;
     let build = this.streamInFlight.get(virtualVideoId);
     if (build === undefined) {
-      if (this.streamInFlight.size >= this.maxInFlightBuilds)
-        throw new Error(
-          "Stream preparation capacity is exhausted. Retry shortly.",
-        );
+      if (
+        this.streamInFlight.size >= this.maxInFlightBuilds ||
+        !this.canStartBuild()
+      )
+        throw new CutUnavailableError("capacity");
       const controller = new AbortController();
-      const promise = this.createPublicStream(
-        virtualVideoId,
-        controller.signal,
+      const mode = virtualVideoId.startsWith("atc:season:")
+        ? "season"
+        : virtualVideoId.startsWith("atc:series:")
+          ? "series"
+          : "tv";
+      const promise = this.metrics.measure(`cut_${mode}`, () =>
+        this.createPublicStream(virtualVideoId, controller.signal),
       );
       build = { controller, promise, waiters: 0 };
       this.streamInFlight.set(virtualVideoId, build);
@@ -507,6 +692,8 @@ export class TvCutCatalogService {
       scope.mode === "tv"
         ? await this.upstreamCutService.createAutomaticCut({
             episodes: references,
+            cutPolicy: cutPolicyFor(this.preferences),
+            preferences: this.preferences,
             chapterEpisodes,
             expectedEpisodeDurationSeconds:
               scope.estimatedDurationSeconds / scope.episodes.length,
@@ -522,6 +709,8 @@ export class TvCutCatalogService {
               ),
             })),
             seasonConcurrency: this.longCuts.seasonPrepareConcurrency,
+            cutPolicy: cutPolicyFor(this.preferences),
+            preferences: this.preferences,
             chapterEpisodes,
             maxMediaSegments: this.longCuts.maxMediaSegments,
             maxManifestBytes: this.longCuts.maxManifestBytes,
@@ -601,9 +790,9 @@ export class TvCutCatalogService {
             notWebReady: true,
             bingeGroup:
               scope.mode === "tv"
-                ? `animetvcut-tv-${stableHash(`${scope.sourceSeriesId}\0automatic`)}`
+                ? `animetvcut-tv-${stableHash(`${scope.sourceSeriesId}\0automatic\0${this.profileKey}`)}`
                 : `animetvcut-${scope.mode}-${stableHash(
-                    `${scope.sourceSeriesId}\0${scope.season ?? ""}\0${scope.version ?? "automatic"}`,
+                    `${scope.sourceSeriesId}\0${scope.season ?? ""}\0${scope.version ?? "automatic"}\0${this.profileKey}`,
                   )}`,
           },
         },
@@ -630,8 +819,14 @@ export class TvCutCatalogService {
           candidate.finalized && candidate.virtualVideoId === virtualVideoId,
       );
       if (group === undefined)
-        throw new InvalidVirtualStremioIdError(
-          "Virtual TV Cut is not present in the current finalized grouping plan.",
+        throw new CutUnavailableError(
+          plan.groups.some(
+            (candidate) =>
+              candidate.virtualVideoId === virtualVideoId &&
+              !candidate.finalized,
+          )
+            ? "still_airing"
+            : "invalid_cut",
         );
       return {
         mode: "tv",
@@ -656,8 +851,10 @@ export class TvCutCatalogService {
           candidate.eligible && candidate.virtualVideoId === virtualVideoId,
       );
       if (season === undefined)
-        throw new InvalidVirtualStremioIdError(
-          "Season Cut is not present in the current finalized plan.",
+        throw new CutUnavailableError(
+          plan.seasonCuts.find(
+            (candidate) => candidate.season === coordinates.season,
+          )?.reason ?? "invalid_cut",
         );
       return {
         mode: "season",
@@ -681,9 +878,7 @@ export class TvCutCatalogService {
       plan.seriesCut.virtualVideoId !== virtualVideoId ||
       plan.seriesCut.version !== coordinates.version
     )
-      throw new InvalidVirtualStremioIdError(
-        "Complete Cut is not present in the current finalized plan.",
-      );
+      throw new CutUnavailableError(plan.seriesCut.reason ?? "invalid_cut");
     return {
       mode: "series",
       sourceSeriesId: coordinates.sourceId,
@@ -778,8 +973,7 @@ export class TvCutCatalogService {
         : mode === "season"
           ? this.longCuts.exposeSeason
           : this.longCuts.exposeSeries;
-    if (!enabled)
-      throw new InvalidVirtualStremioIdError("Cut mode is disabled.");
+    if (!enabled) throw new CutUnavailableError("disabled");
   }
 
   private requireClient(): MetadataStremioClient {

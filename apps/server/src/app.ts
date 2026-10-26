@@ -1,3 +1,14 @@
+import {
+  EmbeddedSubtitleService,
+  type EmbeddedSubtitleReader,
+} from "./services/embedded-subtitles.js";
+import { operationalAlerts } from "./services/operational-alerts.js";
+import { previewRoutes } from "./routes/preview.js";
+import { configurationRoutes } from "./routes/configure.js";
+import {
+  decodePreferences,
+  encodePreferences,
+} from "./services/playback-preferences.js";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -90,6 +101,7 @@ export interface AppOptions {
   aiometadataWatchTracking?: boolean;
   watchProgressReporter?: EpisodeWatchProgressReporter;
   sourceChapterReader?: SourceChapterReader;
+  embeddedSubtitleReader?: EmbeddedSubtitleReader;
   chapterProbeConcurrency?: number;
   devApiEnabled?: boolean;
   devApiToken?: string;
@@ -118,7 +130,10 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     path.resolve(
       fileURLToPath(new URL("../../../fixtures/hls", import.meta.url)),
     );
-  const app = Fastify({ logger: options.logger ?? false });
+  const app = Fastify({
+    logger: options.logger ?? false,
+    routerOptions: { maxParamLength: 2048 },
+  });
   protectDevelopmentApi(
     app,
     options.devApiEnabled ?? process.env.NODE_ENV !== "production",
@@ -183,6 +198,11 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     subtitleConfig,
     sessions,
     upstreamClient,
+    undefined,
+    options.embeddedSubtitleReader ??
+      (upstreamClient === undefined
+        ? undefined
+        : new EmbeddedSubtitleService(subtitleConfig.maxSourceBytes)),
   );
   const sourceChapterReader =
     options.sourceChapterReader ??
@@ -235,11 +255,153 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
     options.streamCacheTtlMs,
     options.longCuts ?? DEFAULT_LONG_CUT_CONFIGURATION,
     options.maxStreamBuilds,
+    {},
+    metrics,
+    () => activeBuilds() < (options.maxStreamBuilds ?? 8),
   );
   app.addHook("preClose", () => Promise.resolve(tvCutCatalogService.close()));
+  const profileServices = new Map<string, TvCutCatalogService>();
+  const activeBuilds = (): number =>
+    tvCutCatalogService.activeBuilds +
+    [...profileServices.values()].reduce(
+      (total, service) => total + service.activeBuilds,
+      0,
+    );
+  const profileService = (profile: string): TvCutCatalogService => {
+    const preferences = decodePreferences(profile);
+    const key = encodePreferences(preferences);
+    const existing = profileServices.get(key);
+    if (existing !== undefined) {
+      profileServices.delete(key);
+      profileServices.set(key, existing);
+      return existing;
+    }
+    if (profileServices.size >= 32) {
+      const idle = [...profileServices].find(
+        ([, service]) => service.activeBuilds === 0,
+      );
+      if (idle === undefined)
+        throw new Error("Profile capacity is exhausted. Retry shortly.");
+      idle[1].close();
+      profileServices.delete(idle[0]);
+    }
+    const grouping = options.groupingConfig ?? DEFAULT_TV_CUT_GROUPING_CONFIG;
+    if ((preferences.episodesPerGroup ?? 1) > grouping.maximumEpisodes)
+      throw new Error("Group size exceeds the configured server limit.");
+    const service = new TvCutCatalogService(
+      metadataClient,
+      upstreamCutService,
+      cutService,
+      options.publicBaseUrl,
+      {
+        ...grouping,
+        ...(preferences.episodesPerGroup === undefined
+          ? {}
+          : { episodesPerGroup: preferences.episodesPerGroup }),
+      },
+      options.now,
+      options.streamCacheTtlMs,
+      options.longCuts ?? DEFAULT_LONG_CUT_CONFIGURATION,
+      options.maxStreamBuilds,
+      preferences,
+      metrics,
+      () => activeBuilds() < (options.maxStreamBuilds ?? 8),
+    );
+    profileServices.set(key, service);
+    return service;
+  };
+  app.addHook("preClose", () => {
+    for (const service of profileServices.values()) service.close();
+    return Promise.resolve();
+  });
+  const checkConnections = async () => {
+    const states = await Promise.all([
+      metadataClient
+        ?.checkHealth()
+        .then((r) => r.reachable && r.manifestValid)
+        .catch(() => false) ?? false,
+      upstreamClient
+        ?.checkHealth()
+        .then((r) => r.reachable && r.manifestValid)
+        .catch(() => false) ?? false,
+      mediaFlowClient?.isReachable().catch(() => false) ?? false,
+    ]);
+    const dependencies = Object.fromEntries(
+      ["metadata", "upstream", "mediaflow"].map((name, i) => [
+        name,
+        {
+          configured:
+            [metadataClient, upstreamClient, mediaFlowClient][i] !== undefined,
+          ready: states[i],
+        },
+      ]),
+    );
+    return { ready: states.every(Boolean), dependencies };
+  };
+  let connectionCheck: ReturnType<typeof checkConnections> | undefined;
+  let connectionCheckExpires = 0;
+  const connections = () => {
+    if (connectionCheck === undefined || Date.now() >= connectionCheckExpires) {
+      connectionCheckExpires = Date.now() + 30_000;
+      connectionCheck = checkConnections();
+    }
+    return connectionCheck;
+  };
+  void app.register(
+    configurationRoutes({
+      publicBaseUrl: options.publicBaseUrl,
+      defaults: {
+        episodesPerGroup: (
+          options.groupingConfig ?? DEFAULT_TV_CUT_GROUPING_CONFIG
+        ).episodesPerGroup,
+        maximumEpisodes: (
+          options.groupingConfig ?? DEFAULT_TV_CUT_GROUPING_CONFIG
+        ).maximumEpisodes,
+      },
+      connections,
+    }),
+  );
+  void app.register(
+    async (profileApp) => {
+      profileApp.addHook("onRequest", async (request, reply) => {
+        try {
+          profileService((request.params as { profile: string }).profile);
+        } catch {
+          return reply
+            .code(400)
+            .send({ error: "Invalid or unavailable playback profile." });
+        }
+      });
+      await profileApp.register(
+        previewRoutes((request) =>
+          profileService((request.params as { profile: string }).profile),
+        ),
+      );
+      await profileApp.register(
+        publicStremioRoutes((request) =>
+          profileService((request.params as { profile: string }).profile),
+        ),
+      );
+    },
+    { prefix: "/p/:profile" },
+  );
+
+  const alerts = () =>
+    operationalAlerts(
+      sessions.stats(),
+      metrics.snapshot(),
+      activeBuilds(),
+      options.maxStreamBuilds ?? 8,
+    );
+  let previousAlerts = new Set<string>();
   const cleanup = setInterval(() => {
     sessions.cleanup();
     cleanupCaches();
+    const current = alerts();
+    for (const alert of current)
+      if (!previousAlerts.has(alert.code))
+        app.log.warn(alert, "Operational alert");
+    previousAlerts = new Set(current.map((alert) => alert.code));
   }, cleanupIntervalMs);
   cleanup.unref();
   app.addHook("preClose", () => Promise.resolve(clearInterval(cleanup)));
@@ -248,11 +410,21 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
       memory: process.memoryUsage(),
       sessions: sessions.stats(),
       caches: cacheStats(),
-      activeBuilds: tvCutCatalogService.activeBuilds,
+      activeBuilds: activeBuilds(),
       preparation: metrics.snapshot(),
     }),
   );
 
+  app.get("/api/v1/dev/readiness", async (_request, reply) => {
+    const result = await connections();
+    return reply
+      .code(result.ready ? 200 : 503)
+      .header("cache-control", "no-store")
+      .send(result);
+  });
+  app.get("/api/v1/dev/alerts", async (_request, reply) =>
+    reply.header("cache-control", "no-store").send({ alerts: alerts() }),
+  );
   void app.register(healthRoutes);
   void app.register(mediaFlowHealthRoutes(mediaFlowClient));
   void app.register(upstreamHealthRoutes(upstreamClient));
@@ -261,12 +433,14 @@ export function createApp(options: AppOptions = {}): FastifyInstance {
   void app.register(upstreamRoutes(upstreamCutService));
   void app.register(metadataRoutes(metadataClient, tvCutCatalogService));
   void app.register(publicStremioRoutes(tvCutCatalogService));
+  void app.register(previewRoutes(() => tvCutCatalogService));
   void app.register(
     mediaRoutes(
       sessions,
       subtitleService,
       options.mediaPrefetchResources ?? 0,
       watchProgressTracker,
+      metrics,
     ),
   );
 

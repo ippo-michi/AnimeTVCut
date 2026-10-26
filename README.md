@@ -4,6 +4,38 @@ Phase 8 proof of concept for seekable virtual TV, Season, and Complete Series Cu
 including timeline-mapped external text subtitles and optional output-timeline skip
 controls for Stremio Enhanced and Stremio-Kai.
 
+## Configuration and cut previews
+
+Open `/configure` on the addon server to install the default addon, check metadata,
+stream-addon and MediaFlow connections, or create a personal install link. Existing
+`/v2/manifest.json` installs and all environment settings remain supported. The page
+never edits `.env`, Coolify settings, credentials, or the server's safety limits.
+
+Personal links use `/p/<profile>/v2/manifest.json`. The profile contains only validated
+playback preferences: episodes per TV Cut, opening/ending/recap/preview policy, source
+language preference, maximum labeled source resolution, and startup/quality priority.
+Omitted choices inherit the current server defaults. Source language is a release
+ranking preference; all source audio tracks remain available for selection in the
+player. Unlabeled sources remain eligible under a resolution cap. Higher-quality
+sources may need video transcoding. Profiles cannot increase the configured episode,
+session, or global concurrent-build limits, or enable disabled cut modes.
+
+The same page searches the configured metadata addon and shows available and pending
+cuts. Metadata-only plans explain airing status, missing release dates, episode gaps,
+and safety limits without preparing media. Select a cut to prepare a preview with
+included episodes, the actual retained duration, verified applied removals, and missing
+skip coverage. Preparing a preview uses the same shared cut session and cache as
+playback; it does not download video segments or advance watch progress.
+
+Public APIs used by the page are `GET /api/v1/configuration`,
+`POST /api/v1/configuration/profile`, `GET /api/v1/configuration/connections`, and
+`GET /api/v1/preview/{plan|cut}/<virtual-id>`. Preview APIs also support the `/p/<profile>`
+prefix. Failed preparations return a safe reason and message without source URLs.
+Failed Stremio stream responses offer a standard `externalUrl` entry with the reason
+and a link to preview details and retry; they also include an exposed
+`X-AnimeTVCut-Reason` header. Empty metadata detail pages explain
+why their cut is pending. Connection checks are coalesced and cached for 30 seconds.
+
 ## Development
 
 Requires Node.js 22+, pnpm, FFmpeg, and FFprobe.
@@ -119,7 +151,25 @@ set `DEV_API_ENABLED=true` and a nonempty `DEV_API_TOKEN`, then send
 at startup. Public Stremio, playback, and `/health` routes do not need this token.
 `GET /api/v1/dev/diagnostics` reports process memory, session capacity and persistence
 failures, aggregate cache counters, active builds, and preparation-stage timings. It
-does not return cache keys, source URLs, headers, or credentials. Stage durations are
+does not return cache keys, source URLs, headers, or credentials. Latency p50/p95/p99 values use the latest 256 samples per stage; `cut_tv`,
+`cut_season`, and `cut_series` measure full uncached preparation, while `playback`
+measures media requests. Lifetime counts and failure totals remain available.
+`GET /api/v1/dev/readiness` checks dependencies and returns 503 until all are ready.
+`GET /api/v1/dev/alerts` reports capacity pressure, persistence failures, and recent
+preparation/playback failures; new alerts are also logged by the periodic sweep.
+Both endpoints use the existing `DEV_API_ENABLED` and `DEV_API_TOKEN` protection.
+`/health` remains a lightweight liveness check.
+
+Benchmark all three modes with:
+
+```bash
+node scripts/benchmark-startup.mjs https://your-addon.example/ '<tv-video-id>' '<season-video-id>' '<series-video-id>'
+```
+
+The benchmark reports first-request preparation and warm p50/p95 per mode, without
+logging private source URLs. Use fresh cut IDs or a fresh isolated instance for cold
+measurements; shared upstream caches may already be warm. Provider lookup and release
+chapter probes run concurrently after playlist preparation. Stage durations are
 also logged for resolution, playlist preparation, skip lookup, chapters, and subtitles.
 
 Sessions default to a maximum of 128 and an estimated 256 MiB memory budget, controlled
@@ -175,8 +225,15 @@ Remote fetches have scheme, credential, DNS/SSRF, redirect, timeout, and byte li
 Private fixture or self-hosted origins require an explicit `SUBTITLE_ALLOWED_ORIGINS`
 entry; private networks are rejected by default.
 
-Phase 6 does not extract embedded MKV subtitles, PGS/VobSub, image subtitles, or fonts
-attached only inside an MKV. WebVTT STYLE/REGION blocks are omitted while cue content
+When no complete external subtitle family exists, AnimeTVCut probes the selected
+release for embedded text tracks. SRT, WebVTT, MOV_TEXT, and text tracks compose to
+WebVTT; ASS/SSA preserve styles through the existing ASS composer. Track families must
+match language, format, title and forced/hearing-impaired role across every episode;
+ambiguous or incomplete families are omitted. Extraction stays lazy until a subtitle
+URL is requested, uses at most two FFmpeg workers, has a 60-second timeout and the
+existing source-byte limit, and survives session restoration. Probe failures leave
+video playback available. Set `SUBTITLE_EMBEDDED_ENABLED=false` to disable this fallback.
+PGS/VobSub, image subtitles, and fonts attached only inside an MKV are not extracted. WebVTT STYLE/REGION blocks are omitted while cue content
 and compatible cue settings are retained. SSA is normalized into the common ASS model.
 
 ## Automatic skip providers

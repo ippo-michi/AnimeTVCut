@@ -1,5 +1,6 @@
 export interface SubtitleConfigInput {
   enabled?: boolean;
+  embeddedEnabled?: boolean;
   requestTimeoutMs?: number;
   maxSourceBytes?: number;
   maxGeneratedBytes?: number;
@@ -10,6 +11,7 @@ export interface SubtitleConfigInput {
 }
 export interface SubtitleConfig {
   enabled: boolean;
+  embeddedEnabled: boolean;
   requestTimeoutMs: number;
   maxSourceBytes: number;
   maxGeneratedBytes: number;
@@ -39,6 +41,7 @@ export function createSubtitleConfig(
   }
   return {
     enabled: input.enabled ?? true,
+    embeddedEnabled: input.embeddedEnabled ?? true,
     requestTimeoutMs: integer(
       input.requestTimeoutMs ?? 10_000,
       "request timeout",
@@ -71,6 +74,7 @@ export function subtitleConfigFromEnv(
     env[name] === undefined ? fallback : Number(env[name]);
   return {
     enabled: env.SUBTITLES_ENABLED?.toLowerCase() !== "false",
+    embeddedEnabled: env.SUBTITLE_EMBEDDED_ENABLED?.toLowerCase() !== "false",
     requestTimeoutMs: numberValue("SUBTITLE_REQUEST_TIMEOUT_MS", 10_000),
     maxSourceBytes: numberValue("SUBTITLE_MAX_SOURCE_BYTES", 5_242_880),
     allowPrivateNetworks:

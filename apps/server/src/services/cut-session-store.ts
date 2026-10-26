@@ -15,6 +15,7 @@ import type {
 import type { HlsResourceKind } from "@animetvcut/hls";
 
 import type {
+  HttpMediaSource,
   HlsResolvedResource,
   LazyMediaResource,
 } from "./hls-source-loader.js";
@@ -41,6 +42,11 @@ export interface SessionSubtitleSource {
   subtitleId: string;
   url: string;
   formatHint?: SubtitleSourceFormat;
+  embedded?: {
+    source: HttpMediaSource;
+    streamIndex: number;
+    format: SubtitleSourceFormat;
+  };
 }
 export interface SessionSubtitleTrack {
   id: string;
@@ -154,7 +160,13 @@ function estimatedBytes(session: CutSession): number {
         size +
         (track.cached?.byteLength ?? 0) +
         track.sources.reduce(
-          (size, source) => size + source.url.length * 2 + 256,
+          (size, source) =>
+            size +
+            source.url.length * 2 +
+            (source.embedded === undefined
+              ? 0
+              : JSON.stringify(source.embedded).length * 2) +
+            256,
           0,
         ),
       0,

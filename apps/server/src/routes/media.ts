@@ -1,3 +1,4 @@
+import type { OperationMetrics } from "../services/operation-metrics.js";
 import type { FastifyPluginAsync } from "fastify";
 
 import type { CutSessionStore } from "../services/cut-session-store.js";
@@ -68,6 +69,7 @@ export function mediaRoutes(
   subtitles?: SubtitleService,
   prefetchResourceCount = 0,
   watchProgress?: CutWatchProgressTracker,
+  metrics?: OperationMetrics,
 ): FastifyPluginAsync {
   if (
     !Number.isSafeInteger(prefetchResourceCount) ||
@@ -77,6 +79,18 @@ export function mediaRoutes(
     throw new Error("Media prefetch resource count must be between 0 and 8.");
   }
   return async (app) => {
+    const streamErrors = new WeakSet<object>();
+    app.addHook("onResponse", async (request, reply) => {
+      if (
+        request.routeOptions.url === "/media/cut/:cutId/segment/:resourceId" &&
+        !streamErrors.has(request)
+      )
+        metrics?.record(
+          "playback",
+          Math.round(reply.elapsedTime),
+          reply.statusCode >= 500,
+        );
+    });
     const prefetcher = new MediaPrefetcher(prefetchResourceCount);
     app.addHook("preClose", async () => prefetcher.close());
     app.addHook("onRequest", async (request, reply) => {
@@ -138,6 +152,10 @@ export function mediaRoutes(
         try {
           await prefetcher.wait(resource, controller.signal);
           const opened = await resource.open(range, controller.signal);
+          opened.stream.once("error", () => {
+            streamErrors.add(request);
+            metrics?.record("playback", Math.round(reply.elapsedTime), true);
+          });
           sessions.touch(request.params.cutId);
           prefetcher.after(session, resource);
           if (

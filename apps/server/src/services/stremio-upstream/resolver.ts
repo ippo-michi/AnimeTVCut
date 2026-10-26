@@ -1,3 +1,4 @@
+import type { PlaybackPreferences } from "../playback-preferences.js";
 import { selectCandidateFamily } from "./family-selection.js";
 import {
   chapterSkipSegments,
@@ -102,6 +103,7 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
   public async resolve(
     episodes: readonly UpstreamEpisodeReference[],
     options: {
+      preferences?: PlaybackPreferences;
       allowMixedSources?: boolean;
       signal?: AbortSignal;
       excludedFamilies?: ReadonlySet<string>;
@@ -234,6 +236,7 @@ export class StremioEpisodeSourceResolver implements EpisodeSourceResolver {
       }
       try {
         return selectCandidateFamily(readySets, {
+          preferences: options.preferences,
           allowMixedSources: options.allowMixedSources ?? false,
           preferMediaFlowCompatible: true,
           excludedFamilies: options.excludedFamilies,

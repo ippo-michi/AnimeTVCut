@@ -27,7 +27,8 @@
     "test:introdb:live": "vitest run --config vitest.introdb-live.config.ts",
     "test:aniskip:live": "vitest run --config vitest.aniskip-live.config.ts",
     "test:aiometadata:live": "vitest run --config vitest.metadata-live.config.ts",
-    "test:cinemeta:live": "vitest run --config vitest.metadata-live.config.ts"
+    "test:cinemeta:live": "vitest run --config vitest.metadata-live.config.ts",
+    "benchmark:startup": "node scripts/benchmark-startup.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",

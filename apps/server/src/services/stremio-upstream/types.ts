@@ -1,3 +1,4 @@
+import type { PlaybackPreferences } from "../playback-preferences.js";
 import type { HttpMediaSource } from "../hls-source-loader.js";
 import type { ExplicitSkipIdentity } from "@animetvcut/skip-providers";
 
@@ -126,6 +127,7 @@ export interface EpisodeSourceResolver {
   resolve(
     episodes: readonly UpstreamEpisodeReference[],
     options?: {
+      preferences?: PlaybackPreferences;
       allowMixedSources?: boolean;
       signal?: AbortSignal;
       excludedFamilies?: ReadonlySet<string>;

@@ -1,3 +1,4 @@
+import type { PlaybackPreferences } from "../playback-preferences.js";
 import {
   NoConsistentStreamFamilyError,
   NoUsableStreamsError,
@@ -124,18 +125,37 @@ function candidateExclusionKey(
 function usableCandidates(
   set: EpisodeCandidateSet,
   excludedCandidates: ReadonlySet<string> = new Set(),
+  preferences: PlaybackPreferences = {},
 ): UrlStreamCandidate[] {
   return set.candidates
     .filter(
       (candidate): candidate is UrlStreamCandidate =>
         candidate.kind === "url" &&
         filenameMatchesEpisode(set, candidate.filename) &&
+        (preferences.maxResolution === undefined ||
+          preferences.maxResolution === "unlimited" ||
+          sourceResolution(candidate) === undefined ||
+          sourceResolution(candidate)! <= Number(preferences.maxResolution)) &&
         !excludedCandidates.has(candidateExclusionKey(set, candidate)),
     )
     .sort((left, right) => left.rank - right.rank);
 }
 
+export function sourceResolution(
+  candidate: UrlStreamCandidate,
+): number | undefined {
+  const text = `${candidate.name ?? ""} ${candidate.filename ?? ""}`;
+  const match = /\b(4320|2160|1440|1080|720|576|480)p\b/i.exec(text);
+  return match?.[1] === undefined
+    ? /\b4k\b/i.test(text)
+      ? 2160
+      : undefined
+    : Number(match[1]);
+}
+
 interface NormalizationScore {
+  languagePreference: number;
+  qualityPreference: number;
   implausiblySmall: number;
   codec: number;
   audio: number;
@@ -147,7 +167,10 @@ interface NormalizationScore {
   rank: number;
 }
 
-function normalizationScore(candidate: UrlStreamCandidate): NormalizationScore {
+function normalizationScore(
+  candidate: UrlStreamCandidate,
+  preferences: PlaybackPreferences = {},
+): NormalizationScore {
   const text = `${candidate.name ?? ""} ${candidate.filename ?? ""}`;
   const compatible = /(?:\bAVC\b|\bH[ ._-]?264\b|\bx264\b)/i.test(text);
   const expensive =
@@ -175,7 +198,33 @@ function normalizationScore(candidate: UrlStreamCandidate): NormalizationScore {
     : /(?:\bBD[ ._-]?Remux\b|\bRemux\b)/i.test(text)
       ? 2
       : 1;
+  const explicitEnglish = /(?:\bENG\b|\bEnglish\b|\bDub(?:bed)?\b|🇬🇧|🇺🇸)/i.test(
+    text,
+  );
+  const languagePreference =
+    preferences.language === "english"
+      ? explicitEnglish || dualAudio
+        ? 0
+        : japanese
+          ? 2
+          : 1
+      : preferences.language === "japanese"
+        ? japanese || dualAudio
+          ? 0
+          : englishOnly
+            ? 2
+            : 1
+        : preferences.language === "dual"
+          ? dualAudio
+            ? 0
+            : 1
+          : 0;
   return {
+    languagePreference,
+    qualityPreference:
+      preferences.priority === "quality"
+        ? -(sourceResolution(candidate) ?? 0)
+        : 0,
     // Tiny two-minute samples and placeholder files are not episode sources.
     // Missing size metadata remains usable; only an explicit implausible size
     // is penalized so standards-compliant addons need not provide videoSize.
@@ -189,7 +238,12 @@ function normalizationScore(candidate: UrlStreamCandidate): NormalizationScore {
     // accidentally win the remux preference.
     codec: expensive ? 2 : compatible ? 0 : 1,
     audio: expensiveAudio ? 2 : aac ? 0 : 1,
-    englishOnly: englishOnly ? 2 : 0,
+    englishOnly:
+      preferences.language === "english" || preferences.language === "dual"
+        ? 0
+        : englishOnly
+          ? 2
+          : 0,
     // Unlabelled anime releases remain eligible: MediaFlow still selects a
     // Japanese track by Matroska language metadata when one exists.
     japaneseAudio: japanese || dualAudio ? 0 : englishOnly ? 2 : 1,
@@ -206,6 +260,8 @@ function compareScore(
 ): number {
   return (
     left.implausiblySmall - right.implausiblySmall ||
+    left.languagePreference - right.languagePreference ||
+    left.qualityPreference - right.qualityPreference ||
     left.codec - right.codec ||
     left.englishOnly - right.englishOnly ||
     // Audio-only normalization is inexpensive compared with decoding 4K
@@ -219,8 +275,11 @@ function compareScore(
   );
 }
 
-function diagnosticFor(set: EpisodeCandidateSet): EpisodeSelectionDiagnostic {
-  const usable = usableCandidates(set);
+function diagnosticFor(
+  set: EpisodeCandidateSet,
+  preferences: PlaybackPreferences = {},
+): EpisodeSelectionDiagnostic {
+  const usable = usableCandidates(set, new Set(), preferences);
   const familyKeys = new Set<string>();
   const episodeNumber = episodeNumberFromVideoId(set.reference.videoId);
   for (const candidate of usable) {
@@ -254,10 +313,11 @@ function bestByFamily(
   method: Exclude<CandidateFamilyMethod, "mixed">,
   preferMediaFlowCompatible: boolean,
   excludedCandidates: ReadonlySet<string>,
+  preferences: PlaybackPreferences,
 ): Map<string, UrlStreamCandidate> {
   const result = new Map<string, UrlStreamCandidate>();
   const episodeNumber = episodeNumberFromVideoId(set.reference.videoId);
-  const usable = usableCandidates(set, excludedCandidates);
+  const usable = usableCandidates(set, excludedCandidates, preferences);
   const filenameFamiliesByBingeGroup = new Map<string, Set<string>>();
   for (const candidate of usable) {
     if (candidate.bingeGroup === undefined || candidate.filename === undefined)
@@ -294,8 +354,8 @@ function bestByFamily(
       existing === undefined ||
       (preferMediaFlowCompatible
         ? compareScore(
-            normalizationScore(candidate),
-            normalizationScore(existing),
+            normalizationScore(candidate, preferences),
+            normalizationScore(existing, preferences),
           ) < 0
         : candidate.rank < existing.rank)
     )
@@ -310,9 +370,16 @@ function completeFamily(
   preferMediaFlowCompatible: boolean,
   excludedFamilies: ReadonlySet<string>,
   excludedCandidates: ReadonlySet<string>,
+  preferences: PlaybackPreferences,
 ): { key: string; candidates: readonly UrlStreamCandidate[] } | undefined {
   const familiesByEpisode = sets.map((set) =>
-    bestByFamily(set, method, preferMediaFlowCompatible, excludedCandidates),
+    bestByFamily(
+      set,
+      method,
+      preferMediaFlowCompatible,
+      excludedCandidates,
+      preferences,
+    ),
   );
   const first = familiesByEpisode[0];
   if (first === undefined) return undefined;
@@ -328,8 +395,12 @@ function completeFamily(
         const sum = (candidates: readonly UrlStreamCandidate[]) =>
           candidates.reduce(
             (total, candidate) => {
-              const score = normalizationScore(candidate);
+              const score = normalizationScore(candidate, preferences);
               return {
+                languagePreference:
+                  total.languagePreference + score.languagePreference,
+                qualityPreference:
+                  total.qualityPreference + score.qualityPreference,
                 implausiblySmall:
                   total.implausiblySmall + score.implausiblySmall,
                 codec: total.codec + score.codec,
@@ -343,6 +414,8 @@ function completeFamily(
               };
             },
             {
+              languagePreference: 0,
+              qualityPreference: 0,
               implausiblySmall: 0,
               codec: 0,
               audio: 0,
@@ -424,6 +497,7 @@ function selectedEpisode(
 export function selectCandidateFamily(
   sets: readonly EpisodeCandidateSet[],
   options: {
+    preferences?: PlaybackPreferences;
     allowMixedSources?: boolean;
     preferMediaFlowCompatible?: boolean;
     excludedFamilies?: ReadonlySet<string>;
@@ -433,7 +507,9 @@ export function selectCandidateFamily(
   if (sets.length === 0) {
     throw new NoConsistentStreamFamilyError([]);
   }
-  const diagnostics = sets.map(diagnosticFor);
+  const diagnostics = sets.map((set) =>
+    diagnosticFor(set, options.preferences),
+  );
   const unusable = diagnostics.find((item) => item.usableUrlCandidates === 0);
   if (unusable !== undefined) throw new NoUsableStreamsError(unusable);
   const unsupported = countUnsupported(sets);
@@ -445,6 +521,7 @@ export function selectCandidateFamily(
       options.preferMediaFlowCompatible ?? false,
       options.excludedFamilies ?? new Set(),
       options.excludedCandidates ?? new Set(),
+      options.preferences ?? {},
     );
     if (family !== undefined) {
       return {
@@ -466,7 +543,11 @@ export function selectCandidateFamily(
       episodes: sets.map((set) =>
         selectedEpisode(
           set,
-          usableCandidates(set, options.excludedCandidates)[0]!,
+          usableCandidates(
+            set,
+            options.excludedCandidates,
+            options.preferences,
+          )[0]!,
           "mixed",
           "mixed",
         ),
