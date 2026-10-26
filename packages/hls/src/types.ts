@@ -37,6 +37,8 @@ export interface HlsVodPlaylist {
   duration: number;
   segments: HlsSegment[];
   independentSegments: boolean;
+  /** Normalizer can render a retained interval across contiguous segment boundaries. */
+  exactSegmentSpans?: boolean;
 }
 
 export interface ComposedResource {

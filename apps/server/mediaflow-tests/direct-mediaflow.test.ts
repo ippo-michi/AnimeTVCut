@@ -244,6 +244,95 @@ describe("direct MediaFlow seekable source normalization", () => {
     expect(Math.abs(span - (end - start))).toBeLessThan(0.25);
   });
 
+  it.each(
+    [
+      "control-h264-aac.mkv",
+      "control-h264-flac.mkv",
+      "control-hevc-opus.mkv",
+    ].flatMap((file) => ["head", "tail"].map((edge) => ({ file, edge }))),
+  )(
+    "decodes a coalesced one-millisecond $edge fragment from $file without losing retained footage",
+    async ({ edge, file }) => {
+      const client = new MediaFlowClient({
+        baseUrl: mediaFlowUrl,
+        apiPassword: password,
+        outputContainer: "mpegts",
+      });
+      const playlist = await client.loadTranscodePlaylist({
+        kind: "http_media",
+        episodeId: "subframe",
+        url: `${originUrl}/${file}`,
+        headers: { "X-Test-Token": sourceToken },
+      });
+      const first = playlist.segments[0]!,
+        second = playlist.segments[1]!;
+      const sourceStart = edge === "head" ? second.start - 0.001 : first.start;
+      const sourceEnd = edge === "head" ? second.end : first.end + 0.001;
+      const composed = composeHlsVod(
+        "subframe",
+        [{ episodeId: "subframe", playlist }],
+        buildTimeline([
+          {
+            sourceEpisodeId: "subframe",
+            sourceStart,
+            sourceEnd,
+            kind: "content",
+          },
+        ]),
+      );
+      expect(composed.resources).toHaveLength(1);
+      expect(composed.duration).toBeCloseTo(sourceEnd - sourceStart, 6);
+      const resource = composed.resources[0]!;
+      expect(resource.sourceStart).toBeCloseTo(
+        (first.mediaStart ?? first.start) + sourceStart,
+        6,
+      );
+      expect(resource.sourceEnd! - resource.sourceStart!).toBeCloseTo(
+        composed.duration,
+        6,
+      );
+      const opened = await client.createLazyResource(resource).open();
+      const chunks: Buffer[] = [];
+      for await (const chunk of opened.stream as AsyncIterable<Uint8Array>)
+        chunks.push(Buffer.from(chunk));
+      const bytes = Buffer.concat(chunks);
+      expect(bytes.length).toBeGreaterThan(0);
+      expect(
+        Math.abs(
+          (await probeVideoPacketSpan(bytes, ".ts")) - composed.duration,
+        ),
+      ).toBeLessThan(0.15);
+      const directory = await mkdtemp(path.join(tmpdir(), "atc-subframe-"));
+      temporaryDirectories.push(directory);
+      const mediaPath = path.join(directory, "joined.ts");
+      await writeFile(mediaPath, bytes);
+      const decoded = await execFileAsync(
+        "ffmpeg",
+        [
+          "-v",
+          "error",
+          "-nostdin",
+          "-i",
+          mediaPath,
+          "-map",
+          "0:v:0",
+          "-map",
+          "0:a:0",
+          "-f",
+          "null",
+          "-",
+          "-progress",
+          "pipe:1",
+        ],
+        { timeout: 60_000 },
+      );
+      expect(decoded.stdout).toContain("progress=end");
+      expect(
+        Number([...decoded.stdout.matchAll(/^frame=(\d+)$/gm)].at(-1)?.[1]),
+      ).toBeGreaterThan(1);
+    },
+  );
+
   it.each(["aac", "pcm"])(
     "keeps copied and exact-cut MPEG-TS on one timeline with %s audio",
     async (audio) => {

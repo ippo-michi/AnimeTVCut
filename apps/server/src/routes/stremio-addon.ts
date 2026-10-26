@@ -25,7 +25,7 @@ import {
 } from "../services/stremio-upstream/errors.js";
 import type { TvCutCatalogService } from "../services/tv-cut-catalog-service.js";
 
-export const ANIMETVCUT_VERSION = "0.3.0";
+export const ANIMETVCUT_VERSION = "0.3.1";
 
 const LEGACY_ADDON_ID = "org.animetvcut.addon";
 const REPAIRED_ADDON_ID = "org.animetvcut.addon.v2";

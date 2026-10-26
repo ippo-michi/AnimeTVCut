@@ -11,6 +11,10 @@ import type {
 } from "./types.js";
 
 const EPSILON = 1e-6;
+// A retained fragment can be shorter than one video frame or audio packet.
+// Render it with contiguous footage from the same piece instead of publishing
+// an independently unrenderable HLS resource. Cut boundaries stay exact.
+const MIN_INDEPENDENT_DURATION = 0.1;
 
 export interface CompositionSource {
   episodeId: string;
@@ -25,6 +29,9 @@ interface SelectedSegment {
   /** Source time range this segment contributes to the output. */
   retainedStart: number;
   retainedEnd: number;
+  sourceStart: number;
+  sourceEnd: number;
+  pieceId: string;
 }
 
 function mapKey(map: HlsMap): string {
@@ -83,7 +90,7 @@ export function composeHlsVod(
         continue;
       }
 
-      selected.push({
+      const item: SelectedSegment = {
         sourceEpisodeId: piece.sourceEpisodeId,
         segment,
         discontinuityBefore:
@@ -92,7 +99,33 @@ export function composeHlsVod(
         outputStart: outputCursor,
         retainedStart,
         retainedEnd,
-      });
+        sourceStart:
+          (segment.mediaStart ?? segment.start) +
+          (retainedStart - segment.start),
+        sourceEnd:
+          (segment.mediaEnd ?? segment.end) - (segment.end - retainedEnd),
+        pieceId: piece.id,
+      };
+      const previous = selected.at(-1);
+      if (
+        playlist.exactSegmentSpans &&
+        item.segment.mediaFormat === "mpegts" &&
+        previous !== undefined &&
+        previous.pieceId === item.pieceId &&
+        previous.sourceEpisodeId === item.sourceEpisodeId &&
+        !item.discontinuityBefore &&
+        previous.segment.mediaFormat === item.segment.mediaFormat &&
+        previous.segment.map === undefined &&
+        item.segment.map === undefined &&
+        Math.abs(previous.sourceEnd - item.sourceStart) <= EPSILON &&
+        Math.abs(previous.retainedEnd - item.retainedStart) <= EPSILON &&
+        (previous.retainedEnd - previous.retainedStart <
+          MIN_INDEPENDENT_DURATION ||
+          retainedEnd - retainedStart < MIN_INDEPENDENT_DURATION)
+      ) {
+        previous.retainedEnd = item.retainedEnd;
+        previous.sourceEnd = item.sourceEnd;
+      } else selected.push(item);
       emittedSegmentForPiece = true;
 
       outputCursor += retainedEnd - retainedStart;
@@ -142,8 +175,8 @@ export function composeHlsVod(
 
   // Calculate target duration from retained segment durations.
   const maxRetainedDuration = Math.max(
-    ...selected.map(({ segment, retainedStart, retainedEnd }) =>
-      Math.min(segment.duration, retainedEnd - retainedStart),
+    ...selected.map(
+      ({ retainedStart, retainedEnd }) => retainedEnd - retainedStart,
     ),
   );
   const targetDuration = Math.ceil(maxRetainedDuration);
@@ -182,12 +215,8 @@ export function composeHlsVod(
       }
     }
     const segmentId = register(item.sourceEpisodeId, item.segment, "segment", {
-      sourceStart:
-        (item.segment.mediaStart ?? item.segment.start) +
-        (item.retainedStart - item.segment.start),
-      sourceEnd:
-        (item.segment.mediaEnd ?? item.segment.end) -
-        (item.segment.end - item.retainedEnd),
+      sourceStart: item.sourceStart,
+      sourceEnd: item.sourceEnd,
       outputStart: item.outputStart,
     });
     const retainedDuration = item.retainedEnd - item.retainedStart;

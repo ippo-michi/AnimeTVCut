@@ -1,6 +1,6 @@
 # MediaFlow 2.4.9 seekable-input repair
 
-AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc23` from the upstream MediaFlow Proxy
+AnimeTVCut builds `animetvcut-mediaflow:2.4.9-atc24` from the upstream MediaFlow Proxy
 `v2.4.9` image pinned by digest. The corresponding upstream source revision is
 `e88bf61385f9878ea27c887ae60a77ea3a25c6bc`.
 
@@ -73,3 +73,9 @@ cancellation terminates the bounded FFmpeg subprocess.
 The Docker build checks hashes for every patched upstream file and aborts if they differ.
 When upgrading MediaFlow, remove or rebase this patch only after the direct MP4, H.264
 MKV, HEVC MKV, HTTP Range, and AnimeTVCut playback suites pass against the new version.
+
+The atc24 repair allows exact MPEG-TS intervals to span normalized boundaries. The
+composer uses this only to combine a retained fragment below 100 ms with adjacent
+retained footage in the same continuous timeline piece. The original source interval,
+output placement, subtitle mapping and chapters remain exact. fMP4 requests retain
+the existing single-normalized-segment restriction.

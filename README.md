@@ -71,7 +71,7 @@ or another HTTP media endpoint. All such sources still pass through MediaFlow.
 
 Configure `MEDIAFLOW_URL`, `MEDIAFLOW_API_PASSWORD`, and optionally
 `MEDIAFLOW_REQUEST_TIMEOUT_MS` at application bootstrap. `compose.yaml` builds the
-project's `2.4.9-atc23` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
+project's `2.4.9-atc24` MediaFlow image from the upstream `v2.4.9` image pinned by digest;
 copy `.env.example` to `.env` and replace the example password before starting the
 stack with `docker compose up -d --build`.
 
@@ -83,7 +83,10 @@ example HEVC, AV1, and Hi10 AVC) use the compatibility video-transcode path. Eac
 segment is muxed directly onto its actual AnimeTVCut output-timeline position, so
 forward/backward seeks do not scan from the start or replay an earlier episode.
 When a cut boundary falls inside a normalized segment, that boundary segment is
-transcoded to the exact retained interval.
+transcoded to the exact retained interval. Retained MPEG-TS boundary fragments shorter
+than 100 ms are rendered together with adjacent contiguous footage from the same
+retained piece. This preserves the cut coordinates while preventing empty video/audio
+resources when chapter timestamps leave a sub-frame sliver at a segment boundary.
 
 Upstream MediaFlow `v2.4.9` constructs partial synthetic MP4/MKV containers for HLS
 segments. Those partial containers can omit required container context or retain sample
@@ -133,7 +136,7 @@ reports successful promotion, while Coolify deployment completion and live healt
 manifest, search, and playback are verified from the deployment host. A newer push
 does not cancel an ongoing release. No public Coolify API or self-hosted Actions
 runner is required.
-The integration suites use a separate `2.4.9-atc23-test` image tag so local tests
+The integration suites use a separate `2.4.9-atc24-test` image tag so local tests
 cannot replace the production MediaFlow image tag.
 
 Playback playlists, segments, subtitles, chapters, and skip metadata support browser
@@ -418,7 +421,7 @@ upstream family resolution, one MediaFlow playlist preparation, skip lookup, and
 subtitle metadata discovery per constituent episode. Subtitle source fetches are
 bounded by `SUBTITLE_COMPOSE_FETCH_CONCURRENCY` when a player selects a track.
 
-Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc23` repair:
+Run the real six-episode topology with the digest-pinned MediaFlow `2.4.9-atc24` repair:
 
 ```bash
 pnpm test:stremio

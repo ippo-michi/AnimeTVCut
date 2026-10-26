@@ -161,14 +161,18 @@ def _find_segment_containing(
     segments: list[HLSSegmentInfo],
     start_time_ms: float,
     end_time_ms: float,
+    allow_span: bool = False,
 ) -> HLSSegmentInfo | None:
-    """Find the normalized segment containing one exact retained interval."""
+    """Locate exact trim input, allowing TS spans across normalized boundaries."""
     if start_time_ms < 0 or end_time_ms <= start_time_ms:
         return None
     for seg in segments:
         if (
             start_time_ms >= seg.start_ms - 1.0
-            and end_time_ms <= seg.end_ms + 1.0
+            and start_time_ms < seg.end_ms
+            and (end_time_ms <= seg.end_ms + 1.0 or (
+                allow_span and end_time_ms <= segments[-1].end_ms + 1.0
+            ))
         ):
             return seg
     return None
@@ -410,7 +414,7 @@ replace_once(
         return PlainTextResponse("Segment boundary was not found", status_code=404)
 ''',
     '''    seg_info = (
-        _find_segment_containing(boundaries, start_time_ms, end_time_ms)
+        _find_segment_containing(boundaries, start_time_ms, end_time_ms, allow_span=True)
         if exact_trim
         else _find_segment(boundaries, start_time_ms)
     )

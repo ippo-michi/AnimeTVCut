@@ -250,6 +250,7 @@ export class MediaFlowClient {
       cursor = segment.end;
     }
     playlist.duration = cursor;
+    playlist.exactSegmentSpans = this.config.outputContainer === "mpegts";
     return playlist;
   }
 

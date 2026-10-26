@@ -46,7 +46,7 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y ffmpeg mpv
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      - run: docker build -t animetvcut-mediaflow:2.4.9-atc23-test -f docker/mediaflow/Dockerfile .
+      - run: docker build -t animetvcut-mediaflow:2.4.9-atc24-test -f docker/mediaflow/Dockerfile .
       - run: pnpm test:mediaflow
       - run: pnpm test:stremio
       - run: pnpm test:long-cuts
