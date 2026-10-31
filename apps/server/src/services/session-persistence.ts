@@ -95,12 +95,13 @@ export class SessionPersistence {
         },
       ),
       subtitles: [...subtitleTracks.values()].map(
-        ({ id, lang, familyMethod, outputFormat, sources }) => ({
+        ({ id, lang, familyMethod, outputFormat, sources, provider }) => ({
           id,
           lang,
           familyMethod,
           outputFormat,
           sources,
+          ...(provider === undefined ? {} : { provider }),
           state: "lazy",
         }),
       ),

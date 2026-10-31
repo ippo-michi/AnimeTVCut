@@ -1,4 +1,5 @@
 export interface SubtitleConfigInput {
+  jimakuApiKey?: string;
   enabled?: boolean;
   embeddedEnabled?: boolean;
   requestTimeoutMs?: number;
@@ -10,6 +11,7 @@ export interface SubtitleConfigInput {
   composeFetchConcurrency?: number;
 }
 export interface SubtitleConfig {
+  jimakuApiKey?: string;
   enabled: boolean;
   embeddedEnabled: boolean;
   requestTimeoutMs: number;
@@ -40,6 +42,9 @@ export function createSubtitleConfig(
     origins.add(url.origin);
   }
   return {
+    ...(input.jimakuApiKey?.trim()
+      ? { jimakuApiKey: input.jimakuApiKey.trim() }
+      : {}),
     enabled: input.enabled ?? true,
     embeddedEnabled: input.embeddedEnabled ?? true,
     requestTimeoutMs: integer(
@@ -73,6 +78,7 @@ export function subtitleConfigFromEnv(
   const numberValue = (name: string, fallback: number) =>
     env[name] === undefined ? fallback : Number(env[name]);
   return {
+    jimakuApiKey: env.JIMAKU_API_KEY,
     enabled: env.SUBTITLES_ENABLED?.toLowerCase() !== "false",
     embeddedEnabled: env.SUBTITLE_EMBEDDED_ENABLED?.toLowerCase() !== "false",
     requestTimeoutMs: numberValue("SUBTITLE_REQUEST_TIMEOUT_MS", 10_000),

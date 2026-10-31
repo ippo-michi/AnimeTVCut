@@ -59,6 +59,7 @@ export interface UpstreamCutResponse extends DevCutResponse {
 }
 
 export interface AutomaticUpstreamCutRequest {
+  subtitleSeries?: { title: string; malAnimeId?: number };
   preferences?: PlaybackPreferences;
   episodes: readonly UpstreamEpisodeReference[];
   remove?: RemovedRange[];
@@ -623,6 +624,12 @@ export class UpstreamCutService {
               cut.cutId,
               selection,
               request.signal,
+              request.subtitleSeries === undefined
+                ? undefined
+                : {
+                    ...request.subtitleSeries,
+                    episodes: request.chapterEpisodes ?? [],
+                  },
             ),
           );
     return {

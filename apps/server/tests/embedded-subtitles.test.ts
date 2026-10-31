@@ -204,7 +204,7 @@ describe("embedded text subtitle fallback", () => {
       ).toBe(1);
     },
   );
-  it("retains complete external families, supports opting out, and fails without leaking process URLs", async () => {
+  it("exposes embedded tracks alongside external families, supports opting out, and hides process URLs", async () => {
     const reader = new EmbeddedSubtitleService();
     const discover = vi.spyOn(reader, "discover");
     const store = new CutSessionStore();
@@ -219,14 +219,16 @@ describe("embedded text subtitle fallback", () => {
           url: `https://subtitles.test/${episode.episodeId}.srt`,
         },
       ];
-    await new SubtitleService(
+    const both = await new SubtitleService(
       createSubtitleConfig(),
       store,
       undefined,
       undefined,
       reader,
     ).discover("embedded-cut", input);
-    expect(discover).not.toHaveBeenCalled();
+    expect(both).toHaveLength(2);
+    expect(discover).toHaveBeenCalledTimes(2);
+    discover.mockClear();
     await new SubtitleService(
       createSubtitleConfig({ embeddedEnabled: false }),
       store,

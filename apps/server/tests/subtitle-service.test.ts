@@ -128,3 +128,124 @@ describe("subtitle session behavior", () => {
     expect(store.get("cut", session.expiresAt)).toBeUndefined();
   });
 });
+
+it("aligns Jimaku dialogue to the embedded reference before mapping the cut", async () => {
+  const store = new CutSessionStore();
+  store.save({
+    id: "jcut",
+    duration: 40,
+    playlist: "#EXTM3U",
+    resources: new Map(),
+    appliedCuts: [],
+    pieces: [
+      {
+        id: "p",
+        sourceEpisodeId: "e1",
+        sourceStart: 10,
+        sourceEnd: 50,
+        outputStart: 0,
+        outputEnd: 40,
+        kind: "content",
+      },
+    ],
+    subtitleTracks: new Map(),
+    subtitleDiagnostics: { discoveredPerEpisode: {}, issues: [] },
+    outputSkipSegments: [],
+    outputSkipDiagnostics: [],
+  });
+  const timestamp = (time: number) => {
+    const minutes = Math.floor(time / 60),
+      seconds = Math.floor(time % 60),
+      millis = Math.round((time % 1) * 1000);
+    return `00:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")},${String(millis).padStart(3, "0")}`;
+  };
+  const srt = (shift: number) =>
+    Array.from({ length: 30 }, (_, i) => {
+      const start = 3 + i * 3.5 + (i % 4) * 0.6 + shift;
+      return `${i + 1}\n${timestamp(start)} --> ${timestamp(start + 1.2)}\nline ${i}\n`;
+    }).join("\n");
+  const embedded = {
+    discover: async () => [
+      {
+        streamIndex: 1,
+        lang: "eng",
+        format: "srt" as const,
+        key: "eng:srt:0:0:dialogue",
+      },
+    ],
+    extract: async () => ({
+      bytes: new TextEncoder().encode(srt(0)),
+      contentType: "application/x-subrip",
+    }),
+  };
+  const fetcher = new SafeSubtitleFetcher(
+    createSubtitleConfig(),
+    async () =>
+      new Response(srt(4), {
+        headers: { "content-type": "application/x-subrip" },
+      }),
+    async () => [{ address: "8.8.8.8", family: 4 }] as never,
+  );
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) =>
+    String(input).includes("search")
+      ? Response.json([{ id: 1, name: "Example Show" }])
+      : Response.json([
+          { name: "Example Show - 01.srt", url: "https://jimaku.cc/01.srt" },
+        ]);
+  try {
+    const service = new SubtitleService(
+      createSubtitleConfig({ jimakuApiKey: "secret" }),
+      store,
+      undefined,
+      fetcher,
+      embedded,
+    );
+    const selection = {
+      familyMethod: "binge_group",
+      familyKey: "x",
+      warnings: [],
+      unsupported: {
+        torrent: 0,
+        usenet: 0,
+        archive: 0,
+        youtube: 0,
+        external: 0,
+        unsupported: 0,
+      },
+      episodes: [
+        {
+          episodeId: "e1",
+          upstreamType: "series",
+          upstreamVideoId: "e1",
+          upstreamRank: 0,
+          familyMethod: "binge_group",
+          familyKey: "x",
+          mediaSource: {
+            kind: "http_media",
+            episodeId: "e1",
+            url: "https://media.test/e.mkv",
+            headers: {},
+          },
+          subtitles: [],
+        },
+      ],
+    } as CandidateFamilySelection;
+    const tracks = await service.discover("jcut", selection, undefined, {
+      title: "Example Show",
+      episodes: [{ sourceEpisodeId: "e1", season: 1, episode: 1 }],
+    });
+    const japanese = tracks.find((track) => track.lang === "jpn")!;
+    const result = await service.compose(
+      "jcut",
+      japanese.id,
+      japanese.extension,
+    );
+    const output = new TextDecoder().decode(result!.bytes);
+    expect(output).toContain("00:00:01.200 --> 00:00:02.400");
+    expect(JSON.stringify(service.diagnostics("jcut"))).toContain("aligned:-4");
+    expect(JSON.stringify(service.diagnostics("jcut"))).not.toContain("secret");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

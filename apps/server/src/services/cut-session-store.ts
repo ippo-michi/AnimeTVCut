@@ -42,6 +42,8 @@ export interface SessionSubtitleSource {
   subtitleId: string;
   url: string;
   formatHint?: SubtitleSourceFormat;
+  syncReference?: SessionSubtitleSource;
+  syncFallback?: SessionSubtitleSource;
   embedded?: {
     source: HttpMediaSource;
     streamIndex: number;
@@ -53,6 +55,8 @@ export interface SessionSubtitleTrack {
   lang: string;
   familyMethod: SubtitleFamilyMethod;
   outputFormat: SubtitleOutputFormat;
+  provider?: "jimaku";
+  syncResults?: Record<string, string>;
   sources: readonly SessionSubtitleSource[];
   state: "lazy" | "composing" | "ready" | "failed";
   cueCount?: number;

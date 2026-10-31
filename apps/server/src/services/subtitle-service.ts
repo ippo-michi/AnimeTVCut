@@ -1,4 +1,6 @@
 import type { EmbeddedSubtitleReader } from "./embedded-subtitles.js";
+import { JimakuProvider, type JimakuSeries } from "./jimaku.js";
+import { estimateSubtitleOffset } from "./subtitle-sync.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -48,6 +50,7 @@ export class SubtitleService {
     cutId: string,
     selection: CandidateFamilySelection,
     signal?: AbortSignal,
+    jimakuSeries?: JimakuSeries,
   ): Promise<readonly PublicSubtitleTrack[]> {
     if (!this.config.enabled) return [];
     const discovered: DiscoveredSubtitle[] = [];
@@ -85,6 +88,7 @@ export class SubtitleService {
       selection.episodes.map((episode) => episode.episodeId),
       discovered,
     );
+    const issues: { lang: string; reason: string }[] = [...matched.issues];
     const tracks: SessionSubtitleTrack[] = matched.families.map(
       (family, index) => ({
         id: `sub${String(index + 1).padStart(2, "0")}-${createHash("sha256")
@@ -107,11 +111,7 @@ export class SubtitleService {
         })),
       }),
     );
-    if (
-      tracks.length === 0 &&
-      this.config.embeddedEnabled &&
-      this.embeddedReader !== undefined
-    ) {
+    if (this.config.embeddedEnabled && this.embeddedReader !== undefined) {
       const probed = await Promise.all(
         selection.episodes.map(async (episode) => ({
           episode,
@@ -163,9 +163,90 @@ export class SubtitleService {
         });
       }
     }
+    if (this.config.jimakuApiKey && jimakuSeries !== undefined) {
+      try {
+        const files = await new JimakuProvider(
+          this.config.jimakuApiKey,
+          this.config.requestTimeoutMs,
+        ).find(jimakuSeries, signal);
+        if (
+          files.length === selection.episodes.length &&
+          files.every(
+            (file, index) =>
+              file.episodeId === selection.episodes[index]?.episodeId,
+          )
+        ) {
+          const english = tracks.filter((track) =>
+            ["eng", "en", "english"].includes(track.lang.toLowerCase()),
+          );
+          const embedded = english.filter(
+            (track) =>
+              track.id.startsWith("embedded-") &&
+              track.sources.every((source) =>
+                /^(?:eng|en|english):[^:]+:0:/.test(source.subtitleId),
+              ),
+          );
+          const external = english.filter(
+            (track) => !track.id.startsWith("embedded-"),
+          );
+          const reference =
+            embedded.length === 1
+              ? embedded[0]
+              : external.length === 1
+                ? external[0]
+                : undefined;
+          const fallback =
+            embedded.length === 1 && external.length === 1
+              ? external[0]
+              : undefined;
+          tracks.push({
+            id: `jimaku-${createHash("sha256")
+              .update(files.map(({ file }) => file.url).join("\0"))
+              .digest("base64url")
+              .slice(0, 12)}`,
+            lang: "jpn",
+            familyMethod: "exact_id",
+            provider: "jimaku",
+            state: "lazy",
+            outputFormat:
+              files[0]!.file.format === "ass" || files[0]!.file.format === "ssa"
+                ? "ass"
+                : "webvtt",
+            sources: files.map(({ episodeId, file }) => ({
+              episodeId,
+              subtitleId: file.name,
+              url: file.url,
+              formatHint: file.format,
+              ...(reference?.sources.find(
+                (source) => source.episodeId === episodeId,
+              )
+                ? {
+                    syncReference: reference.sources.find(
+                      (source) => source.episodeId === episodeId,
+                    )!,
+                  }
+                : {}),
+              ...(fallback?.sources.find(
+                (source) => source.episodeId === episodeId,
+              )
+                ? {
+                    syncFallback: fallback.sources.find(
+                      (source) => source.episodeId === episodeId,
+                    )!,
+                  }
+                : {}),
+            })),
+          });
+        } else
+          issues.push({ lang: "jpn", reason: "jimaku_no_complete_family" });
+      } catch {
+        signal?.throwIfAborted();
+        issues.push({ lang: "jpn", reason: "jimaku_unavailable" });
+      }
+    }
     this.sessions.attachSubtitles(cutId, tracks, {
       discoveredPerEpisode: counts,
-      issues: matched.issues,
+      issues,
     });
     return tracks.map((track) => ({
       id: track.id,
@@ -197,6 +278,10 @@ export class SubtitleService {
         episodes: track.sources.length,
         outputFormat: track.outputFormat,
         state: track.state,
+        ...(track.provider === undefined ? {} : { provider: track.provider }),
+        ...(track.syncResults === undefined
+          ? {}
+          : { syncResults: track.syncResults }),
         ...(track.cueCount === undefined ? {} : { cueCount: track.cueCount }),
         ...(track.errorCode === undefined
           ? {}
@@ -231,7 +316,11 @@ export class SubtitleService {
     }
     // Restored subtitle descriptors share the current recovered URL when video
     // recovery has refreshed the selected release since the snapshot was written.
-    for (const source of track.sources) {
+    for (const source of track.sources.flatMap((item) => [
+      item,
+      ...(item.syncReference ? [item.syncReference] : []),
+      ...(item.syncFallback ? [item.syncFallback] : []),
+    ])) {
       if (source.embedded === undefined) continue;
       const current = [...session.resources.values()].find(
         (resource) => resource.sourceEpisodeId === source.episodeId,
@@ -402,6 +491,68 @@ export class SubtitleService {
           else {
             const ass = parseAss(text, source.episodeId, episodeOrder, format);
             results[episodeOrder] = { ass, events: ass.events };
+          }
+          if (track.provider === "jimaku") {
+            let status = "no_reference";
+            for (const reference of [
+              source.syncReference,
+              source.syncFallback,
+            ]) {
+              if (reference === undefined) continue;
+              try {
+                const referenceData = reference.embedded
+                  ? await this.embeddedReader!.extract(
+                      reference.embedded.source,
+                      reference.embedded,
+                      signal,
+                    )
+                  : await this.fetcher.fetch(reference.url, signal);
+                const referenceFormat = detectSubtitleFormat(
+                  referenceData.bytes,
+                  referenceData.contentType,
+                  reference.formatHint,
+                );
+                const referenceText = decodeSubtitleBytes(referenceData.bytes);
+                const referenceEvents =
+                  referenceFormat === "srt"
+                    ? parseSrt(referenceText, source.episodeId, episodeOrder)
+                        .events
+                    : referenceFormat === "webvtt"
+                      ? parseWebVtt(
+                          referenceText,
+                          source.episodeId,
+                          episodeOrder,
+                        ).events
+                      : referenceFormat === "ass" || referenceFormat === "ssa"
+                        ? parseAss(
+                            referenceText,
+                            source.episodeId,
+                            episodeOrder,
+                            referenceFormat,
+                          ).events
+                        : [];
+                const offset = estimateSubtitleOffset(
+                  referenceEvents,
+                  results[episodeOrder].events,
+                );
+                if (offset === undefined) status = "low_confidence";
+                else {
+                  results[episodeOrder].events = results[
+                    episodeOrder
+                  ].events.map((event) => ({
+                    ...event,
+                    start: event.start + offset,
+                    end: event.end + offset,
+                  }));
+                  status = `aligned:${offset}`;
+                  break;
+                }
+              } catch {
+                signal?.throwIfAborted();
+                status = "reference_unavailable";
+              }
+            }
+            (track.syncResults ??= {})[source.episodeId] = status;
           }
         }
       },

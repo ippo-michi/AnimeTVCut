@@ -98,6 +98,7 @@ interface CutScope {
   sourceSeriesId: string;
   episodes: readonly SourceEpisodeMeta[];
   title: string;
+  seriesTitle: string;
   estimatedDurationSeconds: number;
   malAnimeId?: number;
   kitsuAnimeId?: number;
@@ -688,6 +689,17 @@ export class TvCutCatalogService {
       episode: episode.episode,
       ...(episode.title === undefined ? {} : { title: episode.title }),
     }));
+    const subtitleMalId = this.malAnimeIdForEpisode(scope, scope.episodes[0]!);
+    const subtitleSeries = {
+      title: scope.seriesTitle,
+      ...(subtitleMalId !== undefined &&
+      scope.episodes.every(
+        (episode) =>
+          this.malAnimeIdForEpisode(scope, episode) === subtitleMalId,
+      )
+        ? { malAnimeId: subtitleMalId }
+        : {}),
+    };
     const cut =
       scope.mode === "tv"
         ? await this.upstreamCutService.createAutomaticCut({
@@ -695,6 +707,7 @@ export class TvCutCatalogService {
             cutPolicy: cutPolicyFor(this.preferences),
             preferences: this.preferences,
             chapterEpisodes,
+            subtitleSeries,
             expectedEpisodeDurationSeconds:
               scope.estimatedDurationSeconds / scope.episodes.length,
             signal,
@@ -712,6 +725,7 @@ export class TvCutCatalogService {
             cutPolicy: cutPolicyFor(this.preferences),
             preferences: this.preferences,
             chapterEpisodes,
+            subtitleSeries,
             maxMediaSegments: this.longCuts.maxMediaSegments,
             maxManifestBytes: this.longCuts.maxManifestBytes,
             sourcePrepareConcurrency: this.longCuts.sourcePrepareConcurrency,
@@ -833,6 +847,7 @@ export class TvCutCatalogService {
         sourceSeriesId: coordinates.sourceId,
         episodes: this.sourceEpisodes(plan.source, group.episodes),
         title: `TV Cut Part ${group.part} · Episodes ${group.firstEpisode}–${group.lastEpisode}`,
+        seriesTitle: plan.source.name,
         estimatedDurationSeconds: group.estimatedDurationSeconds,
         ...(plan.source.malAnimeId === undefined
           ? {}
@@ -861,6 +876,7 @@ export class TvCutCatalogService {
         sourceSeriesId: coordinates.sourceId,
         episodes: this.sourceEpisodes(plan.source, season.episodes),
         title: `Season Cut · Episodes ${coordinates.firstEpisode}–${coordinates.lastEpisode}`,
+        seriesTitle: plan.source.name,
         estimatedDurationSeconds: season.estimatedDurationSeconds,
         ...(plan.source.malAnimeId === undefined
           ? {}
@@ -884,6 +900,7 @@ export class TvCutCatalogService {
       sourceSeriesId: coordinates.sourceId,
       episodes: this.sourceEpisodes(plan.source, plan.seriesCut.episodes),
       title: `Complete Cut · ${plan.seriesCut.episodes.length} Episodes`,
+      seriesTitle: plan.source.name,
       estimatedDurationSeconds: plan.seriesCut.estimatedDurationSeconds,
       ...(plan.source.malAnimeId === undefined
         ? {}

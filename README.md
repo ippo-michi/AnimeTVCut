@@ -228,16 +228,29 @@ Remote fetches have scheme, credential, DNS/SSRF, redirect, timeout, and byte li
 Private fixture or self-hosted origins require an explicit `SUBTITLE_ALLOWED_ORIGINS`
 entry; private networks are rejected by default.
 
-When no complete external subtitle family exists, AnimeTVCut probes the selected
-release for embedded text tracks. SRT, WebVTT, MOV_TEXT, and text tracks compose to
+AnimeTVCut also probes the selected release for embedded text tracks, even when
+external tracks exist. Probing can add stream startup time. SRT, WebVTT, MOV_TEXT, and text tracks compose to
 WebVTT; ASS/SSA preserve styles through the existing ASS composer. Track families must
 match language, format, title and forced/hearing-impaired role across every episode;
 ambiguous or incomplete families are omitted. Extraction stays lazy until a subtitle
 URL is requested, uses at most two FFmpeg workers, has a 60-second timeout and the
 existing source-byte limit, and survives session restoration. Probe failures leave
-video playback available. Set `SUBTITLE_EMBEDDED_ENABLED=false` to disable this fallback.
+video playback available. Set `SUBTITLE_EMBEDDED_ENABLED=false` to disable probing.
 PGS/VobSub, image subtitles, and fonts attached only inside an MKV are not extracted. WebVTT STYLE/REGION blocks are omitted while cue content
 and compatible cue settings are retained. SSA is normalized into the common ASS model.
+
+Set `JIMAKU_API_KEY` to a Jimaku account API key to enable Japanese subtitle
+discovery. The key remains server-side. The provider uses an AniList identity
+when available through MAL, otherwise searches the series title; it ranks matching
+episode filenames and may choose a best guess. Only complete families of direct
+SRT, WebVTT, ASS, or SSA files are offered; archives are not extracted. Subtitle
+files are fetched lazily. Each Jimaku episode is aligned against a suitable embedded
+English dialogue track, or an external English track, before mapping to the cut.
+Alignment estimates a single offset from caption timing, so different editions,
+drift, sparse captions, signs and songs can reduce accuracy. When no reference or
+confident offset is available, the original timing is used. Diagnostics report the
+result; player support for distinguishing tracks varies. Jimaku or alignment errors
+do not prevent video playback. No audio transcription is performed.
 
 ## Automatic skip providers
 
