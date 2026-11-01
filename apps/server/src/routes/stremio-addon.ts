@@ -33,7 +33,8 @@ const LEGACY_CATALOG_ID = "animetvcut";
 const REPAIRED_CATALOG_ID = "animetvcut-v2";
 const REPAIRED_BASE_PATH = "/v2";
 
-type PublicResourceType = "manifest" | "catalog" | "meta" | "stream" | "other";
+type PublicResourceType =
+  "manifest" | "catalog" | "meta" | "stream" | "subtitles" | "other";
 
 interface PublicRequestDiagnostics {
   resourceType: PublicResourceType;
@@ -125,6 +126,11 @@ function addonManifest(id: string, catalogId: string) {
       },
       {
         name: "stream",
+        types: ["series"],
+        idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
+      },
+      {
+        name: "subtitles",
         types: ["series"],
         idPrefixes: ["atc:tv:", "atc:season:", "atc:series:"],
       },
@@ -292,6 +298,8 @@ export function publicStremioRoutes(
     app.options("/catalog/series/animetvcut-v2/:extra.json", optionsHandler);
     app.options("/meta/series/:id.json", optionsHandler);
     app.options("/stream/series/:id.json", optionsHandler);
+    app.options("/subtitles/series/:id.json", optionsHandler);
+    app.options("/subtitles/series/:id/:extra.json", optionsHandler);
     app.options(
       `${REPAIRED_BASE_PATH}/catalog/series/animetvcut-v2.json`,
       optionsHandler,
@@ -302,6 +310,14 @@ export function publicStremioRoutes(
     );
     app.options(`${REPAIRED_BASE_PATH}/meta/series/:id.json`, optionsHandler);
     app.options(`${REPAIRED_BASE_PATH}/stream/series/:id.json`, optionsHandler);
+    app.options(
+      `${REPAIRED_BASE_PATH}/subtitles/series/:id.json`,
+      optionsHandler,
+    );
+    app.options(
+      `${REPAIRED_BASE_PATH}/subtitles/series/:id/:extra.json`,
+      optionsHandler,
+    );
 
     app.get("/manifest.json", async (request, reply) => {
       disableClientCaching(reply);
@@ -643,6 +659,33 @@ export function publicStremioRoutes(
     app.get<{ Params: { id: string } }>(
       `${REPAIRED_BASE_PATH}/stream/series/:id.json`,
       streamHandler,
+    );
+    const subtitlesHandler = async (
+      request: FastifyRequest<{ Params: { id: string; extra?: string } }>,
+      reply: FastifyReply,
+    ) => {
+      requestDiagnostics(request).resourceType = "subtitles";
+      disableClientCaching(reply);
+      const filename =
+        new URLSearchParams(request.params.extra ?? "").get("filename") ??
+        undefined;
+      return getService(request).publicSubtitles(request.params.id, filename);
+    };
+    app.get<{ Params: { id: string; extra?: string } }>(
+      "/subtitles/series/:id.json",
+      subtitlesHandler,
+    );
+    app.get<{ Params: { id: string; extra?: string } }>(
+      "/subtitles/series/:id/:extra.json",
+      subtitlesHandler,
+    );
+    app.get<{ Params: { id: string; extra?: string } }>(
+      `${REPAIRED_BASE_PATH}/subtitles/series/:id.json`,
+      subtitlesHandler,
+    );
+    app.get<{ Params: { id: string; extra?: string } }>(
+      `${REPAIRED_BASE_PATH}/subtitles/series/:id/:extra.json`,
+      subtitlesHandler,
     );
   };
 }

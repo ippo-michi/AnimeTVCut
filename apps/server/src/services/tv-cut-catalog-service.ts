@@ -112,7 +112,7 @@ export interface PublicStreamResponse {
     title: string;
     url: string;
     subtitles?: readonly { id: string; url: string; lang: string }[];
-    behaviorHints: { bingeGroup: string; notWebReady: true };
+    behaviorHints: { bingeGroup: string; notWebReady: true; filename: string };
   }[];
 }
 
@@ -167,6 +167,10 @@ export class TvCutCatalogService {
     () => this.now(),
   );
   private readonly streamInFlight = new Map<string, StreamBuild>();
+  private readonly subtitleSessions = new BoundedCache<
+    string,
+    { videoId: string; expiresAt: number }
+  >(256, () => this.now());
 
   public close(): void {
     for (const build of this.streamInFlight.values()) build.controller.abort();
@@ -649,6 +653,44 @@ export class TvCutCatalogService {
     }
   }
 
+  public publicSubtitles(
+    videoId: string,
+    filename?: string,
+  ): { subtitles: { id: string; url: string; lang: string }[] } {
+    const requestedCut = /^animetvcut-([0-9a-f-]{36})\.m3u8$/i.exec(
+      filename ?? "",
+    )?.[1];
+    let cutId = requestedCut;
+    if (cutId === undefined) {
+      const active = [...this.subtitleSessions.entries()].filter(
+        ([id, entry]) =>
+          entry.videoId === videoId &&
+          entry.expiresAt > this.now() &&
+          this.cutService.isCutActive(id),
+      );
+      if (active.length !== 1) return { subtitles: [] };
+      cutId = active[0]![0];
+    }
+    const session = this.cutService.session(cutId);
+    if (
+      !session ||
+      session.subtitleLookup?.videoId !== videoId ||
+      session.subtitleLookup.profileKey !== this.profileKey ||
+      !this.publicBaseUrl
+    )
+      return { subtitles: [] };
+    return {
+      subtitles: [...session.subtitleTracks.values()].map((track) => ({
+        id: `atc-${track.id}`,
+        lang: track.lang,
+        url: new URL(
+          `media/cut/${cutId}/subtitle/${track.id}.${track.outputFormat === "ass" ? "ass" : "vtt"}`,
+          this.publicBaseUrl,
+        ).toString(),
+      })),
+    };
+  }
+
   private async createPublicStream(
     virtualVideoId: string,
     signal?: AbortSignal,
@@ -778,6 +820,17 @@ export class TvCutCatalogService {
       cut.cutId,
       scope.episodes.map((episode) => episode.id),
     );
+    this.cutService.bindSubtitleLookup(
+      cut.cutId,
+      virtualVideoId,
+      this.profileKey,
+    );
+    const subtitleSession = this.cutService.session(cut.cutId);
+    if (subtitleSession)
+      this.subtitleSessions.set(cut.cutId, {
+        videoId: virtualVideoId,
+        expiresAt: subtitleSession.maxExpiresAt,
+      });
     const response: PublicStreamResponse = {
       streams: [
         {
@@ -802,6 +855,7 @@ export class TvCutCatalogService {
               }),
           behaviorHints: {
             notWebReady: true,
+            filename: `animetvcut-${cut.cutId}.m3u8`,
             bingeGroup:
               scope.mode === "tv"
                 ? `animetvcut-tv-${stableHash(`${scope.sourceSeriesId}\0automatic\0${this.profileKey}`)}`

@@ -606,6 +606,8 @@ describe("public TV Cut stream authorization and caching", () => {
       { createAutomaticCut } as unknown as UpstreamCutService,
       {
         isCutActive: () => true,
+        bindSubtitleLookup: () => {},
+        session: () => undefined,
         enableWatchProgress: () => {},
       } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
@@ -661,6 +663,8 @@ describe("public TV Cut stream authorization and caching", () => {
       { createAutomaticCut } as unknown as UpstreamCutService,
       {
         isCutActive: () => true,
+        bindSubtitleLookup: () => {},
+        session: () => undefined,
         enableWatchProgress,
       } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
@@ -703,8 +707,9 @@ describe("public TV Cut stream authorization and caching", () => {
       { createLongAutomaticCut } as unknown as UpstreamCutService,
       {
         isCutActive: () => true,
-        enableWatchProgress,
+        bindSubtitleLookup: () => {},
         session: () => undefined,
+        enableWatchProgress,
       } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
       DEFAULT_TV_CUT_GROUPING_CONFIG,
@@ -764,6 +769,8 @@ describe("public TV Cut stream authorization and caching", () => {
       { createAutomaticCut } as unknown as UpstreamCutService,
       {
         isCutActive: () => true,
+        bindSubtitleLookup: () => {},
+        session: () => undefined,
         enableWatchProgress: vi.fn(),
       } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
@@ -816,6 +823,8 @@ describe("public TV Cut stream authorization and caching", () => {
       { createAutomaticCut } as unknown as UpstreamCutService,
       {
         isCutActive: () => true,
+        bindSubtitleLookup: () => {},
+        session: () => undefined,
         enableWatchProgress: vi.fn(),
       } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),
@@ -849,6 +858,8 @@ describe("public TV Cut stream authorization and caching", () => {
       { createAutomaticCut: vi.fn() } as unknown as UpstreamCutService,
       {
         isCutActive: () => true,
+        bindSubtitleLookup: () => {},
+        session: () => undefined,
         enableWatchProgress: vi.fn(),
       } as unknown as CutService,
       new URL("https://public.animetvcut.test/"),

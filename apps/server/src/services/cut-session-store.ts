@@ -84,6 +84,7 @@ export interface CutSession {
   resources: ReadonlyMap<string, SessionResource>;
   subtitleTracks: Map<string, SessionSubtitleTrack>;
   subtitleDiagnostics: SubtitleSessionDiagnostics;
+  subtitleLookup?: { videoId: string; profileKey: string };
   outputSkipSegments: readonly OutputSkipSegment[];
   outputSkipDiagnostics: readonly OutputSkipDiagnostic[];
   skipDiagnostics?: {

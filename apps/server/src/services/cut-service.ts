@@ -101,6 +101,17 @@ export class CutService {
     return this.sessions.get(cutId);
   }
 
+  public bindSubtitleLookup(
+    cutId: string,
+    videoId: string,
+    profileKey: string,
+  ): void {
+    const session = this.sessions.get(cutId);
+    if (session === undefined) return;
+    session.subtitleLookup = { videoId, profileKey };
+    this.sessions.checkpoint(cutId);
+  }
+
   public enableWatchProgress(
     cutId: string,
     sourceEpisodeIds: readonly string[],

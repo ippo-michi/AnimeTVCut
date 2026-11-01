@@ -249,3 +249,76 @@ it("aligns Jimaku dialogue to the embedded reference before mapping the cut", as
     globalThis.fetch = originalFetch;
   }
 });
+
+it("returns Jimaku subtitles promptly when embedded reference extraction is slow", async () => {
+  const store = new CutSessionStore();
+  saveSession(store);
+  store.attachSubtitles(
+    "cut",
+    [
+      {
+        id: "jimaku-test",
+        lang: "jpn",
+        familyMethod: "exact_id",
+        provider: "jimaku",
+        outputFormat: "webvtt",
+        state: "lazy",
+        sources: [
+          {
+            episodeId: "e1",
+            subtitleId: "jpn",
+            url: "https://subs.test/e.srt",
+            formatHint: "srt",
+            syncReference: {
+              episodeId: "e1",
+              subtitleId: "eng",
+              url: "embedded://0/srt",
+              formatHint: "srt",
+              embedded: {
+                source: {
+                  kind: "http_media",
+                  episodeId: "e1",
+                  url: "https://media.test/e.mkv",
+                  headers: {},
+                },
+                streamIndex: 0,
+                format: "srt",
+              },
+            },
+          },
+        ],
+      },
+    ],
+    { discoveredPerEpisode: {}, issues: [] },
+  );
+  const reader = {
+    discover: async () => [],
+    extract: async (_source: unknown, _track: unknown, signal?: AbortSignal) =>
+      new Promise<never>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new Error("timeout")), {
+          once: true,
+        });
+      }),
+  };
+  const fetcher = new SafeSubtitleFetcher(
+    createSubtitleConfig({ allowedOrigins: ["https://subs.test"] }),
+    async () =>
+      new Response("1\n00:00:01,000 --> 00:00:02,000\nJapanese dialogue\n", {
+        headers: { "content-type": "application/x-subrip" },
+      }),
+  );
+  const service = new SubtitleService(
+    createSubtitleConfig(),
+    store,
+    undefined,
+    fetcher,
+    reader,
+  );
+  const output = await service.compose("cut", "jimaku-test", "vtt");
+  expect(new TextDecoder().decode(output!.bytes)).toContain(
+    "Japanese dialogue",
+  );
+  expect(JSON.stringify(service.diagnostics("cut"))).toContain(
+    "reference_unavailable",
+  );
+}, 8000);

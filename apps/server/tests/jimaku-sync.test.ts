@@ -78,6 +78,33 @@ describe("Jimaku subtitle discovery", () => {
       }),
     ).toEqual([]);
   });
+  it("prefers a complete Japanese-only family over bilingual ASS files", async () => {
+    const request = vi.fn(async (url: string | URL | Request) =>
+      String(url).includes("search")
+        ? Response.json([{ id: 1, name: "Show" }])
+        : Response.json(
+            [1, 2].flatMap((ep) => [
+              {
+                name: `Show - 0${ep}.ja-en.ass`,
+                url: `https://jimaku.cc/${ep}.ass`,
+              },
+              {
+                name: `Show - 0${ep}.ja.srt`,
+                url: `https://jimaku.cc/${ep}.srt`,
+              },
+            ]),
+          ),
+    );
+    const files = await new JimakuProvider(
+      "key",
+      1000,
+      request as typeof fetch,
+    ).find({ title: "Show", episodes });
+    expect(files.map(({ file }) => file.name)).toEqual([
+      "Show - 01.ja.srt",
+      "Show - 02.ja.srt",
+    ]);
+  });
   it("does not combine episodes from separate series entries", async () => {
     const request = vi.fn(async (url: string | URL | Request) => {
       const address = String(url);

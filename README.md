@@ -211,7 +211,10 @@ cut. Maps and segments remain lazy and stream through opaque AnimeTVCut URLs on 
 ## Composed subtitles
 
 The public stream response attaches AnimeTVCut-owned `subtitles[]` URLs for complete,
-unambiguous cross-episode subtitle families. Discovery first uses standard subtitles
+unambiguous cross-episode subtitle families. The addon also advertises a Stremio
+subtitles resource for clients that ignore stream-attached tracks; it identifies the
+active cut from the stream filename or an unambiguous active session. Reinstall the
+addon if a client has cached a manifest without the subtitles resource. Discovery first uses standard subtitles
 attached to the selected Stremio `Stream`; when `behaviorHints.videoHash` is available
 and the configured manifest declares `subtitles`, it may also query that standard
 resource using the exact opaque episode ID. No AIOStreams-private API is used.
@@ -246,7 +249,8 @@ episode filenames and may choose a best guess. Only complete families of direct
 SRT, WebVTT, ASS, or SSA files are offered; archives are not extracted. Subtitle
 files are fetched lazily. Each Jimaku episode is aligned against a suitable embedded
 English dialogue track, or an external English track, before mapping to the cut.
-Alignment estimates a single offset from caption timing, so different editions,
+Reference extraction has a short deadline so slow embedded tracks cannot block
+Japanese subtitles. Alignment estimates a single offset from caption timing, so different editions,
 drift, sparse captions, signs and songs can reduce accuracy. When no reference or
 confident offset is available, the original timing is used. Diagnostics report the
 result; player support for distinguishing tracks varies. Jimaku or alignment errors

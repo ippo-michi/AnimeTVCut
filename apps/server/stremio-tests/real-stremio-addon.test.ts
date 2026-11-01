@@ -102,7 +102,7 @@ interface PublicStream {
   name: string;
   url: string;
   subtitles: Array<{ id: string; url: string; lang: string }>;
-  behaviorHints: { bingeGroup: string; notWebReady: boolean };
+  behaviorHints: { bingeGroup: string; notWebReady: boolean; filename: string };
 }
 
 let catalogText = "";
@@ -348,6 +348,23 @@ describe("real metadata addon to grouped Stremio TV Cuts", () => {
   it("does zero subtitle work for metadata pages and only metadata discovery during stream creation", () => {
     expect(subtitleStatsAfterStream.total).toBe(0);
     expect(upstreamSubtitleRequestsAfterStream).toBe(6);
+  });
+
+  it("offers the current cut's tracks through the Stremio subtitles resource", async () => {
+    const id = encodeURIComponent(videos[0]!.id);
+    const filename = encodeURIComponent(partOne.behaviorHints.filename);
+    const exact = await json<{ subtitles: PublicStream["subtitles"] }>(
+      `${publicBaseUrl}subtitles/series/${id}/filename=${filename}.json`,
+    );
+    const withoutFilename = await json<{
+      subtitles: PublicStream["subtitles"];
+    }>(`${publicBaseUrl}v2/subtitles/series/${id}.json`);
+    const wrongVideo = await json<{ subtitles: PublicStream["subtitles"] }>(
+      `${publicBaseUrl}subtitles/series/${encodeURIComponent(videos[1]!.id)}/filename=${filename}.json`,
+    );
+    expect(exact.subtitles).toEqual(partOne.subtitles);
+    expect(withoutFilename.subtitles).toEqual(partOne.subtitles);
+    expect(wrongVideo.subtitles).toEqual([]);
   });
 
   it("uses exact opaque episode IDs only when each selected part is streamed", async () => {

@@ -500,13 +500,18 @@ export class SubtitleService {
             ]) {
               if (reference === undefined) continue;
               try {
+                const referenceTimeout = AbortSignal.timeout(4_000);
+                const referenceSignal =
+                  signal === undefined
+                    ? referenceTimeout
+                    : AbortSignal.any([signal, referenceTimeout]);
                 const referenceData = reference.embedded
                   ? await this.embeddedReader!.extract(
                       reference.embedded.source,
                       reference.embedded,
-                      signal,
+                      referenceSignal,
                     )
-                  : await this.fetcher.fetch(reference.url, signal);
+                  : await this.fetcher.fetch(reference.url, referenceSignal);
                 const referenceFormat = detectSubtitleFormat(
                   referenceData.bytes,
                   referenceData.contentType,

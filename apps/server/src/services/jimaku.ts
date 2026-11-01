@@ -194,36 +194,44 @@ export class JimakuProvider {
     }
     // Prefer styled tracks only when every episode has one; families cannot mix output formats.
     for (const entry of entries)
-      for (const styled of [true, false]) {
-        const chosen = series.episodes.map((ep) => ({
-          ep,
-          choices: files
-            .filter(
-              ({ file }) =>
-                (file.format === "ass" || file.format === "ssa") === styled,
-            )
-            .filter((item) => item.entryId === entry.id)
-            .map((item) => ({
-              ...item,
-              episodeScore: jimakuFileScore(
-                item.file.name,
-                ep.season,
-                ep.episode,
+      for (const allowBilingual of [false, true])
+        for (const styled of [true, false]) {
+          const chosen = series.episodes.map((ep) => ({
+            ep,
+            choices: files
+              .filter(
+                ({ file }) =>
+                  (file.format === "ass" || file.format === "ssa") === styled,
+              )
+              .filter((item) => item.entryId === entry.id)
+              .filter(
+                ({ file }) =>
+                  allowBilingual ||
+                  !/(?:[._-]ja[-_,+]en|\[ja\s*,\s*en\])/i.test(file.name),
+              )
+              .map((item) => ({
+                ...item,
+                episodeScore: jimakuFileScore(
+                  item.file.name,
+                  ep.season,
+                  ep.episode,
+                ),
+              }))
+              .filter((item) => item.episodeScore >= 0)
+              .sort(
+                (a, b) =>
+                  b.entryScore +
+                    b.episodeScore -
+                    a.entryScore -
+                    a.episodeScore || a.file.name.localeCompare(b.file.name),
               ),
-            }))
-            .filter((item) => item.episodeScore >= 0)
-            .sort(
-              (a, b) =>
-                b.entryScore + b.episodeScore - a.entryScore - a.episodeScore ||
-                a.file.name.localeCompare(b.file.name),
-            ),
-        }));
-        if (chosen.every(({ choices }) => choices.length))
-          return chosen.map(({ ep, choices }) => ({
-            episodeId: ep.sourceEpisodeId,
-            file: choices[0]!.file,
           }));
-      }
+          if (chosen.every(({ choices }) => choices.length))
+            return chosen.map(({ ep, choices }) => ({
+              episodeId: ep.sourceEpisodeId,
+              file: choices[0]!.file,
+            }));
+        }
     return [];
   }
 }
