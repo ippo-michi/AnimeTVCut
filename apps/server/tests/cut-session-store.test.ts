@@ -18,6 +18,22 @@ function save(store: CutSessionStore) {
 }
 
 describe("activity-aware cut sessions", () => {
+  it("retains background work only during recent playback and stops it on close", () => {
+    let now = 0;
+    const store = new CutSessionStore({
+      idleTtlMilliseconds: 60_000,
+      maxLifetimeMilliseconds: 180_000,
+      now: () => now,
+    });
+    save(store);
+    expect(store.isRecentlyActive("cut")).toBe(true);
+    now = 30_000;
+    expect(store.isRecentlyActive("cut")).toBe(false);
+    store.touch("cut");
+    expect(store.isRecentlyActive("cut")).toBe(true);
+    store.close();
+    expect(store.isRecentlyActive("cut")).toBe(false);
+  });
   it("refreshes idle expiry after legitimate touches", () => {
     let now = 0;
     const store = new CutSessionStore({

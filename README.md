@@ -236,8 +236,14 @@ external tracks exist. Probing can add stream startup time. SRT, WebVTT, MOV_TEX
 WebVTT; ASS/SSA preserve styles through the existing ASS composer. Track families must
 match language, format, title and forced/hearing-impaired role across every episode;
 ambiguous or incomplete families are omitted. Extraction stays lazy until a subtitle
-URL is requested, uses at most two FFmpeg workers, has a 60-second timeout and the
-existing source-byte limit, and survives session restoration. Probe failures leave
+URL is requested. Multiple embedded tracks from an episode share one bounded source
+read, and the results are cached temporarily; extraction survives session restoration.
+It uses at most two full-extraction FFmpeg workers, with a three-minute timeout and
+subtitle-byte limits. Depending on the source, extracting a complete original track
+can take longer than loading a Japanese track. If the player stops waiting, the
+shared extraction can continue while playback remains active; retrying the original
+track can then use the cached result.
+Probe failures leave
 video playback available. Set `SUBTITLE_EMBEDDED_ENABLED=false` to disable probing.
 PGS/VobSub, image subtitles, and fonts attached only inside an MKV are not extracted. WebVTT STYLE/REGION blocks are omitted while cue content
 and compatible cue settings are retained. SSA is normalized into the common ASS model.
@@ -249,8 +255,12 @@ episode filenames and may choose a best guess. Only complete families of direct
 SRT, WebVTT, ASS, or SSA files are offered; archives are not extracted. Subtitle
 files are fetched lazily. Each Jimaku episode is aligned against a suitable embedded
 English dialogue track, or an external English track, before mapping to the cut.
-Reference extraction has a short deadline so slow embedded tracks cannot block
-Japanese subtitles. Alignment estimates a single offset from caption timing, so different editions,
+For longer episodes, a short, seeked section of the embedded English track provides a
+timing reference without downloading the whole video. The sample has a deadline so
+slow sources cannot block Japanese subtitles indefinitely. Alignment estimates a
+single offset from caption timing, using a second sample if needed. For episodes from
+the same selected release family, independently matching episodes may help resolve
+an otherwise ambiguous result. Different editions,
 drift, sparse captions, signs and songs can reduce accuracy. When no reference or
 confident offset is available, the original timing is used. Diagnostics report the
 result; player support for distinguishing tracks varies. Jimaku or alignment errors

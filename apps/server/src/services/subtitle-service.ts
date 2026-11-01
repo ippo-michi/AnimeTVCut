@@ -1,6 +1,11 @@
 import type { EmbeddedSubtitleReader } from "./embedded-subtitles.js";
 import { JimakuProvider, type JimakuSeries } from "./jimaku.js";
-import { estimateSubtitleOffset } from "./subtitle-sync.js";
+import {
+  estimateSubtitleOffset,
+  estimateSubtitleSampleOffset,
+  estimateSubtitleSamplesOffset,
+  type SubtitleTimingSample,
+} from "./subtitle-sync.js";
 import { createHash } from "node:crypto";
 
 import {
@@ -207,6 +212,7 @@ export class SubtitleService {
             lang: "jpn",
             familyMethod: "exact_id",
             provider: "jimaku",
+            allowSyncConsensus: selection.familyMethod !== "mixed",
             state: "lazy",
             outputFormat:
               files[0]!.file.format === "ass" || files[0]!.file.format === "ssa"
@@ -334,7 +340,10 @@ export class SubtitleService {
         };
     }
     const inFlight =
-      track.inFlight ?? this.startComposition(track, session.pieces);
+      track.inFlight ??
+      this.startComposition(track, session.pieces, () =>
+        this.sessions.isRecentlyActive(cutId),
+      );
     const bytes = await this.waitForComposition(track, inFlight, signal);
     this.sessions.touch(cutId);
     return {
@@ -349,6 +358,7 @@ export class SubtitleService {
   private startComposition(
     track: SessionSubtitleTrack,
     pieces: Parameters<typeof mapSubtitleEvents>[1],
+    keepAlive: () => boolean,
   ): Promise<Uint8Array> {
     track.state = "composing";
     track.abortController = new AbortController();
@@ -357,6 +367,7 @@ export class SubtitleService {
       track,
       pieces,
       track.abortController.signal,
+      keepAlive,
     )
       .then(({ bytes, cueCount }) => {
         if (bytes.byteLength > this.config.maxGeneratedBytes)
@@ -421,6 +432,7 @@ export class SubtitleService {
     track: SessionSubtitleTrack,
     pieces: Parameters<typeof mapSubtitleEvents>[1],
     signal?: AbortSignal,
+    keepAlive?: () => boolean,
   ): Promise<{ bytes: Uint8Array; cueCount: number }> {
     const parsedAss: ParsedAssSubtitle[] = [],
       events: SubtitleEvent[] = [];
@@ -432,6 +444,9 @@ export class SubtitleService {
       ass?: ParsedAssSubtitle;
       events: readonly SubtitleEvent[];
     }>(track.sources.length);
+    const pendingConsensus = new Map<number, SubtitleTimingSample[]>();
+    const confidentOffsets = new Map<number, number>();
+    if (track.provider === "jimaku") track.syncResults = {};
     let nextIndex = 0;
     const workers = Array.from(
       {
@@ -463,6 +478,7 @@ export class SubtitleService {
                 descriptor.source,
                 descriptor,
                 signal,
+                keepAlive,
               );
             } else request = this.fetcher.fetch(source.url, signal);
             fetchedByUrl.set(fetchKey, request);
@@ -500,48 +516,110 @@ export class SubtitleService {
             ]) {
               if (reference === undefined) continue;
               try {
-                const referenceTimeout = AbortSignal.timeout(4_000);
+                const duration = pieces
+                  .filter((piece) => piece.sourceEpisodeId === source.episodeId)
+                  .reduce((max, piece) => Math.max(max, piece.sourceEnd), 0);
+                const sampleWindow =
+                  reference.embedded &&
+                  this.embeddedReader?.sample &&
+                  duration >= 180
+                    ? {
+                        start: Math.min(300, Math.floor(duration * 0.22)),
+                        end: Math.min(300, Math.floor(duration * 0.22)) + 60,
+                      }
+                    : undefined;
+                const referenceTimeout = AbortSignal.timeout(
+                  sampleWindow ? 25_000 : 4_000,
+                );
                 const referenceSignal =
                   signal === undefined
                     ? referenceTimeout
                     : AbortSignal.any([signal, referenceTimeout]);
                 const referenceData = reference.embedded
-                  ? await this.embeddedReader!.extract(
+                  ? sampleWindow && this.embeddedReader?.sample
+                    ? await this.embeddedReader.sample(
+                        reference.embedded.source,
+                        reference.embedded,
+                        sampleWindow,
+                        referenceSignal,
+                      )
+                    : await this.embeddedReader!.extract(
+                        reference.embedded.source,
+                        reference.embedded,
+                        referenceSignal,
+                      )
+                  : await this.fetcher.fetch(reference.url, referenceSignal);
+                const parseReference = (data: {
+                  bytes: Uint8Array;
+                  contentType?: string;
+                }) => {
+                  const format = detectSubtitleFormat(
+                    data.bytes,
+                    data.contentType,
+                    reference.formatHint,
+                  );
+                  const text = decodeSubtitleBytes(data.bytes);
+                  return format === "srt"
+                    ? parseSrt(text, source.episodeId, episodeOrder).events
+                    : format === "webvtt"
+                      ? parseWebVtt(text, source.episodeId, episodeOrder).events
+                      : format === "ass" || format === "ssa"
+                        ? parseAss(text, source.episodeId, episodeOrder, format)
+                            .events
+                        : [];
+                };
+                const referenceEvents = parseReference(referenceData);
+                let offset = sampleWindow
+                  ? estimateSubtitleSampleOffset(
+                      referenceEvents,
+                      results[episodeOrder].events,
+                      sampleWindow,
+                    )
+                  : estimateSubtitleOffset(
+                      referenceEvents,
+                      results[episodeOrder].events,
+                    );
+                if (
+                  offset === undefined &&
+                  sampleWindow &&
+                  reference.embedded &&
+                  this.embeddedReader?.sample &&
+                  duration >= 360
+                ) {
+                  const secondStart = Math.min(
+                    duration - 90,
+                    Math.floor(duration * 0.65),
+                  );
+                  if (secondStart > sampleWindow.end + 60) {
+                    const secondWindow = {
+                      start: secondStart,
+                      end: secondStart + 60,
+                    };
+                    const secondData = await this.embeddedReader.sample(
                       reference.embedded.source,
                       reference.embedded,
+                      secondWindow,
                       referenceSignal,
-                    )
-                  : await this.fetcher.fetch(reference.url, referenceSignal);
-                const referenceFormat = detectSubtitleFormat(
-                  referenceData.bytes,
-                  referenceData.contentType,
-                  reference.formatHint,
-                );
-                const referenceText = decodeSubtitleBytes(referenceData.bytes);
-                const referenceEvents =
-                  referenceFormat === "srt"
-                    ? parseSrt(referenceText, source.episodeId, episodeOrder)
-                        .events
-                    : referenceFormat === "webvtt"
-                      ? parseWebVtt(
-                          referenceText,
-                          source.episodeId,
-                          episodeOrder,
-                        ).events
-                      : referenceFormat === "ass" || referenceFormat === "ssa"
-                        ? parseAss(
-                            referenceText,
-                            source.episodeId,
-                            episodeOrder,
-                            referenceFormat,
-                          ).events
-                        : [];
-                const offset = estimateSubtitleOffset(
-                  referenceEvents,
-                  results[episodeOrder].events,
-                );
+                    );
+                    const samples = [
+                      { events: referenceEvents, window: sampleWindow },
+                      {
+                        events: parseReference(secondData),
+                        window: secondWindow,
+                      },
+                    ];
+                    offset = estimateSubtitleSamplesOffset(
+                      samples,
+                      results[episodeOrder].events,
+                    );
+                    if (offset === undefined)
+                      pendingConsensus.set(episodeOrder, samples);
+                  }
+                }
                 if (offset === undefined) status = "low_confidence";
                 else {
+                  pendingConsensus.delete(episodeOrder);
+                  confidentOffsets.set(episodeOrder, offset);
                   results[episodeOrder].events = results[
                     episodeOrder
                   ].events.map((event) => ({
@@ -563,6 +641,28 @@ export class SubtitleService {
       },
     );
     await Promise.all(workers);
+    const offsets = [...confidentOffsets.values()].sort((a, b) => a - b);
+    const agreement = offsets
+      .map((value) => offsets.filter((other) => Math.abs(value - other) <= 1))
+      .sort((a, b) => b.length - a.length)[0];
+    if (track.allowSyncConsensus && agreement && agreement.length >= 2) {
+      const expectedOffset = agreement[Math.floor(agreement.length / 2)]!;
+      for (const [index, samples] of pendingConsensus) {
+        const offset = estimateSubtitleSamplesOffset(
+          samples,
+          results[index]!.events,
+          expectedOffset,
+        );
+        if (offset === undefined) continue;
+        results[index]!.events = results[index]!.events.map((event) => ({
+          ...event,
+          start: event.start + offset,
+          end: event.end + offset,
+        }));
+        track.syncResults![track.sources[index]!.episodeId] =
+          `aligned:${offset}`;
+      }
+    }
     for (const result of results) {
       if (result.ass !== undefined) parsedAss.push(result.ass);
       events.push(...result.events);

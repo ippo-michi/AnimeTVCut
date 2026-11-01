@@ -56,6 +56,7 @@ export interface SessionSubtitleTrack {
   familyMethod: SubtitleFamilyMethod;
   outputFormat: SubtitleOutputFormat;
   provider?: "jimaku";
+  allowSyncConsensus?: boolean;
   syncResults?: Record<string, string>;
   sources: readonly SessionSubtitleSource[];
   state: "lazy" | "composing" | "ready" | "failed";
@@ -180,6 +181,7 @@ function estimatedBytes(session: CutSession): number {
 }
 
 export class CutSessionStore {
+  private closed = false;
   private readonly sessions = new Map<string, CutSession>();
   private readonly idleTtlMilliseconds: number;
   private readonly maxLifetimeMilliseconds: number;
@@ -303,6 +305,15 @@ export class CutSessionStore {
     return session;
   }
 
+  public isRecentlyActive(id: string, maximumIdleMs = 30_000): boolean {
+    if (this.closed) return false;
+    const now = this.now();
+    const session = this.get(id, now);
+    return (
+      session !== undefined && now - session.lastAccessedAt < maximumIdleMs
+    );
+  }
+
   public checkpoint(id: string, required = false): void {
     const session = this.sessions.get(id);
     if (session === undefined || this.persistence === undefined) return;
@@ -348,6 +359,7 @@ export class CutSessionStore {
   }
 
   public close(): void {
+    this.closed = true;
     this.cleanup();
     this.checkpointAll();
     for (const session of this.sessions.values())

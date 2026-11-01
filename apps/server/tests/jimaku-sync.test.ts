@@ -1,6 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import { JimakuProvider, jimakuFileScore } from "../src/services/jimaku.js";
-import { estimateSubtitleOffset } from "../src/services/subtitle-sync.js";
+import {
+  estimateSubtitleOffset,
+  estimateSubtitleSampleOffset,
+  estimateSubtitleSamplesOffset,
+} from "../src/services/subtitle-sync.js";
 import type { SubtitleEvent } from "@animetvcut/subtitles";
 
 const episodes = [1, 2].map((episode) => ({
@@ -155,5 +159,55 @@ describe("subtitle activity alignment", () => {
       end: i * 4 + 1,
     }));
     expect(estimateSubtitleOffset(repeated, repeated)).toBeUndefined();
+  });
+  it("aligns a short source-timeline sample without treating the rest of the target as missing", () => {
+    const reference = events().map((event, index) => ({
+      ...event,
+      start: 2 + index * 3.5 + Math.sin(index * 1.31),
+      end: 3.2 + index * 3.5 + Math.sin(index * 1.31),
+    }));
+    const shifted = reference.map((event) => ({
+      ...event,
+      start: event.start + 4,
+      end: event.end + 4,
+    }));
+    const sample = reference.filter(
+      (event) => event.end > 20 && event.start < 80,
+    );
+    expect(
+      estimateSubtitleSampleOffset(sample, shifted, { start: 20, end: 80 }),
+    ).toBe(-4);
+    expect(
+      estimateSubtitleSampleOffset(sample.slice(0, 3), shifted, {
+        start: 20,
+        end: 80,
+      }),
+    ).toBeUndefined();
+    const oneHalf = reference.filter(
+      (event) => event.end > 20 && event.start < 47,
+    );
+    expect(
+      estimateSubtitleSampleOffset(oneHalf, shifted, { start: 20, end: 80 }),
+    ).toBeUndefined();
+  });
+  it("only uses another episode's offset to break a well-supported timing tie", () => {
+    const reference = Array.from({ length: 60 }, (_, i) => ({
+      ...events()[0]!,
+      start: i * 4,
+      end: i * 4 + 1.5,
+      sourceEventOrder: i,
+    }));
+    const target = reference.map((event) => ({
+      ...event,
+      start: event.start + 4,
+      end: event.end + 4,
+    }));
+    const samples = [
+      { events: reference, window: { start: 20, end: 80 } },
+      { events: reference, window: { start: 120, end: 180 } },
+    ];
+    expect(estimateSubtitleSamplesOffset(samples, target)).toBeUndefined();
+    expect(estimateSubtitleSamplesOffset(samples, target, 0)).toBe(0);
+    expect(estimateSubtitleSamplesOffset(samples, target, 20)).toBeUndefined();
   });
 });

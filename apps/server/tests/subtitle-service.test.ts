@@ -236,6 +236,9 @@ it("aligns Jimaku dialogue to the embedded reference before mapping the cut", as
       episodes: [{ sourceEpisodeId: "e1", season: 1, episode: 1 }],
     });
     const japanese = tracks.find((track) => track.lang === "jpn")!;
+    expect(
+      store.get("jcut")?.subtitleTracks.get(japanese.id)?.allowSyncConsensus,
+    ).toBe(true);
     const result = await service.compose(
       "jcut",
       japanese.id,
@@ -322,3 +325,114 @@ it("returns Jimaku subtitles promptly when embedded reference extraction is slow
     "reference_unavailable",
   );
 }, 8000);
+
+it("aligns each Jimaku episode using a short embedded sample before mapping", async () => {
+  const store = new CutSessionStore();
+  store.save({
+    id: "sample-cut",
+    duration: 1000,
+    playlist: "#EXTM3U",
+    resources: new Map(),
+    appliedCuts: [],
+    pieces: [
+      {
+        id: "p",
+        sourceEpisodeId: "e1",
+        sourceStart: 0,
+        sourceEnd: 1000,
+        outputStart: 0,
+        outputEnd: 1000,
+        kind: "content",
+      },
+    ],
+    subtitleTracks: new Map(),
+    subtitleDiagnostics: { discoveredPerEpisode: {}, issues: [] },
+    outputSkipSegments: [],
+    outputSkipDiagnostics: [],
+  });
+  const time = (value: number) => {
+    const ms = Math.round(value * 1000),
+      mins = Math.floor(ms / 60000),
+      secs = Math.floor(ms / 1000) % 60;
+    return `00:${String(mins).padStart(2, "0")}:${String(secs).padStart(2, "0")},${String(ms % 1000).padStart(3, "0")}`;
+  };
+  const text = (shift: number) =>
+    Array.from({ length: 18 }, (_, i) => {
+      const start = 221 + i * 3.1 + Math.sin(i * 1.31) + shift;
+      return `${i + 1}\n${time(start)} --> ${time(start + 1.3)}\ndialogue ${i}\n`;
+    }).join("\n");
+  store.attachSubtitles(
+    "sample-cut",
+    [
+      {
+        id: "jp",
+        lang: "jpn",
+        provider: "jimaku",
+        familyMethod: "exact_id",
+        outputFormat: "webvtt",
+        state: "lazy",
+        sources: [
+          {
+            episodeId: "e1",
+            subtitleId: "jpn",
+            url: "https://subs.test/e.srt",
+            formatHint: "srt",
+            syncReference: {
+              episodeId: "e1",
+              subtitleId: "eng",
+              url: "embedded://1/srt",
+              formatHint: "srt",
+              embedded: {
+                source: {
+                  kind: "http_media",
+                  episodeId: "e1",
+                  url: "https://media.test/e.mkv",
+                  headers: {},
+                },
+                streamIndex: 1,
+                format: "srt",
+              },
+            },
+          },
+        ],
+      },
+    ],
+    { discoveredPerEpisode: {}, issues: [] },
+  );
+  const reader = {
+    discover: async () => [],
+    extract: async () => {
+      throw new Error("full extraction should not run");
+    },
+    sample: async (
+      _source: unknown,
+      _track: unknown,
+      window: { start: number; end: number },
+    ) => {
+      expect(window).toEqual({ start: 220, end: 280 });
+      return {
+        bytes: new TextEncoder().encode(text(0)),
+        contentType: "application/x-subrip",
+      };
+    },
+  };
+  const fetcher = new SafeSubtitleFetcher(
+    createSubtitleConfig({ allowedOrigins: ["https://subs.test"] }),
+    async () =>
+      new Response(text(4), {
+        headers: { "content-type": "application/x-subrip" },
+      }),
+  );
+  const service = new SubtitleService(
+    createSubtitleConfig(),
+    store,
+    undefined,
+    fetcher,
+    reader,
+  );
+  const result = await service.compose("sample-cut", "jp", "vtt");
+  expect(new TextDecoder().decode(result!.bytes)).toContain("dialogue 0");
+  expect(JSON.stringify(service.diagnostics("sample-cut"))).toContain(
+    "aligned:-4",
+  );
+});

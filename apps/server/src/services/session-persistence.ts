@@ -95,13 +95,22 @@ export class SessionPersistence {
         },
       ),
       subtitles: [...subtitleTracks.values()].map(
-        ({ id, lang, familyMethod, outputFormat, sources, provider }) => ({
+        ({
+          id,
+          lang,
+          familyMethod,
+          outputFormat,
+          sources,
+          provider,
+          allowSyncConsensus,
+        }) => ({
           id,
           lang,
           familyMethod,
           outputFormat,
           sources,
           ...(provider === undefined ? {} : { provider }),
+          ...(allowSyncConsensus === undefined ? {} : { allowSyncConsensus }),
           state: "lazy",
         }),
       ),

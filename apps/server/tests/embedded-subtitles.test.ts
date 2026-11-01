@@ -17,6 +17,7 @@ let directory: string;
 let origin: string;
 const ass = `[Script Info]\nScriptType: v4.00+\nPlayResX: 640\nPlayResY: 360\n[V4+ Styles]\nFormat: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding\nStyle: Default,Arial,24,&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,10,10,10,1\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\nDialogue: 0,0:00:00.50,0:00:01.50,Default,,0,0,0,,{\\i1}Styled line\n`;
 const media = new Map<string, Buffer>();
+const requests = new Map<string, number>();
 const server = createServer((req, res) => {
   if (req.headers["x-fixture"] !== "private" && req.url !== "/broken") {
     res.writeHead(403).end();
@@ -27,6 +28,7 @@ const server = createServer((req, res) => {
     res.writeHead(404).end();
     return;
   }
+  requests.set(req.url ?? "", (requests.get(req.url ?? "") ?? 0) + 1);
   const match = /bytes=(\d+)-(\d*)/.exec(req.headers.range ?? "");
   const start = match ? Number(match[1]) : 0,
     end = match?.[2]
@@ -76,6 +78,25 @@ beforeAll(async () => {
     ]);
     media.set(`/${extension}.mkv`, await readFile(destination));
   }
+  const multi = path.join(directory, "multi.mkv");
+  await exec("ffmpeg", [
+    "-v",
+    "error",
+    "-i",
+    path.join(directory, "source-srt.mkv"),
+    "-i",
+    path.join(directory, "track.srt"),
+    "-map",
+    "0",
+    "-map",
+    "1:s",
+    "-c",
+    "copy",
+    "-metadata:s:s:1",
+    "language=jpn",
+    multi,
+  ]);
+  media.set("/multi.mkv", await readFile(multi));
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   const addr = server.address();
   if (!addr || typeof addr === "string") throw Error("No port");
@@ -142,6 +163,133 @@ function session(store: CutSessionStore) {
 }
 
 describe("embedded text subtitle fallback", () => {
+  it("extracts multiple original languages in one shared source read and caches the results", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const input = source("e1", "multi");
+    const tracks = await reader.discover(input);
+    expect(tracks.map((track) => track.lang)).toEqual(["eng", "jpn"]);
+    const before = requests.get("/multi.mkv") ?? 0;
+    const [english, japanese] = await Promise.all(
+      tracks.map((track) => reader.extract(input, track)),
+    );
+    const after = requests.get("/multi.mkv") ?? 0;
+    expect(new TextDecoder().decode(english!.bytes)).toContain("Hello episode");
+    expect(new TextDecoder().decode(japanese!.bytes)).toContain(
+      "Hello episode",
+    );
+    expect(after - before).toBe(1);
+    await reader.extract(input, tracks[0]!);
+    expect(requests.get("/multi.mkv")).toBe(after);
+  });
+  it("samples an embedded track using source timestamps", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const input = source();
+    const [track] = await reader.discover(input);
+    const sample = await reader.sample(input, track!, { start: 0.2, end: 1.8 });
+    expect(new TextDecoder().decode(sample.bytes)).toContain(
+      "00:00:00,500 --> 00:00:01,500",
+    );
+  });
+  it("keeps a shared extraction alive when one subtitle request is cancelled", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const input = source("e1", "multi");
+    const tracks = await reader.discover(input);
+    const controller = new AbortController();
+    const cancelled = reader.extract(input, tracks[0]!, controller.signal);
+    const remaining = reader.extract(input, tracks[1]!);
+    controller.abort();
+    await expect(cancelled).rejects.toThrow();
+    expect(new TextDecoder().decode((await remaining).bytes)).toContain(
+      "Hello episode",
+    );
+  });
+  it("retains a cancelled extraction for an active playback and serves it from cache", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const input = source("e1", "multi");
+    const [track] = await reader.discover(input);
+    const before = requests.get("/multi.mkv") ?? 0;
+    const controller = new AbortController();
+    const cancelled = reader.extract(
+      input,
+      track!,
+      controller.signal,
+      () => true,
+    );
+    controller.abort();
+    await expect(cancelled).rejects.toThrow();
+    // Let the work finish without an HTTP waiter, as happens after a client timeout.
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    expect((requests.get("/multi.mkv") ?? 0) - before).toBe(1);
+    const next = await reader.extract(input, track!);
+    expect(new TextDecoder().decode(next.bytes)).toContain("Hello episode");
+    expect((requests.get("/multi.mkv") ?? 0) - before).toBe(1);
+    await reader.extract(input, track!);
+    expect((requests.get("/multi.mkv") ?? 0) - before).toBe(1);
+  });
+  it("stops cancelled extraction when playback is no longer active", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const input = source("e1", "multi");
+    const [track] = await reader.discover(input);
+    const before = requests.get("/multi.mkv") ?? 0;
+    const controller = new AbortController();
+    const cancelled = reader.extract(
+      input,
+      track!,
+      controller.signal,
+      () => false,
+    );
+    controller.abort();
+    await expect(cancelled).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 1_200));
+    expect(requests.get("/multi.mkv")).toBe(before);
+  });
+  it("reuses a completed background extraction when a playing client retries", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const store = new CutSessionStore();
+    session(store);
+    const service = new SubtitleService(
+      createSubtitleConfig(),
+      store,
+      undefined,
+      undefined,
+      reader,
+    );
+    const [track] = await service.discover("embedded-cut", selection());
+    const before = requests.get("/srt.mkv") ?? 0;
+    const controller = new AbortController();
+    const pending = service.compose(
+      "embedded-cut",
+      track!.id,
+      track!.extension,
+      controller.signal,
+    );
+    controller.abort();
+    await expect(pending).rejects.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const after = requests.get("/srt.mkv") ?? 0;
+    expect(after - before).toBe(1);
+    const retried = await service.compose(
+      "embedded-cut",
+      track!.id,
+      track!.extension,
+    );
+    expect(new TextDecoder().decode(retried!.bytes)).toContain("Hello episode");
+    expect(requests.get("/srt.mkv")).toBe(after);
+  });
+  it("prioritizes a short sync sample over the simultaneous full-track read", async () => {
+    const reader = new EmbeddedSubtitleService();
+    const input = source("e1", "multi");
+    const [track] = await reader.discover(input);
+    const before = requests.get("/multi.mkv") ?? 0;
+    const full = reader.extract(input, track!);
+    const sample = reader.sample(input, track!, { start: 0.2, end: 1.8 });
+    expect(new TextDecoder().decode((await sample).bytes)).toContain(
+      "Hello episode",
+    );
+    expect((requests.get("/multi.mkv") ?? 0) - before).toBe(1);
+    await full;
+    expect((requests.get("/multi.mkv") ?? 0) - before).toBe(2);
+  });
   it.each(["srt", "ass"])(
     "discovers authenticated HTTP MKV %s tracks, extracts lazily and maps both episodes",
     async (extension) => {
