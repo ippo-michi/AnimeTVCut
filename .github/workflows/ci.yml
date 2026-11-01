@@ -24,7 +24,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg
+      - run: |
+          printf 'https://archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y ffmpeg
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
       - run: pnpm build
@@ -43,7 +45,9 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: sudo apt-get update && sudo apt-get install -y ffmpeg mpv
+      - run: |
+          printf 'https://archive.ubuntu.com/ubuntu/\n' | sudo tee /etc/apt/apt-mirrors.txt >/dev/null
+          sudo apt-get update && sudo apt-get install -y ffmpeg mpv
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: docker build -t animetvcut-mediaflow:2.4.9-atc24-test -f docker/mediaflow/Dockerfile .
